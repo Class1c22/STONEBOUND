@@ -16,8 +16,10 @@ public class VoxelWorld : MonoBehaviour
     [Header("Відламані шматки")]
     [Tooltip("Шматки, що ні з чим не з'єднані із землею, відриваються і падають")]
     public bool detachFloating = true;
+    [Tooltip("Наскільки далеко (у вокселях) конструкція може триматися «на вазі» без опори знизу. Менше = крихкіші арки й навіси")]
+    public int maxOverhang = 8;
     [Tooltip("Якщо шматок більший за це число вокселів, він вважається міцним і не падає (захист від лагів)")]
-    public int maxPieceVoxels = 50000;
+    public int maxPieceVoxels = 100000;
     [Tooltip("Скільки падаючих шматків живе одночасно (найстаріші зникають)")]
     public int maxPieces = 40;
 
@@ -188,53 +190,119 @@ public class VoxelWorld : MonoBehaviour
 
     // ---------- відламані шматки ----------
 
-    // Шукає групи вокселів поруч із місцем руйнування. Якщо група не торкається землі (y = 0),
-    // вона відривається від світу і стає окремим фізичним тілом.
+    // Перевіряє, чи тримаються вокселі біля місця руйнування, з урахуванням гравітації.
+    // Опора йде від землі (y = 0): вгору вона передається без втрат, а вбік і вниз
+    // згасає за maxOverhang вокселів. Групи, що втратили опору через це руйнування, падають.
     void DetachFloating(List<Vector3Int> removedGrid)
     {
-        var seeds = new HashSet<Vector3Int>();
+        // 1. збираємо всі вокселі, пов'язані з місцем руйнування
+        var after = new HashSet<Vector3Int>();
+        var queue = new Queue<Vector3Int>();
         foreach (var g in removedGrid)
             for (int i = 0; i < 6; i++)
             {
                 Vector3Int n = g + Dirs[i];
-                if (GetVoxel(n) != 0) seeds.Add(n);
+                if (GetVoxel(n) == 0 || !after.Add(n)) continue;
+
+                queue.Enqueue(n);
+                while (queue.Count > 0)
+                {
+                    Vector3Int p = queue.Dequeue();
+                    for (int j = 0; j < 6; j++)
+                    {
+                        Vector3Int m = p + Dirs[j];
+                        if (GetVoxel(m) != 0 && after.Add(m)) queue.Enqueue(m);
+                    }
+                    if (after.Count > maxPieceVoxels) return;   // надто велика споруда, не перевіряємо
+                }
             }
+        if (after.Count == 0) return;
 
-        var supported = new HashSet<Vector3Int>();
-        foreach (var seed in seeds)
+        // 2. опора до руйнування (з видаленими вокселями) і після
+        var before = new HashSet<Vector3Int>(after);
+        foreach (var g in removedGrid) before.Add(g);
+
+        var supportBefore = ComputeSupport(before);
+        var supportAfter = ComputeSupport(after);
+
+        // 3. вокселі, що тепер висять у повітрі
+        var unsupported = new HashSet<Vector3Int>();
+        foreach (var g in after)
+            if (supportAfter[g] < 0) unsupported.Add(g);
+        if (unsupported.Count == 0) return;
+
+        // 4. ділимо їх на окремі шматки; падають ті, що раніше трималися
+        //    (те, що висіло в повітрі ще до удару, наприклад задумане автором, лишається)
+        var islands = new List<HashSet<Vector3Int>>();
+        var seen = new HashSet<Vector3Int>();
+        foreach (var start in unsupported)
         {
-            if (supported.Contains(seed) || GetVoxel(seed) == 0) continue;
+            if (!seen.Add(start)) continue;
 
-            var comp = new HashSet<Vector3Int> { seed };
-            var queue = new Queue<Vector3Int>();
-            queue.Enqueue(seed);
-
-            bool stable = false;
-            int processed = 0;
+            var island = new HashSet<Vector3Int> { start };
+            queue.Enqueue(start);
+            bool lostSupport = false;
             while (queue.Count > 0)
             {
                 Vector3Int p = queue.Dequeue();
-                processed++;
-
-                // земля, вже перевірена міцна частина або надто велика група: вважаємо міцним
-                if (p.y <= 0 || supported.Contains(p) || processed > maxPieceVoxels)
+                if (supportBefore[p] >= 0) lostSupport = true;
+                for (int j = 0; j < 6; j++)
                 {
-                    stable = true;
-                    break;
+                    Vector3Int m = p + Dirs[j];
+                    if (unsupported.Contains(m) && seen.Add(m))
+                    {
+                        island.Add(m);
+                        queue.Enqueue(m);
+                    }
                 }
+            }
+            if (lostSupport) islands.Add(island);
+        }
+
+        foreach (var island in islands) CreatePiece(island);
+    }
+
+    // Запас опори кожного вокселя: maxOverhang на землі, вгору не зменшується,
+    // вбік і вниз зменшується на 1. Менше 0 означає, що воксель висить у повітрі.
+    Dictionary<Vector3Int, int> ComputeSupport(HashSet<Vector3Int> set)
+    {
+        int max = Mathf.Max(0, maxOverhang);
+        var budget = new Dictionary<Vector3Int, int>(set.Count);
+        foreach (var g in set) budget[g] = -1;
+
+        var buckets = new List<Vector3Int>[max + 1];
+        for (int i = 0; i <= max; i++) buckets[i] = new List<Vector3Int>();
+
+        foreach (var g in set)
+            if (g.y <= 0)
+            {
+                budget[g] = max;
+                buckets[max].Add(g);
+            }
+
+        for (int b = max; b >= 0; b--)
+        {
+            var list = buckets[b];
+            for (int idx = 0; idx < list.Count; idx++)
+            {
+                Vector3Int p = list[idx];
+                if (budget[p] != b) continue;   // вже знайдено кращий шлях
 
                 for (int i = 0; i < 6; i++)
                 {
                     Vector3Int n = p + Dirs[i];
-                    if (GetVoxel(n) != 0 && comp.Add(n)) queue.Enqueue(n);
+                    if (!budget.TryGetValue(n, out int current)) continue;
+
+                    int nb = (i == 2) ? b : b - 1;   // Dirs[2] = вгору
+                    if (nb >= 0 && nb > current)
+                    {
+                        budget[n] = nb;
+                        buckets[nb].Add(n);
+                    }
                 }
             }
-
-            if (stable)
-                foreach (var v in comp) supported.Add(v);
-            else
-                CreatePiece(comp);
         }
+        return budget;
     }
 
     void CreatePiece(HashSet<Vector3Int> comp)
