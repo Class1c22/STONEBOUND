@@ -21,7 +21,23 @@ public class VoxelWorld : MonoBehaviour
     [Tooltip("Якщо шматок більший за це число вокселів, він вважається міцним і не падає (захист від лагів)")]
     public int maxPieceVoxels = 100000;
     [Tooltip("Скільки падаючих шматків живе одночасно (найстаріші зникають)")]
-    public int maxPieces = 40;
+    public int maxPieces = 80;
+
+    [Header("Падіння шматків")]
+    [Tooltip("Мінімальна швидкість удару, при якій шматок ламається")]
+    public float pieceBreakSpeed = 6f;
+    public float pieceBreakBaseRadius = 0.4f;
+    [Tooltip("Скільки радіуса додає кожен м/с швидкості удару")]
+    public float pieceBreakRadiusPerSpeed = 0.05f;
+    public float pieceBreakMaxRadius = 2f;
+    [Tooltip("Яку частку радіуса шматок ламає у воксельному світі, у який врізався (0 = не ламає)")]
+    [Range(0f, 1f)] public float pieceWorldDamage = 0.6f;
+
+    [Header("Уламки")]
+    public int maxDebris = 300;
+    public int debrisPerHit = 40;
+    public float debrisScale = 0.9f;
+    public float debrisSpread = 4f;
 
     public struct RemovedVoxel
     {
@@ -31,7 +47,12 @@ public class VoxelWorld : MonoBehaviour
 
     readonly Dictionary<Vector3Int, VoxelChunk> chunks = new Dictionary<Vector3Int, VoxelChunk>();
     readonly HashSet<VoxelChunk> dirty = new HashSet<VoxelChunk>();
-    readonly Queue<GameObject> pieces = new Queue<GameObject>();
+    readonly List<GameObject> pieces = new List<GameObject>();
+    Rigidbody[] debrisPool;
+    int debrisIndex;
+    Material debrisMaterial;
+    MaterialPropertyBlock debrisBlock;
+    static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
     readonly Color32[] palette = new Color32[256];
     readonly Dictionary<uint, byte> paletteLookup = new Dictionary<uint, byte>();
     int paletteCount;
@@ -307,7 +328,7 @@ public class VoxelWorld : MonoBehaviour
 
     void CreatePiece(HashSet<Vector3Int> comp)
     {
-        // забираємо вокселі зі світу і запам'ятовуємо їх
+        // забираємо вокселі зі світу і передаємо їх новому шматку
         var voxels = new Dictionary<Vector3Int, byte>(comp.Count);
         Vector3 sum = Vector3.zero;
         foreach (var g in comp)
@@ -318,62 +339,67 @@ public class VoxelWorld : MonoBehaviour
         foreach (var g in comp) SetVoxel(g, 0);
 
         Vector3 pivot = sum / comp.Count;   // центр шматка у координатах вокселів
+        VoxelPiece.Create(this, voxels, pivot, transform.TransformPoint(pivot * voxelSize),
+                          transform.rotation, Vector3.zero, Vector3.zero);
+    }
 
-        var verts = new List<Vector3>();
-        var normals = new List<Vector3>();
-        var uvs = new List<Vector2>();
-        var tris = new List<int>();
-
-        foreach (var kv in voxels)
-        {
-            Vector3Int g = kv.Key;
-            Vector2 uv = new Vector2((kv.Value + 0.5f) / 256f, 0.5f);
-
-            for (int f = 0; f < 6; f++)
-            {
-                Vector3Int d = VoxelChunk.Dirs[f];
-                if (voxels.ContainsKey(g + d)) continue;
-
-                int start = verts.Count;
-                for (int k = 0; k < 4; k++)
-                {
-                    Vector3 corner = new Vector3(g.x, g.y, g.z) + VoxelChunk.FaceVerts[f, k] - pivot;
-                    verts.Add(corner * voxelSize);
-                    normals.Add(new Vector3(d.x, d.y, d.z));
-                    uvs.Add(uv);
-                }
-                tris.Add(start); tris.Add(start + 1); tris.Add(start + 2);
-                tris.Add(start); tris.Add(start + 2); tris.Add(start + 3);
-            }
-        }
-
-        var mesh = new Mesh { name = "VoxelPieceMesh", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
-        mesh.SetVertices(verts);
-        mesh.SetNormals(normals);
-        mesh.SetUVs(0, uvs);
-        mesh.SetTriangles(tris, 0);
-        mesh.RecalculateBounds();
-
-        var go = new GameObject("FallingPiece");
-        go.transform.position = transform.TransformPoint(pivot * voxelSize);
-        go.transform.rotation = transform.rotation;
-        go.AddComponent<MeshFilter>().sharedMesh = mesh;
-        go.AddComponent<MeshRenderer>().sharedMaterial = RuntimeMaterial;
-
-        var mc = go.AddComponent<MeshCollider>();
-        mc.convex = true;
-        mc.sharedMesh = mesh;
-
-        var rb = go.AddComponent<Rigidbody>();
-        rb.mass = Mathf.Clamp(comp.Count * 0.01f, 0.5f, 200f);
-        rb.interpolation = RigidbodyInterpolation.Interpolate;
-
-        pieces.Enqueue(go);
+    public void RegisterPiece(GameObject go)
+    {
+        pieces.RemoveAll(x => x == null);
+        pieces.Add(go);
         while (pieces.Count > maxPieces)
         {
-            var old = pieces.Dequeue();
-            if (old != null) Destroy(old);
+            Destroy(pieces[0]);
+            pieces.RemoveAt(0);
         }
+    }
+
+    // ---------- уламки ----------
+
+    public void SpawnDebris(List<RemovedVoxel> removed, Vector3 center, Vector3 inheritVelocity)
+    {
+        if (removed.Count == 0) return;
+
+        if (debrisPool == null) debrisPool = new Rigidbody[Mathf.Max(1, maxDebris)];
+        if (debrisBlock == null) debrisBlock = new MaterialPropertyBlock();
+        if (debrisMaterial == null)
+        {
+            debrisMaterial = new Material(RuntimeMaterial);
+            debrisMaterial.SetTexture("_BaseMap", Texture2D.whiteTexture);
+        }
+
+        int step = Mathf.Max(1, removed.Count / Mathf.Max(1, debrisPerHit));
+        for (int i = 0; i < removed.Count; i += step)
+        {
+            var v = removed[i];
+            Rigidbody d = GetDebris();
+
+            d.transform.position = v.position;
+            d.transform.rotation = Random.rotation;
+            d.linearVelocity = (v.position - center).normalized * Random.Range(1f, debrisSpread)
+                               + inheritVelocity * 0.3f + Random.insideUnitSphere;
+            d.angularVelocity = Random.insideUnitSphere * 5f;
+
+            debrisBlock.SetColor(BaseColorId, GetColor(v.id));
+            d.GetComponent<Renderer>().SetPropertyBlock(debrisBlock);
+        }
+    }
+
+    Rigidbody GetDebris()
+    {
+        Rigidbody d = debrisPool[debrisIndex];
+        if (d == null)
+        {
+            var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            cube.name = "Debris";
+            cube.transform.localScale = Vector3.one * voxelSize * debrisScale;
+            cube.GetComponent<Renderer>().sharedMaterial = debrisMaterial;
+            d = cube.AddComponent<Rigidbody>();
+            d.mass = 0.05f;
+            debrisPool[debrisIndex] = d;
+        }
+        debrisIndex = (debrisIndex + 1) % debrisPool.Length;   // найстаріший уламок використовується повторно
+        return d;
     }
 
     // ---------- імпорт .vox ----------
