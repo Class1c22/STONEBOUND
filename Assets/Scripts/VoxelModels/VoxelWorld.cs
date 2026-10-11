@@ -13,6 +13,14 @@ public class VoxelWorld : MonoBehaviour
     [Tooltip("Необов'язково: будь-який URP/Lit матеріал. Якщо порожньо, створюється автоматично")]
     public Material voxelMaterial;
 
+    [Header("Відламані шматки")]
+    [Tooltip("Шматки, що ні з чим не з'єднані із землею, відриваються і падають")]
+    public bool detachFloating = true;
+    [Tooltip("Якщо шматок більший за це число вокселів, він вважається міцним і не падає (захист від лагів)")]
+    public int maxPieceVoxels = 50000;
+    [Tooltip("Скільки падаючих шматків живе одночасно (найстаріші зникають)")]
+    public int maxPieces = 40;
+
     public struct RemovedVoxel
     {
         public Vector3 position;
@@ -21,6 +29,7 @@ public class VoxelWorld : MonoBehaviour
 
     readonly Dictionary<Vector3Int, VoxelChunk> chunks = new Dictionary<Vector3Int, VoxelChunk>();
     readonly HashSet<VoxelChunk> dirty = new HashSet<VoxelChunk>();
+    readonly Queue<GameObject> pieces = new Queue<GameObject>();
     readonly Color32[] palette = new Color32[256];
     readonly Dictionary<uint, byte> paletteLookup = new Dictionary<uint, byte>();
     int paletteCount;
@@ -138,6 +147,7 @@ public class VoxelWorld : MonoBehaviour
         Vector3Int max = new Vector3Int(Mathf.FloorToInt(c.x + r), Mathf.FloorToInt(c.y + r), Mathf.FloorToInt(c.z + r));
 
         int count = 0;
+        var removedGrid = new List<Vector3Int>();
         for (int z = min.z; z <= max.z; z++)
         for (int y = min.y; y <= max.y; y++)
         for (int x = min.x; x <= max.x; x++)
@@ -156,6 +166,7 @@ public class VoxelWorld : MonoBehaviour
             chunk.Set(l.x, l.y, l.z, 0);
             dirty.Add(chunk);
             count++;
+            removedGrid.Add(g);
 
             if (removed != null)
                 removed.Add(new RemovedVoxel { position = transform.TransformPoint(center * voxelSize), id = id });
@@ -168,7 +179,133 @@ public class VoxelWorld : MonoBehaviour
                     dirty.Add(neighbor);
             }
         }
+
+        if (detachFloating && count > 0)
+            DetachFloating(removedGrid);
+
         return count;
+    }
+
+    // ---------- відламані шматки ----------
+
+    // Шукає групи вокселів поруч із місцем руйнування. Якщо група не торкається землі (y = 0),
+    // вона відривається від світу і стає окремим фізичним тілом.
+    void DetachFloating(List<Vector3Int> removedGrid)
+    {
+        var seeds = new HashSet<Vector3Int>();
+        foreach (var g in removedGrid)
+            for (int i = 0; i < 6; i++)
+            {
+                Vector3Int n = g + Dirs[i];
+                if (GetVoxel(n) != 0) seeds.Add(n);
+            }
+
+        var supported = new HashSet<Vector3Int>();
+        foreach (var seed in seeds)
+        {
+            if (supported.Contains(seed) || GetVoxel(seed) == 0) continue;
+
+            var comp = new HashSet<Vector3Int> { seed };
+            var queue = new Queue<Vector3Int>();
+            queue.Enqueue(seed);
+
+            bool stable = false;
+            int processed = 0;
+            while (queue.Count > 0)
+            {
+                Vector3Int p = queue.Dequeue();
+                processed++;
+
+                // земля, вже перевірена міцна частина або надто велика група: вважаємо міцним
+                if (p.y <= 0 || supported.Contains(p) || processed > maxPieceVoxels)
+                {
+                    stable = true;
+                    break;
+                }
+
+                for (int i = 0; i < 6; i++)
+                {
+                    Vector3Int n = p + Dirs[i];
+                    if (GetVoxel(n) != 0 && comp.Add(n)) queue.Enqueue(n);
+                }
+            }
+
+            if (stable)
+                foreach (var v in comp) supported.Add(v);
+            else
+                CreatePiece(comp);
+        }
+    }
+
+    void CreatePiece(HashSet<Vector3Int> comp)
+    {
+        // забираємо вокселі зі світу і запам'ятовуємо їх
+        var voxels = new Dictionary<Vector3Int, byte>(comp.Count);
+        Vector3 sum = Vector3.zero;
+        foreach (var g in comp)
+        {
+            voxels[g] = GetVoxel(g);
+            sum += new Vector3(g.x + 0.5f, g.y + 0.5f, g.z + 0.5f);
+        }
+        foreach (var g in comp) SetVoxel(g, 0);
+
+        Vector3 pivot = sum / comp.Count;   // центр шматка у координатах вокселів
+
+        var verts = new List<Vector3>();
+        var normals = new List<Vector3>();
+        var uvs = new List<Vector2>();
+        var tris = new List<int>();
+
+        foreach (var kv in voxels)
+        {
+            Vector3Int g = kv.Key;
+            Vector2 uv = new Vector2((kv.Value + 0.5f) / 256f, 0.5f);
+
+            for (int f = 0; f < 6; f++)
+            {
+                Vector3Int d = VoxelChunk.Dirs[f];
+                if (voxels.ContainsKey(g + d)) continue;
+
+                int start = verts.Count;
+                for (int k = 0; k < 4; k++)
+                {
+                    Vector3 corner = new Vector3(g.x, g.y, g.z) + VoxelChunk.FaceVerts[f, k] - pivot;
+                    verts.Add(corner * voxelSize);
+                    normals.Add(new Vector3(d.x, d.y, d.z));
+                    uvs.Add(uv);
+                }
+                tris.Add(start); tris.Add(start + 1); tris.Add(start + 2);
+                tris.Add(start); tris.Add(start + 2); tris.Add(start + 3);
+            }
+        }
+
+        var mesh = new Mesh { name = "VoxelPieceMesh", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+        mesh.SetVertices(verts);
+        mesh.SetNormals(normals);
+        mesh.SetUVs(0, uvs);
+        mesh.SetTriangles(tris, 0);
+        mesh.RecalculateBounds();
+
+        var go = new GameObject("FallingPiece");
+        go.transform.position = transform.TransformPoint(pivot * voxelSize);
+        go.transform.rotation = transform.rotation;
+        go.AddComponent<MeshFilter>().sharedMesh = mesh;
+        go.AddComponent<MeshRenderer>().sharedMaterial = RuntimeMaterial;
+
+        var mc = go.AddComponent<MeshCollider>();
+        mc.convex = true;
+        mc.sharedMesh = mesh;
+
+        var rb = go.AddComponent<Rigidbody>();
+        rb.mass = Mathf.Clamp(comp.Count * 0.01f, 0.5f, 200f);
+        rb.interpolation = RigidbodyInterpolation.Interpolate;
+
+        pieces.Enqueue(go);
+        while (pieces.Count > maxPieces)
+        {
+            var old = pieces.Dequeue();
+            if (old != null) Destroy(old);
+        }
     }
 
     // ---------- імпорт .vox ----------

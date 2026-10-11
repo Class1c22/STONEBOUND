@@ -14,7 +14,7 @@ public class VoxelChunk : MonoBehaviour
     MeshCollider meshCollider;
 
     // порядок: +X, -X, +Y, -Y, +Z, -Z
-    static readonly Vector3Int[] Dirs =
+    public static readonly Vector3Int[] Dirs =
     {
         new Vector3Int(1, 0, 0), new Vector3Int(-1, 0, 0),
         new Vector3Int(0, 1, 0), new Vector3Int(0, -1, 0),
@@ -22,7 +22,7 @@ public class VoxelChunk : MonoBehaviour
     };
 
     // 4 вершини кожної грані (порядок підібраний так, щоб грань дивилась назовні)
-    static readonly Vector3[,] FaceVerts =
+    public static readonly Vector3[,] FaceVerts =
     {
         { new Vector3(1,0,0), new Vector3(1,1,0), new Vector3(1,1,1), new Vector3(1,0,1) },
         { new Vector3(0,0,1), new Vector3(0,1,1), new Vector3(0,1,0), new Vector3(0,0,0) },
