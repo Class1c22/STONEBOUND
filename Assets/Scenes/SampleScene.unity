@@ -449,6 +449,50 @@ MonoBehaviour:
   m_ShadowLayerMask: 1
   m_RenderingLayers: 1
   m_ShadowRenderingLayers: 1
+--- !u!1 &416857263
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 416857264}
+  - component: {fileID: 416857265}
+  m_Layer: 0
+  m_Name: VoxelPiece
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &416857264
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 416857263}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: -72.37593, y: 0, z: 2.3407707}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1838282995}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &416857265
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 416857263}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3aa4425a4aeeba842b9cd9acdda152a3, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelPiece
 --- !u!1 &778889212
 GameObject:
   m_ObjectHideFlags: 0
@@ -5366,8 +5410,18 @@ MonoBehaviour:
   voxelSize: 0.25
   voxelMaterial: {fileID: 0}
   detachFloating: 1
+  maxOverhang: 8
   maxPieceVoxels: 50000
   maxPieces: 40
+  pieceBreakSpeed: 6
+  pieceBreakBaseRadius: 0.4
+  pieceBreakRadiusPerSpeed: 0.05
+  pieceBreakMaxRadius: 2
+  pieceWorldDamage: 0.6
+  maxDebris: 300
+  debrisPerHit: 40
+  debrisScale: 0.9
+  debrisSpread: 4
 --- !u!4 &843798774
 Transform:
   m_ObjectHideFlags: 0
@@ -5574,6 +5628,7 @@ Transform:
   m_Children:
   - {fileID: 843798774}
   - {fileID: 1775355353}
+  - {fileID: 416857264}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1001 &1911872437
@@ -5755,10 +5810,6 @@ MonoBehaviour:
   maxRadius: 4
   speedKeep: 0.85
   hitCooldown: 0.05
-  maxDebris: 300
-  debrisPerHit: 40
-  debrisScale: 0.9
-  debrisSpread: 4
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
