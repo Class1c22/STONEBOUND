@@ -10,7 +10,7 @@ public class VoxelDestroyer : MonoBehaviour
     public VoxelWorld world;
 
     [Header("Удар")]
-    [Tooltip("Мінімальна швидкість удару, при якій щось руйнується")]
+    [Tooltip("Мінімальна швидкість У стіну (м/с), при якій щось руйнується. Менше = ламається від легких торкань")]
     public float minImpactSpeed = 5f;
     public float baseRadius = 0.8f;
     [Tooltip("Скільки радіуса додає кожен м/с швидкості")]
@@ -45,15 +45,18 @@ public class VoxelDestroyer : MonoBehaviour
         if (c.collider.GetComponentInParent<VoxelWorld>() != world) return;
         if (Time.time - lastHitTime < hitCooldown) return;
 
-        float speed = c.relativeVelocity.magnitude;
-        if (speed < minImpactSpeed) return;
+        ContactPoint cp = c.GetContact(0);
+
+        // враховуємо тільки швидкість У стіну (по нормалі). Дотик збоку чи ковзання вздовж стіни
+        // нічого не ламає, навіть якщо камінь їде швидко
+        float impact = Mathf.Abs(Vector3.Dot(lastVelocity, cp.normal));
+        if (impact < minImpactSpeed) return;
         lastHitTime = Time.time;
 
         // сила удару залежить від швидкості й маси
-        float radius = (baseRadius + speed * radiusPerSpeed) * Mathf.Pow(rb.mass, 1f / 3f);
+        float radius = (baseRadius + impact * radiusPerSpeed) * Mathf.Pow(rb.mass, 1f / 3f);
         radius = Mathf.Min(radius, maxRadius);
 
-        ContactPoint cp = c.GetContact(0);
         Vector3 center = cp.point - cp.normal * (radius * 0.5f);   // трохи углиб стіни
 
         removed.Clear();
