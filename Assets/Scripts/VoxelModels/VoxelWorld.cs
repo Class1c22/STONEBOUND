@@ -343,6 +343,11 @@ public class VoxelWorld : MonoBehaviour
                           transform.rotation, Vector3.zero, Vector3.zero);
     }
 
+    public void UnregisterPiece(GameObject go)
+    {
+        pieces.Remove(go);
+    }
+
     public void RegisterPiece(GameObject go)
     {
         pieces.RemoveAll(x => x == null);
@@ -396,6 +401,7 @@ public class VoxelWorld : MonoBehaviour
             cube.GetComponent<Renderer>().sharedMaterial = debrisMaterial;
             d = cube.AddComponent<Rigidbody>();
             d.mass = 0.05f;
+            cube.AddComponent<Absorbable>().volume = Mathf.Pow(voxelSize * debrisScale, 3);
             debrisPool[debrisIndex] = d;
         }
         debrisIndex = (debrisIndex + 1) % debrisPool.Length;   // найстаріший уламок використовується повторно

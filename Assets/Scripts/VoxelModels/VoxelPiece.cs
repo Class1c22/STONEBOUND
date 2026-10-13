@@ -9,6 +9,7 @@ public class VoxelPiece : MonoBehaviour
     Dictionary<Vector3Int, byte> voxels;   // координати вокселів у сітці шматка
     Vector3 pivot;                          // центр шматка у координатах вокселів
     Rigidbody rb;
+    Absorbable absorbable;
     MeshCollider meshCollider;
     Mesh mesh;
     float immuneUntil;
@@ -25,6 +26,7 @@ public class VoxelPiece : MonoBehaviour
         p.world = world;
         p.voxels = voxels;
         p.pivot = pivot;
+        p.absorbable = go.AddComponent<Absorbable>();
 
         go.AddComponent<MeshRenderer>().sharedMaterial = world.RuntimeMaterial;
         var meshFilter = go.AddComponent<MeshFilter>();
@@ -87,6 +89,15 @@ public class VoxelPiece : MonoBehaviour
         meshCollider.sharedMesh = mesh;
 
         rb.mass = Mathf.Clamp(voxels.Count * 0.01f, 0.5f, 200f);
+        absorbable.volume = voxels.Count * vs * vs * vs;
+    }
+
+    // викликається, коли камінь всмоктав шматок: він більше не ламається сам
+    public void OnAbsorbed()
+    {
+        world.UnregisterPiece(gameObject);
+        voxels = null;
+        Destroy(this);
     }
 
     void OnCollisionEnter(Collision c)
