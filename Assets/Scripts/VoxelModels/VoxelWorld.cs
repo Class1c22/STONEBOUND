@@ -34,8 +34,14 @@ public class VoxelWorld : MonoBehaviour
     [Range(0f, 1f)] public float pieceWorldDamage = 0.6f;
 
     [Header("Уламки")]
+    [Tooltip("Розмір пулу уламків (найстаріші використовуються повторно)")]
     public int maxDebris = 300;
-    public int debrisPerHit = 40;
+    [Tooltip("Яка частка вибитих вокселів стає уламками (0.1 = кожен 10-й). Більше шкоди = більше уламків")]
+    [Range(0f, 1f)] public float debrisFraction = 0.1f;
+    [Tooltip("Мінімум уламків за один удар, навіть якщо шкода мала")]
+    public int minDebrisPerHit = 3;
+    [Tooltip("Стеля уламків за один удар (захист від просадки FPS)")]
+    public int maxDebrisPerHit = 120;
     public float debrisScale = 0.9f;
     public float debrisSpread = 4f;
 
@@ -373,10 +379,15 @@ public class VoxelWorld : MonoBehaviour
             debrisMaterial.SetTexture("_BaseMap", Texture2D.whiteTexture);
         }
 
-        int step = Mathf.Max(1, removed.Count / Mathf.Max(1, debrisPerHit));
-        for (int i = 0; i < removed.Count; i += step)
+        // кількість уламків залежить від обсягу шкоди: скільки вокселів вибито
+        int count = Mathf.RoundToInt(removed.Count * debrisFraction);
+        count = Mathf.Clamp(count, minDebrisPerHit, Mathf.Max(minDebrisPerHit, maxDebrisPerHit));
+        count = Mathf.Min(count, removed.Count);
+
+        float step = (float)removed.Count / count;   // рівномірно беремо воксели з усього вибитого об'єму
+        for (int k = 0; k < count; k++)
         {
-            var v = removed[i];
+            var v = removed[Mathf.Min(removed.Count - 1, (int)(k * step))];
             Rigidbody d = GetDebris();
 
             d.transform.position = v.position;
