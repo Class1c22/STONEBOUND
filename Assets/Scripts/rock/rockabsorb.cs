@@ -77,9 +77,24 @@ public class RockAbsorber : MonoBehaviour
         // плавна зміна розміру колайдера (росте повільно, меншає швидко)
         if (!Mathf.Approximately(currentRadius, targetRadius))
         {
+            float prev = currentRadius;
             float speed = currentRadius < targetRadius ? growSpeed : shrinkSpeed;
             currentRadius = Mathf.MoveTowards(currentRadius, targetRadius, speed * Time.deltaTime);
             ApplySize();
+
+            // камінь меншає: шматки на поверхні стискаються разом із ним, а не висять у повітрі
+            if (currentRadius < prev) PullAttachedIn(currentRadius / prev);
+        }
+    }
+
+    void PullAttachedIn(float ratio)
+    {
+        Vector3 c = Center;
+        for (int i = 0; i < attached.Count; i++)
+        {
+            Transform t = attached[i];
+            if (t == null) continue;
+            t.position = c + (t.position - c) * ratio;
         }
     }
 
