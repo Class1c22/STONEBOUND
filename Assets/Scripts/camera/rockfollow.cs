@@ -8,6 +8,8 @@ public class FollowCamera : MonoBehaviour
     public float sensitivity = 0.15f;
     public float minPitch = -10f;
     public float maxPitch = 70f;
+    [Tooltip("Камера ніколи не опускається нижче цієї висоти (світова координата Y)")]
+    public float minCameraHeight = 0.3f;
 
     float yaw;
     float pitch = 25f;
@@ -59,8 +61,12 @@ public class FollowCamera : MonoBehaviour
     {
         if (target == null) return;
 
-        Quaternion rot = Quaternion.Euler(pitch, yaw, 0f);
         Vector3 focus = GetFocusPoint();
+
+        // нахил, нижче якого камера опустилась би під землю; камінь при цьому лишається по центру
+        float groundPitch = Mathf.Asin(Mathf.Clamp((minCameraHeight - focus.y) / distance, -1f, 1f)) * Mathf.Rad2Deg;
+        float usedPitch = Mathf.Max(pitch, groundPitch);
+        Quaternion rot = Quaternion.Euler(usedPitch, yaw, 0f);
 
         // камера завжди дивиться точно в центр каменя
         transform.rotation = rot;
