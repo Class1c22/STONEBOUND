@@ -4,6 +4,7 @@ using UnityEngine.InputSystem;
 
 // Повісь на камінь. Тримай E: камінь притягує до себе уламки й шматки, що менші за нього.
 // Всмоктані фігури прилипають до поверхні як новий шар, а камінь (і його колайдер) росте.
+// Кнопка R (скрипт RockBlast) віддає половину набраного: камінь меншає, а шматки розлітаються.
 [RequireComponent(typeof(Rigidbody), typeof(SphereCollider))]
 public class RockAbsorber : MonoBehaviour
 {
@@ -22,6 +23,8 @@ public class RockAbsorber : MonoBehaviour
     public float volumeGain = 1.5f;
     [Tooltip("Швидкість плавного росту, метрів за секунду")]
     public float growSpeed = 0.6f;
+    [Tooltip("Швидкість зменшення після викиду (кнопка R), метрів за секунду")]
+    public float shrinkSpeed = 6f;
     [Tooltip("Скільки фігур одночасно лишається видимими на поверхні (старі зникають, об'єм лишається)")]
     public int maxAttached = 300;
 
@@ -31,11 +34,12 @@ public class RockAbsorber : MonoBehaviour
 
     public float Radius => currentRadius;
     public float Volume => volume;
+    public Vector3 WorldCenter => Center;
 
     Rigidbody rb;
     SphereCollider col;
     float startRadius, currentRadius, targetRadius;
-    float startMass, volume;
+    float startMass, volume, startVolume;
     Vector3 coreBaseScale, coreBaseLocalPos;
     float baseCameraDistance;
 
@@ -58,7 +62,7 @@ public class RockAbsorber : MonoBehaviour
         startRadius = col.radius * MaxScale();
         currentRadius = targetRadius = startRadius;
         startMass = rb.mass;
-        volume = 4f / 3f * Mathf.PI * startRadius * startRadius * startRadius;
+        volume = startVolume = 4f / 3f * Mathf.PI * startRadius * startRadius * startRadius;
 
         if (coreVisual != null)
         {
@@ -70,10 +74,11 @@ public class RockAbsorber : MonoBehaviour
 
     void Update()
     {
-        // плавний ріст колайдера
+        // плавна зміна розміру колайдера (росте повільно, меншає швидко)
         if (!Mathf.Approximately(currentRadius, targetRadius))
         {
-            currentRadius = Mathf.MoveTowards(currentRadius, targetRadius, growSpeed * Time.deltaTime);
+            float speed = currentRadius < targetRadius ? growSpeed : shrinkSpeed;
+            currentRadius = Mathf.MoveTowards(currentRadius, targetRadius, speed * Time.deltaTime);
             ApplySize();
         }
     }
@@ -160,5 +165,29 @@ public class RockAbsorber : MonoBehaviour
         // камінь росте
         volume += a.volume * volumeGain;
         targetRadius = Mathf.Pow(volume * 3f / (4f * Mathf.PI), 1f / 3f);
+    }
+
+    // Віддає частку набраного об'єму (fraction = 0.5 -> половину того, що камінь з'їв).
+    // Камінь меншає (нижче стартового розміру не опускається), а така ж частка прикріплених
+    // шматків відв'язується від каменя і потрапляє в released. Повертає false, якщо нічого віддавати.
+    public bool ShedFraction(float fraction, List<Transform> released)
+    {
+        fraction = Mathf.Clamp01(fraction);
+
+        float excess = volume - startVolume;
+        if (excess <= startVolume * 0.02f) return false;   // камінь майже нічого не з'їв
+
+        volume -= excess * fraction;
+        targetRadius = Mathf.Pow(volume * 3f / (4f * Mathf.PI), 1f / 3f);
+
+        attached.RemoveAll(t => t == null);
+        int take = Mathf.CeilToInt(attached.Count * fraction);
+        for (int i = 0; i < take && attached.Count > 0; i++)
+        {
+            int idx = Random.Range(0, attached.Count);   // випадкові шматки по всій поверхні
+            released.Add(attached[idx]);
+            attached.RemoveAt(idx);
+        }
+        return true;
     }
 }
