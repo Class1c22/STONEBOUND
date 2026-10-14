@@ -5425,6 +5425,28 @@ MonoBehaviour:
   maxDebrisPerHit: 120
   debrisScale: 0.9
   debrisSpread: 4
+  voxelGround: 1
+  groundDebrisChance: 0.3
+  groundOverhang: 2
+  groundBottomY: -6
+  defaultHardness: 1
+  materialRules:
+  - name: "\u0414\u0435\u0440\u0435\u0432\u043E"
+    color: {r: 0.43, g: 0.27, b: 0.18, a: 1}
+    tolerance: 0.2
+    hardness: 1
+  - name: "\u0426\u0435\u0433\u043B\u0430"
+    color: {r: 0.63, g: 0.25, b: 0.2, a: 1}
+    tolerance: 0.18
+    hardness: 2
+  - name: "\u0411\u0435\u0442\u043E\u043D"
+    color: {r: 0.45, g: 0.45, b: 0.45, a: 1}
+    tolerance: 0.12
+    hardness: 3
+  - name: "\u041C\u0435\u0442\u0430\u043B"
+    color: {r: 0.27, g: 0.33, b: 0.41, a: 1}
+    tolerance: 0.15
+    hardness: 4
 --- !u!4 &843798774
 Transform:
   m_ObjectHideFlags: 0
@@ -5547,7 +5569,7 @@ Transform:
   m_GameObject: {fileID: 1365930387}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 1.9463, y: 0, z: 2.9}
+  m_LocalPosition: {x: 1.9463, y: -6.51, z: 2.9}
   m_LocalScale: {x: 979.72833, y: 52.044, z: 52.044}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -5598,8 +5620,82 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelTestBuilder
   world: {fileID: 843798773}
-  voxFile: {fileID: 4900000, guid: 81c4b13d61bc2774da8d6eef178bfa6d, type: 3}
+  buildMaterialTest: 1
+  materialWallSize: {x: 20, y: 24, z: 4}
+  materialGap: 4
+  materialTestZ: 90
+  materialLabels: 1
+  voxFile: {fileID: 0}
   voxOrigin: {x: 0, y: 0, z: 80}
+--- !u!1 &1782221769
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1782221770}
+  - component: {fileID: 1782221771}
+  m_Layer: 0
+  m_Name: MountainMapGenerator
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1782221770
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1782221769}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: -18.91645, y: 0, z: -8.53037}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1838282995}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1782221771
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1782221769}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b90265da90cacfa468e7af7a015f82ce, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::MountainMapGenerator
+  mapSize: 600
+  mountainHeight: 160
+  mountainBlockSize: 2
+  heightStep: 0.25
+  chunkColumns: 50
+  meadowRadius: 100
+  flatRadius: 45
+  flatBlend: 30
+  groundAmplitude: 2
+  groundWavelength: 45
+  cliffWidth: 40
+  world: {fileID: 843798773}
+  minPeakHeight: 0.6
+  mountainNoiseScale: 3.5
+  ridgeWarp: 1.2
+  surfaceDetail: 4
+  footRagged: 0.5
+  seed: 12345
+  snowLine: 0.72
+  snowVariation: 12
+  grassLine: 0.06
+  strataThickness: 0.75
+  invisibleCliffWall: 1
+  colliderMargin: 40
+  oldGround: {fileID: 1365930387}
 --- !u!1 &1838282994
 GameObject:
   m_ObjectHideFlags: 0
@@ -5632,6 +5728,7 @@ Transform:
   - {fileID: 843798774}
   - {fileID: 1775355353}
   - {fileID: 416857264}
+  - {fileID: 1782221770}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1001 &1911872437
@@ -5824,6 +5921,7 @@ MonoBehaviour:
   maxRadius: 4
   speedKeep: 0.85
   hitCooldown: 0.05
+  debugLog: 1
 --- !u!114 &2032603337
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -5845,6 +5943,38 @@ MonoBehaviour:
   growSpeed: 0.05
   shrinkSpeed: 6
   maxAttached: 300
+  stages:
+  - name: "\u041A\u0430\u043C\u0456\u043D\u044C"
+    radiusRatio: 1
+    power: 1
+    speedMultiplier: 1
+    forceMultiplier: 1
+    destroyRadiusMultiplier: 1
+  - name: "\u0412\u0430\u043B\u0443\u043D"
+    radiusRatio: 1.5
+    power: 2
+    speedMultiplier: 1.1
+    forceMultiplier: 1.15
+    destroyRadiusMultiplier: 1.2
+  - name: "\u0411\u0440\u0438\u043B\u0430"
+    radiusRatio: 2.2
+    power: 3
+    speedMultiplier: 1.2
+    forceMultiplier: 1.3
+    destroyRadiusMultiplier: 1.45
+  - name: "\u0421\u043A\u0435\u043B\u044F"
+    radiusRatio: 3.2
+    power: 4
+    speedMultiplier: 1.3
+    forceMultiplier: 1.5
+    destroyRadiusMultiplier: 1.75
+  - name: "\u0413\u043E\u0440\u0430"
+    radiusRatio: 4.5
+    power: 5
+    speedMultiplier: 1.4
+    forceMultiplier: 1.7
+    destroyRadiusMultiplier: 2.1
+  showDebug: 1
   followCamera: {fileID: 330585548}
   cameraFollowsGrowth: 0.8
 --- !u!114 &2032603338

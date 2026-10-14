@@ -52,6 +52,10 @@ public class VoxelWorld : MonoBehaviour
     public bool voxelGround = false;
     [Tooltip("Яка частка уламків із землі лишається (0.3 = 30%). Менше = камінь менше росте від копання землі")]
     [Range(0f, 1f)] public float groundDebrisChance = 0.3f;
+    [Tooltip("Наскільки далеко (у вокселях) земля може нависати над ямою без опори знизу. Більше нависання осипається")]
+    public int groundOverhang = 2;
+    [Tooltip("Нижній шар воксельної землі. Задає MountainMapGenerator. Нижче нього основа, що не ламається")]
+    public int groundBottomY = -6;
 
     [System.Serializable]
     public struct MaterialRule
@@ -278,6 +282,11 @@ public class VoxelWorld : MonoBehaviour
             }
         }
 
+        // спочатку осипається земля без опори: її вокселі додаються до removedGrid,
+        // щоб споруди над ними теж перевірилися на обвал
+        if (detachFloating && voxelGround && count > 0)
+            CollapseGround(removedGrid);
+
         if (detachFloating && count > 0)
             DetachFloating(removedGrid);
 
@@ -362,6 +371,124 @@ public class VoxelWorld : MonoBehaviour
 
     // Клітинка належить воксельній землі (нижче y = 0), якщо земля увімкнена
     bool IsGroundCell(Vector3Int g) => voxelGround && g.y < 0;
+
+    // Земля тримається, якщо вертикальний ланцюжок вокселів під нею доходить до нижнього шару
+    bool GroundColumnSupported(Vector3Int g)
+    {
+        while (true)
+        {
+            if (g.y <= groundBottomY) return true;
+            g += Vector3Int.down;
+            if (GetVoxel(g) == 0) return false;
+        }
+    }
+
+    // Після копання земля, що лишилась без опори знизу, осипається: нависання завдовжки до
+    // groundOverhang вокселів тримається за сусідів збоку, решта падає шматками (дрібне розсипається уламками).
+    // Падаючі вокселі додаються до removedGrid.
+    void CollapseGround(List<Vector3Int> removedGrid)
+    {
+        // 1. кандидати: вокселі землі над викопаними, у тих самих стовпцях
+        var candidates = new HashSet<Vector3Int>();
+        for (int r = 0; r < removedGrid.Count; r++)
+        {
+            Vector3Int g = removedGrid[r];
+            if (g.y >= 0) continue;
+            for (int y = g.y + 1; y < 0; y++)
+            {
+                var c = new Vector3Int(g.x, y, g.z);
+                if (GetVoxel(c) != 0) candidates.Add(c);
+            }
+        }
+        if (candidates.Count == 0) return;
+
+        // 2. серед них ті, що втратили вертикальну опору
+        var unsupported = new HashSet<Vector3Int>();
+        foreach (var c in candidates)
+            if (!GroundColumnSupported(c)) unsupported.Add(c);
+        if (unsupported.Count == 0) return;
+
+        // 3. нависання в межах groundOverhang тримається за вокселі збоку (горизонтальні напрямки: 0, 1, 4, 5)
+        var dist = new Dictionary<Vector3Int, int>();
+        var queue = new Queue<Vector3Int>();
+        foreach (var u in unsupported)
+            for (int i = 0; i < 6; i++)
+            {
+                if (i == 2 || i == 3) continue;
+                Vector3Int w = u + Dirs[i];
+                if (unsupported.Contains(w) || GetVoxel(w) == 0) continue;
+                dist[u] = 1;
+                queue.Enqueue(u);
+                break;
+            }
+        while (queue.Count > 0)
+        {
+            Vector3Int p = queue.Dequeue();
+            int d = dist[p];
+            if (d >= groundOverhang) continue;
+            for (int i = 0; i < 6; i++)
+            {
+                if (i == 2 || i == 3) continue;
+                Vector3Int w = p + Dirs[i];
+                if (unsupported.Contains(w) && !dist.ContainsKey(w))
+                {
+                    dist[w] = d + 1;
+                    queue.Enqueue(w);
+                }
+            }
+        }
+
+        var falling = new HashSet<Vector3Int>();
+        foreach (var u in unsupported)
+            if (!dist.ContainsKey(u)) falling.Add(u);
+        if (falling.Count == 0) return;
+
+        // 4. ділимо на окремі шматки
+        var seen = new HashSet<Vector3Int>();
+        var crumbs = new List<RemovedVoxel>();
+        foreach (var start in falling)
+        {
+            if (!seen.Add(start)) continue;
+
+            var island = new HashSet<Vector3Int> { start };
+            queue.Enqueue(start);
+            while (queue.Count > 0)
+            {
+                Vector3Int p = queue.Dequeue();
+                for (int i = 0; i < 6; i++)
+                {
+                    Vector3Int m = p + Dirs[i];
+                    if (falling.Contains(m) && seen.Add(m))
+                    {
+                        island.Add(m);
+                        queue.Enqueue(m);
+                    }
+                }
+            }
+
+            removedGrid.AddRange(island);
+
+            if (island.Count < 4)
+            {
+                // зовсім дрібне просто розсипається уламками
+                foreach (var g in island)
+                {
+                    crumbs.Add(new RemovedVoxel
+                    {
+                        position = transform.TransformPoint(new Vector3(g.x + 0.5f, g.y + 0.5f, g.z + 0.5f) * voxelSize),
+                        id = GetVoxel(g)
+                    });
+                    SetVoxel(g, 0);
+                }
+            }
+            else if (island.Count <= maxPieceVoxels)
+            {
+                CreatePiece(island);
+            }
+        }
+
+        if (crumbs.Count > 0) SpawnDebris(crumbs, crumbs[0].position, Vector3.zero);
+    }
 
     // Запас опори кожного вокселя: maxOverhang на землі, вгору не зменшується,
     // вбік і вниз зменшується на 1. Менше 0 означає, що воксель висить у повітрі.
