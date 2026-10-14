@@ -45,6 +45,14 @@ public class VoxelWorld : MonoBehaviour
     public float debrisScale = 0.9f;
     public float debrisSpread = 4f;
 
+    [Header("Ґрунт (воксельна земля)")]
+    [Tooltip("Вмикається автоматично, коли MountainMapGenerator насипає воксельну землю нижче y = 0. " +
+             "Тоді вокселі з y < 0 це земля, а не споруда: вони не беруть участі в перевірці обвалу, " +
+             "а споруда на y = 0 тримається, поки під нею лишається земля")]
+    public bool voxelGround = false;
+    [Tooltip("Яка частка уламків із землі лишається (0.3 = 30%). Менше = камінь менше росте від копання землі")]
+    [Range(0f, 1f)] public float groundDebrisChance = 0.3f;
+
     [System.Serializable]
     public struct MaterialRule
     {
@@ -292,7 +300,7 @@ public class VoxelWorld : MonoBehaviour
             for (int i = 0; i < 6; i++)
             {
                 Vector3Int n = g + Dirs[i];
-                if (GetVoxel(n) == 0 || !after.Add(n)) continue;
+                if (IsGroundCell(n) || GetVoxel(n) == 0 || !after.Add(n)) continue;
 
                 queue.Enqueue(n);
                 while (queue.Count > 0)
@@ -301,7 +309,7 @@ public class VoxelWorld : MonoBehaviour
                     for (int j = 0; j < 6; j++)
                     {
                         Vector3Int m = p + Dirs[j];
-                        if (GetVoxel(m) != 0 && after.Add(m)) queue.Enqueue(m);
+                        if (!IsGroundCell(m) && GetVoxel(m) != 0 && after.Add(m)) queue.Enqueue(m);
                     }
                     if (after.Count > maxPieceVoxels) return;   // надто велика споруда, не перевіряємо
                 }
@@ -352,6 +360,9 @@ public class VoxelWorld : MonoBehaviour
         foreach (var island in islands) CreatePiece(island);
     }
 
+    // Клітинка належить воксельній землі (нижче y = 0), якщо земля увімкнена
+    bool IsGroundCell(Vector3Int g) => voxelGround && g.y < 0;
+
     // Запас опори кожного вокселя: maxOverhang на землі, вгору не зменшується,
     // вбік і вниз зменшується на 1. Менше 0 означає, що воксель висить у повітрі.
     Dictionary<Vector3Int, int> ComputeSupport(HashSet<Vector3Int> set)
@@ -364,11 +375,14 @@ public class VoxelWorld : MonoBehaviour
         for (int i = 0; i <= max; i++) buckets[i] = new List<Vector3Int>();
 
         foreach (var g in set)
-            if (g.y <= 0)
-            {
-                budget[g] = max;
-                buckets[max].Add(g);
-            }
+        {
+            // y < 0: земля. y = 0: опора, якщо без воксельної землі, або якщо під вокселем лишилась земля
+            bool root = g.y < 0 || (g.y == 0 && (!voxelGround || GetVoxel(g + Vector3Int.down) != 0));
+            if (!root) continue;
+
+            budget[g] = max;
+            buckets[max].Add(g);
+        }
 
         for (int b = max; b >= 0; b--)
         {
@@ -451,6 +465,11 @@ public class VoxelWorld : MonoBehaviour
         for (int k = 0; k < count; k++)
         {
             var v = removed[Mathf.Min(removed.Count - 1, (int)(k * step))];
+
+            // з землі летить менше уламків, щоб камінь не ріс лише від копання
+            if (voxelGround && transform.InverseTransformPoint(v.position).y < 0f && Random.value > groundDebrisChance)
+                continue;
+
             Rigidbody d = GetDebris();
 
             d.transform.position = v.position;

@@ -22,16 +22,38 @@ public class VoxelDestroyer : MonoBehaviour
     [Range(0f, 1f)] public float speedKeep = 0.85f;
     public float hitCooldown = 0.05f;
 
+    [Header("Дебаг")]
+    [Tooltip("Писати в Console, коли матеріал надто міцний для поточної стадії")]
+    public bool debugLog = true;
+
     Rigidbody rb;
     RockAbsorber absorber;
     Vector3 lastVelocity;
-    float lastHitTime;
+    float lastHitTime, lastLogTime;
     readonly List<VoxelWorld.RemovedVoxel> removed = new List<VoxelWorld.RemovedVoxel>();
 
     void Awake()
     {
         rb = GetComponent<Rigidbody>();
         absorber = GetComponent<RockAbsorber>();   // необов'язково
+    }
+
+    void OnEnable()
+    {
+        if (world != null) world.HitBlocked += OnHitBlocked;
+    }
+
+    void OnDisable()
+    {
+        if (world != null) world.HitBlocked -= OnHitBlocked;
+    }
+
+    void OnHitBlocked(Vector3 point, int blocked, int removedCount)
+    {
+        if (!debugLog || Time.time - lastLogTime < 0.5f) return;
+        lastLogTime = Time.time;
+        int power = absorber != null ? absorber.Power : int.MaxValue;
+        Debug.Log($"[Rock] Надто міцно: не зламано {blocked} вокселів, зламано {removedCount} (сила каменя {power})", this);
     }
 
     void FixedUpdate()

@@ -37,8 +37,8 @@ public class RockAbsorber : MonoBehaviour
         new RockStage { name = "Скеля",  radiusRatio = 3.2f, power = 4, speedMultiplier = 1.3f, forceMultiplier = 1.5f,  destroyRadiusMultiplier = 1.75f },
         new RockStage { name = "Гора",   radiusRatio = 4.5f, power = 5, speedMultiplier = 1.4f, forceMultiplier = 1.7f,  destroyRadiusMultiplier = 2.1f },
     };
-    [Tooltip("Показати стадію текстом у куті екрана (для налаштування)")]
-    public bool showDebug = false;
+    [Tooltip("Показати стадію у куті екрана (Game view) і писати зміну стадії в Console")]
+    public bool showDebug = true;
 
     [Header("Камера (необов'язково)")]
     public FollowCamera followCamera;
@@ -174,14 +174,36 @@ public class RockAbsorber : MonoBehaviour
 
         if (s == Stage) return;
         Stage = s;
-        if (notify) StageChanged?.Invoke(s);
+        if (notify)
+        {
+            if (showDebug) Debug.Log($"[Rock] Нова стадія {Stage + 1}/{StageCount}: {StageName}, ламає міцність до {Power}", this);
+            StageChanged?.Invoke(s);
+        }
     }
+
+    GUIStyle debugStyle;
 
     void OnGUI()
     {
         if (!showDebug) return;
-        GUI.Label(new Rect(10, 10, 600, 24),
-            $"Стадія {Stage + 1}/{StageCount}: {StageName} | розмір x{SizeRatio:0.00} | ламає міцність до {Power}");
+
+        if (debugStyle == null)
+        {
+            debugStyle = new GUIStyle(GUI.skin.label) { fontSize = 22, fontStyle = FontStyle.Bold };
+            debugStyle.normal.textColor = Color.white;
+        }
+
+        string text = $"Стадія {Stage + 1}/{StageCount}: {StageName}\n" +
+                      $"Розмір x{SizeRatio:0.00} | об'єм {volume:0.0} | ламає міцність до {Power}\n" +
+                      $"Швидкість x{SpeedMultiplier:0.00} | сила x{ForceMultiplier:0.00} | радіус удару x{DestroyRadiusMultiplier:0.00}";
+
+        // темна підкладка, щоб було видно на будь-якому фоні
+        Rect box = new Rect(10, 10, 640, 100);
+        Color old = GUI.color;
+        GUI.color = new Color(0f, 0f, 0f, 0.65f);
+        GUI.DrawTexture(box, Texture2D.whiteTexture);
+        GUI.color = old;
+        GUI.Label(new Rect(box.x + 10, box.y + 6, box.width - 20, box.height - 12), text, debugStyle);
     }
 
     void Suck()
