@@ -3,7 +3,9 @@ using UnityEngine;
 
 // Повісь на камінь. Коли камінь вдаряється у воксельний світ достатньо сильно,
 // у місці удару видаляється куля вокселів, а замість них розлітаються уламки.
-// Налаштування уламків і падіння шматків тепер у VoxelWorld.
+// Якщо на камені є RockAbsorber, радіус руйнування росте разом зі стадією,
+// а матеріали міцніші за поточну силу каменя не ламаються (див. VoxelWorld → Міцність матеріалів).
+// Налаштування уламків і падіння шматків у VoxelWorld.
 [RequireComponent(typeof(Rigidbody))]
 public class VoxelDestroyer : MonoBehaviour
 {
@@ -21,6 +23,7 @@ public class VoxelDestroyer : MonoBehaviour
     public float hitCooldown = 0.05f;
 
     Rigidbody rb;
+    RockAbsorber absorber;
     Vector3 lastVelocity;
     float lastHitTime;
     readonly List<VoxelWorld.RemovedVoxel> removed = new List<VoxelWorld.RemovedVoxel>();
@@ -28,6 +31,7 @@ public class VoxelDestroyer : MonoBehaviour
     void Awake()
     {
         rb = GetComponent<Rigidbody>();
+        absorber = GetComponent<RockAbsorber>();   // необов'язково
     }
 
     void FixedUpdate()
@@ -53,15 +57,18 @@ public class VoxelDestroyer : MonoBehaviour
         if (impact < minImpactSpeed) return;
         lastHitTime = Time.time;
 
-        // сила удару залежить від швидкості й маси
+        // сила удару залежить від швидкості, маси і стадії
+        float radiusMul = absorber != null ? absorber.DestroyRadiusMultiplier : 1f;
+        int power = absorber != null ? absorber.Power : int.MaxValue;
+
         float radius = (baseRadius + impact * radiusPerSpeed) * Mathf.Pow(rb.mass, 1f / 3f);
-        radius = Mathf.Min(radius, maxRadius);
+        radius = Mathf.Min(radius, maxRadius) * radiusMul;
 
         Vector3 center = cp.point - cp.normal * (radius * 0.5f);   // трохи углиб стіни
 
         removed.Clear();
-        int n = world.DestroySphere(center, radius, removed);
-        if (n == 0) return;
+        int n = world.DestroySphere(center, radius, removed, power);
+        if (n == 0) return;   // надто міцне для цієї стадії: камінь просто відскакує
 
         rb.linearVelocity = lastVelocity * speedKeep;   // камінь пробиває, а не зупиняється
         world.SpawnDebris(removed, center, lastVelocity);

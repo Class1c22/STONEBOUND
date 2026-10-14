@@ -26,12 +26,14 @@ public class RockController : MonoBehaviour
 
     Rigidbody rb;
     SphereCollider col;
+    RockAbsorber absorber;   // необов'язково: стадія збільшує швидкість і силу
     bool jumpRequested;
 
     void Awake()
     {
         rb = GetComponent<Rigidbody>();
         col = GetComponent<SphereCollider>();
+        absorber = GetComponent<RockAbsorber>();
 
         // щоб камінь і камера не тремтіли
         rb.interpolation = RigidbodyInterpolation.Interpolate;
@@ -71,8 +73,11 @@ public class RockController : MonoBehaviour
         Vector3 dir = forward * z + right * x;
         if (dir.sqrMagnitude > 1f) dir.Normalize();
 
-        float accel = moveAcceleration * (sprint ? sprintAccelerationMultiplier : 1f);
-        float limit = maxSpeed * (sprint ? sprintMaxSpeedMultiplier : 1f);
+        float forceMul = absorber != null ? absorber.ForceMultiplier : 1f;
+        float speedMul = absorber != null ? absorber.SpeedMultiplier : 1f;
+
+        float accel = moveAcceleration * forceMul * (sprint ? sprintAccelerationMultiplier : 1f);
+        float limit = maxSpeed * speedMul * (sprint ? sprintMaxSpeedMultiplier : 1f);
 
         Vector3 horizontalVelocity = rb.linearVelocity;
         horizontalVelocity.y = 0f;

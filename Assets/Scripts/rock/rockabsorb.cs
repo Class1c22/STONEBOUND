@@ -28,6 +28,18 @@ public class RockAbsorber : MonoBehaviour
     [Tooltip("Скільки фігур одночасно лишається видимими на поверхні (старі зникають, об'єм лишається)")]
     public int maxAttached = 300;
 
+    [Header("Стадії розміру (за зростанням radiusRatio)")]
+    public List<RockStage> stages = new List<RockStage>
+    {
+        new RockStage { name = "Камінь", radiusRatio = 1.0f, power = 1, speedMultiplier = 1.0f, forceMultiplier = 1.0f,  destroyRadiusMultiplier = 1.0f },
+        new RockStage { name = "Валун",  radiusRatio = 1.5f, power = 2, speedMultiplier = 1.1f, forceMultiplier = 1.15f, destroyRadiusMultiplier = 1.2f },
+        new RockStage { name = "Брила",  radiusRatio = 2.2f, power = 3, speedMultiplier = 1.2f, forceMultiplier = 1.3f,  destroyRadiusMultiplier = 1.45f },
+        new RockStage { name = "Скеля",  radiusRatio = 3.2f, power = 4, speedMultiplier = 1.3f, forceMultiplier = 1.5f,  destroyRadiusMultiplier = 1.75f },
+        new RockStage { name = "Гора",   radiusRatio = 4.5f, power = 5, speedMultiplier = 1.4f, forceMultiplier = 1.7f,  destroyRadiusMultiplier = 2.1f },
+    };
+    [Tooltip("Показати стадію текстом у куті екрана (для налаштування)")]
+    public bool showDebug = false;
+
     [Header("Камера (необов'язково)")]
     public FollowCamera followCamera;
     [Range(0f, 1f)] public float cameraFollowsGrowth = 0.8f;
@@ -35,6 +47,31 @@ public class RockAbsorber : MonoBehaviour
     public float Radius => currentRadius;
     public float Volume => volume;
     public Vector3 WorldCenter => Center;
+
+    // ---- стадії ----
+    public event System.Action<int> StageChanged;
+    public int Stage { get; private set; }
+    public int StageCount => stages != null ? stages.Count : 0;
+    public string StageName => Cur.name;
+    public int Power => Cur.power;                                   // яку міцність ламає
+    public float SpeedMultiplier => Cur.speedMultiplier;
+    public float ForceMultiplier => Cur.forceMultiplier;
+    public float DestroyRadiusMultiplier => Cur.destroyRadiusMultiplier;
+    public float SizeRatio => currentRadius / startRadius;
+
+    // Прогрес до наступної стадії (0..1), для шкали в UI. На останній стадії = 1
+    public float StageProgress
+    {
+        get
+        {
+            if (stages == null || Stage >= stages.Count - 1) return 1f;
+            float a = stages[Stage].radiusRatio, b = stages[Stage + 1].radiusRatio;
+            return Mathf.InverseLerp(a, b, SizeRatio);
+        }
+    }
+
+    static readonly RockStage Fallback = new RockStage { name = "—", power = int.MaxValue };
+    RockStage Cur => stages != null && stages.Count > 0 ? stages[Mathf.Clamp(Stage, 0, stages.Count - 1)] : Fallback;
 
     Rigidbody rb;
     SphereCollider col;
@@ -70,6 +107,8 @@ public class RockAbsorber : MonoBehaviour
             coreBaseLocalPos = coreVisual.localPosition;
         }
         if (followCamera != null) baseCameraDistance = followCamera.distance;
+
+        UpdateStage(false);
     }
 
     void Update()
@@ -120,6 +159,29 @@ public class RockAbsorber : MonoBehaviour
 
         if (followCamera != null)
             followCamera.distance = baseCameraDistance * Mathf.Lerp(1f, ratio, cameraFollowsGrowth);
+
+        UpdateStage();
+    }
+
+    void UpdateStage(bool notify = true)
+    {
+        if (stages == null || stages.Count == 0) return;
+
+        float ratio = currentRadius / startRadius;
+        int s = 0;
+        for (int i = 0; i < stages.Count; i++)
+            if (ratio + 0.0001f >= stages[i].radiusRatio) s = i;
+
+        if (s == Stage) return;
+        Stage = s;
+        if (notify) StageChanged?.Invoke(s);
+    }
+
+    void OnGUI()
+    {
+        if (!showDebug) return;
+        GUI.Label(new Rect(10, 10, 600, 24),
+            $"Стадія {Stage + 1}/{StageCount}: {StageName} | розмір x{SizeRatio:0.00} | ламає міцність до {Power}");
     }
 
     void Suck()

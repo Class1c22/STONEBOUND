@@ -110,6 +110,8 @@ public class RockBlast : MonoBehaviour
         p.radiusPerSpeed = radiusPerSpeed;
         p.maxRadius = maxRadius;
         p.hitsLeft = maxHits;
+        p.power = absorber.Power;                                   // шматки ламають не більше, ніж сам камінь
+        p.radiusMultiplier = absorber.DestroyRadiusMultiplier;
         p.speedKeep = speedKeep;
         p.lifetime = pieceLifetime;
         p.pickupDelay = pickupDelay;
@@ -122,6 +124,8 @@ public class ShedProjectile : MonoBehaviour
     [HideInInspector] public VoxelWorld world;
     [HideInInspector] public float minImpactSpeed, baseRadius, radiusPerSpeed, maxRadius, speedKeep;
     [HideInInspector] public int hitsLeft;
+    [HideInInspector] public int power = int.MaxValue;
+    [HideInInspector] public float radiusMultiplier = 1f;
     [HideInInspector] public float lifetime, pickupDelay;
 
     Rigidbody rb;
@@ -177,11 +181,11 @@ public class ShedProjectile : MonoBehaviour
         float impact = Mathf.Abs(Vector3.Dot(lastVelocity, cp.normal));
         if (impact < minImpactSpeed) return;
 
-        float radius = Mathf.Min(maxRadius, baseRadius + impact * radiusPerSpeed);
+        float radius = Mathf.Min(maxRadius, baseRadius + impact * radiusPerSpeed) * radiusMultiplier;
         Vector3 center = cp.point - cp.normal * (radius * 0.5f);   // трохи углиб стіни
 
         removed.Clear();
-        int n = world.DestroySphere(center, radius, removed);
+        int n = world.DestroySphere(center, radius, removed, power);
         if (n == 0) return;
 
         lastHitTime = Time.time;
