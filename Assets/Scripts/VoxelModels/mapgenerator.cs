@@ -1,10 +1,13 @@
+using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Rendering;
 
-// Луг у кільці неприступних гір.
-//  • Гори (Unity Terrain) не руйнуються: їх не чіпають ні камінь, ні шматки, бо вони не частина VoxelWorld.
+// Луг у кільці неприступних воксельних гір.
+//  • Гори й дно ям це блочний меш (східці з кубів), а не гладкий Terrain. Вони не руйнуються:
+//    це не частина VoxelWorld, тож камінь і шматки їх не чіпають.
 //  • Біля підніжжя стоїть невидима стіна, тому на урвище не заїхати й не заскочити.
-//  • Луг це воксельна земля завтовшки groundDepthVoxels, яку можна копати. Під нею незламна основа
-//    (Terrain), тож глибше за шар землі вирити не можна.
+//  • Луг це воксельна земля завтовшки groundDepthVoxels, яку можна копати. Під нею основа
+//    земляного кольору, що не ламається, тож глибше шару землі вирити не можна.
 // Повісь на порожній GameObject, призначте World, перетягни старий plane у Old Ground, натисни Play.
 // Воксельний світ має стояти в (0, 0, 0) без повороту. Верх землі = y 0, на ньому стоять споруди.
 public class MountainMapGenerator : MonoBehaviour
@@ -14,8 +17,10 @@ public class MountainMapGenerator : MonoBehaviour
     public float mapSize = 600f;
     [Tooltip("Висота найвищих гір над лугом у метрах")]
     public float mountainHeight = 160f;
-    [Tooltip("Роздільність висот: 513 (достатньо), 1025 (детальніше, важче)")]
-    public int heightmapResolution = 513;
+    [Tooltip("Розмір блока гір у метрах: 2 = грубі блоки, 1 = дрібніші (удвічі більше блоків по кожній осі, набагато важче)")]
+    public float mountainBlockSize = 2f;
+    [Tooltip("Скільки стовпців блоків в одному мешi (більше = менше об'єктів, але важчий кожен)")]
+    public int chunkColumns = 50;
 
     [Header("Луг")]
     [Tooltip("Радіус лугу в метрах. Більше = більше воксельної землі, а отже довший старт гри")]
@@ -33,11 +38,10 @@ public class MountainMapGenerator : MonoBehaviour
     [Tooltip("Скільки хребтів на карті (більше = дрібніші й частіші гори)")]
     public float mountainNoiseScale = 3.5f;
     public int seed = 12345;
-
-    [Header("Текстури")]
     [Tooltip("Де починається сніг (частка висоти гір)")]
     [Range(0.4f, 1f)] public float snowLine = 0.72f;
-    public int alphamapResolution = 512;
+    [Tooltip("До якої висоти біля підніжжя блоки зелені (частка висоти гір)")]
+    [Range(0f, 0.2f)] public float grassLine = 0.06f;
 
     [Header("Інше")]
     [Tooltip("Невидима стіна навколо лугу, щоб камінь не міг видертись на урвище")]
@@ -45,115 +49,214 @@ public class MountainMapGenerator : MonoBehaviour
     [Tooltip("Старий plane/земля: вимкнеться, коли створиться карта")]
     public GameObject oldGround;
 
-    public Terrain Terrain { get; private set; }
-
     const float EmbedMeters = 4f;   // воксельна земля заходить під урвище, щоб не було щілини
 
-    void Awake()
+    // палітра блочного рельєфу: індекс = піксель текстури
+    const int GrassStart = 0, GrassCount = 3;
+    const int DirtStart = 3, DirtCount = 2;
+    const int RockStart = 5, RockCount = 4;
+    const int SnowStart = 9, SnowCount = 2;
+
+    static readonly Color32[] Palette =
     {
-        GenerateTerrain();
-    }
+        new Color32(78, 118, 46, 255), new Color32(92, 136, 54, 255), new Color32(68, 106, 42, 255),     // трава
+        new Color32(112, 86, 58, 255), new Color32(96, 72, 48, 255),                                      // земля
+        new Color32(110, 108, 104, 255), new Color32(124, 122, 118, 255),
+        new Color32(96, 94, 92, 255), new Color32(138, 136, 132, 255),                                    // скеля
+        new Color32(236, 240, 246, 255), new Color32(222, 228, 238, 255),                                 // сніг
+    };
+    const int PaletteWidth = 16;
+
+    Vector3 Origin => world != null ? world.transform.position : transform.position;
+    float GroundDepthMeters => world != null ? Mathf.Max(1, groundDepthVoxels) * world.voxelSize : 0f;
 
     void Start()
     {
+        // у Start, щоб VoxelWorld уже встиг створити свій матеріал в Awake
+        GenerateBlockyTerrain();
         if (world != null) FillVoxelGround();
     }
 
-    Vector3 Origin => world != null ? world.transform.position : transform.position;
-
-    float GroundDepthMeters => world != null ? Mathf.Max(1, groundDepthVoxels) * world.voxelSize : 0f;
-
     // ---------------- гори ----------------
 
-    void GenerateTerrain()
+    void GenerateBlockyTerrain()
     {
         if (oldGround != null) oldGround.SetActive(false);
 
-        int res = heightmapResolution;
+        float half = mapSize * 0.5f;
+        int n = Mathf.Max(8, Mathf.RoundToInt(mapSize / Mathf.Max(0.25f, mountainBlockSize)));
+        float cell = mapSize / n;   // справжній розмір блока, щоб карта вкладалась рівно
         float ox = seed * 37.17f + 1000f;
         float oy = seed * 11.93f + 1000f;
-        float half = mapSize * 0.5f;
 
-        // ---------- висоти ----------
-        var heights = new float[res, res];
-        for (int y = 0; y < res; y++)
-        for (int x = 0; x < res; x++)
+        // ---------- висоти у блоках ----------
+        var level = new int[n, n];
+        for (int j = 0; j < n; j++)
+        for (int i = 0; i < n; i++)
         {
-            float u = x / (float)(res - 1) * 2f - 1f;   // -1..1
-            float v = y / (float)(res - 1) * 2f - 1f;
-            float dist = Mathf.Sqrt(u * u + v * v) * half;   // метри від центру
+            float xc = -half + (i + 0.5f) * cell;
+            float zc = -half + (j + 0.5f) * cell;
+            float dist = Mathf.Sqrt(xc * xc + zc * zc);
 
             float t = Mathf.InverseLerp(meadowRadius, meadowRadius + cliffWidth, dist);
-            float m = Mathf.SmoothStep(0f, 1f, t);           // 0 на лузі, 1 у горах
-            if (m <= 0f) { heights[y, x] = 0f; continue; }
+            float m = Mathf.SmoothStep(0f, 1f, t);   // 0 на лузі, 1 у горах
+            if (m <= 0f) { level[i, j] = 0; continue; }
 
-            float n = Ridged(u * mountainNoiseScale + ox, v * mountainNoiseScale + oy);
-            float peak = Mathf.Lerp(minPeakHeight, 1f, n);   // кільце ніде не опускається нижче minPeakHeight
-            heights[y, x] = m * peak;
+            float noise = Ridged(xc / half * mountainNoiseScale + ox, zc / half * mountainNoiseScale + oy);
+            float peak = Mathf.Lerp(minPeakHeight, 1f, noise);   // кільце ніде не опускається нижче minPeakHeight
+            level[i, j] = Mathf.RoundToInt(m * peak * mountainHeight / cell);
         }
 
-        var data = new TerrainData();
-        data.heightmapResolution = res;
-        data.size = new Vector3(mapSize, mountainHeight, mapSize);
-        data.SetHeights(0, 0, heights);
-
-        // ---------- шари текстур і розфарбовка за висотою та нахилом ----------
-        var layers = new TerrainLayer[]
+        // ---------- матеріал: палітра з кольорів, як у VoxelWorld ----------
+        var tex = new Texture2D(PaletteWidth, 1, TextureFormat.RGBA32, false)
         {
-            MakeLayer("Трава", new Color(0.30f, 0.45f, 0.18f), new Color(0.38f, 0.55f, 0.22f), 6f),
-            MakeLayer("Земля", new Color(0.42f, 0.33f, 0.22f), new Color(0.52f, 0.42f, 0.28f), 8f),
-            MakeLayer("Скеля", new Color(0.38f, 0.38f, 0.40f), new Color(0.55f, 0.54f, 0.52f), 10f),
-            MakeLayer("Сніг",  new Color(0.88f, 0.90f, 0.94f), new Color(0.97f, 0.98f, 1.00f), 8f),
+            filterMode = FilterMode.Point,
+            wrapMode = TextureWrapMode.Clamp
         };
-        data.terrainLayers = layers;
-        data.alphamapResolution = alphamapResolution;
+        for (int p = 0; p < PaletteWidth; p++)
+            tex.SetPixel(p, 0, p < Palette.Length ? (Color)Palette[p] : Color.magenta);
+        tex.Apply();
 
-        int ar = alphamapResolution;
-        var maps = new float[ar, ar, 4];
-        for (int y = 0; y < ar; y++)
-        for (int x = 0; x < ar; x++)
-        {
-            float nx = x / (float)(ar - 1);
-            float ny = y / (float)(ar - 1);
-            float h01 = data.GetInterpolatedHeight(nx, ny) / mountainHeight;   // 0..1
-            float slope = data.GetSteepness(nx, ny);                           // градуси
+        Material mat = world != null && world.RuntimeMaterial != null
+            ? new Material(world.RuntimeMaterial)
+            : new Material(Shader.Find("Universal Render Pipeline/Lit"));
+        mat.SetTexture("_BaseMap", tex);
+        mat.SetColor("_BaseColor", Color.white);
+        mat.SetFloat("_Smoothness", 0f);
 
-            float steep = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(28f, 46f, slope));
-            float rockMask = Mathf.Max(steep, Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.32f, 0.55f, h01)));
-            float dirtMask = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.03f, 0.22f, h01));
-            float snowMask = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(snowLine, snowLine + 0.1f, h01))
-                             * (1f - Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(48f, 68f, slope)));
-
-            // сума ваг завжди дорівнює 1
-            float snow = snowMask;
-            float rock = (1f - snow) * rockMask;
-            float dirt = (1f - snow) * (1f - rockMask) * dirtMask;
-            float grass = (1f - snow) * (1f - rockMask) * (1f - dirtMask);
-
-            // під лугом основа з ґрунту: її видно в ямах, коли землю вириють до дна
-            float dx = (nx - 0.5f) * mapSize, dz = (ny - 0.5f) * mapSize;
-            float meadow = 1f - Mathf.SmoothStep(meadowRadius, meadowRadius + 10f, Mathf.Sqrt(dx * dx + dz * dz));
-            grass *= 1f - meadow;
-            rock *= 1f - meadow;
-            snow *= 1f - meadow;
-            dirt = dirt * (1f - meadow) + meadow;
-
-            maps[y, x, 0] = grass;
-            maps[y, x, 1] = dirt;
-            maps[y, x, 2] = rock;
-            maps[y, x, 3] = snow;
-        }
-        data.SetAlphamaps(0, 0, maps);
-
-        // ---------- об'єкт Terrain: центр карти в центрі світу, лужок лежить на дні шару землі ----------
-        GameObject go = Terrain.CreateTerrainGameObject(data);
-        go.name = "Mountain Terrain";
-        go.transform.SetParent(transform, false);
+        // ---------- меші по ділянках ----------
         Vector3 o = Origin;
-        go.transform.position = new Vector3(o.x - half, o.y - GroundDepthMeters, o.z - half);
-        Terrain = go.GetComponent<Terrain>();
+        var root = new GameObject("Blocky Terrain");
+        root.transform.SetParent(transform, false);
+        // нуль висоти рельєфу = дно ям (нижче верху землі на її товщину)
+        root.transform.position = new Vector3(o.x - half, o.y - GroundDepthMeters, o.z - half);
+
+        int cc = Mathf.Max(8, chunkColumns);
+        for (int cz = 0; cz < n; cz += cc)
+        for (int cx = 0; cx < n; cx += cc)
+            BuildChunk(root.transform, mat, level, n, cell, cx, cz, Mathf.Min(cx + cc, n), Mathf.Min(cz + cc, n));
 
         if (invisibleCliffWall) BuildCliffWall();
+    }
+
+    void BuildChunk(Transform parent, Material mat, int[,] level, int n, float cell, int i0, int j0, int i1, int j1)
+    {
+        var verts = new List<Vector3>();
+        var normals = new List<Vector3>();
+        var uvs = new List<Vector2>();
+        var tris = new List<int>();
+
+        float footY = grassLine * mountainHeight;
+        float snowY = snowLine * mountainHeight;
+
+        for (int j = j0; j < j1; j++)
+        for (int i = i0; i < i1; i++)
+        {
+            int L = level[i, j];
+            float x0 = i * cell, x1 = x0 + cell;
+            float z0 = j * cell, z1 = z0 + cell;
+            float top = L * cell;
+            int hash = Hash(i, j);
+
+            // верх блока
+            int topColor;
+            if (L == 0) topColor = DirtStart + hash % DirtCount;                       // дно ям: земля
+            else if (top < footY) topColor = GrassStart + hash % GrassCount;           // підніжжя: трава
+            else if (top < snowY) topColor = RockStart + hash % RockCount;
+            else topColor = SnowStart + hash % SnowCount;
+
+            AddQuad(verts, normals, uvs, tris,
+                new Vector3(x0, top, z0), new Vector3(x0, top, z1), new Vector3(x1, top, z1), new Vector3(x1, top, z0),
+                topColor);
+
+            // стіни до нижчих сусідів (кожну стіну будує вищий стовпець, дублів немає)
+            if (i + 1 < n && level[i + 1, j] < L)
+                Wall(verts, normals, uvs, tris, 0, x1, x1, z0, z1, level[i + 1, j] * cell, top, hash, footY, snowY);
+            if (i - 1 >= 0 && level[i - 1, j] < L)
+                Wall(verts, normals, uvs, tris, 1, x0, x0, z0, z1, level[i - 1, j] * cell, top, hash, footY, snowY);
+            if (j + 1 < n && level[i, j + 1] < L)
+                Wall(verts, normals, uvs, tris, 2, x0, x1, z1, z1, level[i, j + 1] * cell, top, hash, footY, snowY);
+            if (j - 1 >= 0 && level[i, j - 1] < L)
+                Wall(verts, normals, uvs, tris, 3, x0, x1, z0, z0, level[i, j - 1] * cell, top, hash, footY, snowY);
+        }
+
+        var mesh = new Mesh { name = $"Terrain Chunk {i0}_{j0}", indexFormat = IndexFormat.UInt32 };
+        mesh.SetVertices(verts);
+        mesh.SetNormals(normals);
+        mesh.SetUVs(0, uvs);
+        mesh.SetTriangles(tris, 0);
+        mesh.RecalculateBounds();
+
+        var go = new GameObject($"Terrain Chunk {i0}_{j0}");
+        go.transform.SetParent(parent, false);
+        go.AddComponent<MeshFilter>().sharedMesh = mesh;
+        go.AddComponent<MeshRenderer>().sharedMaterial = mat;
+        go.AddComponent<MeshCollider>().sharedMesh = mesh;
+    }
+
+    // Стіна між двома висотами. Ділиться на смуги за кольором: земля внизу, скеля, сніг нагорі
+    void Wall(List<Vector3> v, List<Vector3> nr, List<Vector2> uv, List<int> t,
+              int dir, float xa, float xb, float za, float zb, float yLow, float yHigh,
+              int hash, float footY, float snowY)
+    {
+        float a = yLow;
+        for (int c = 0; c < 3; c++)
+        {
+            float end = yHigh;
+            if (c == 0 && a < footY && footY < yHigh) end = footY;
+            else if (c == 0 && a >= footY) continue;
+            else if (c == 1 && a < snowY && snowY < yHigh) end = snowY;
+            else if (c == 1 && a >= snowY) continue;
+            else if (c == 2 && a >= yHigh) break;
+
+            float mid = (a + end) * 0.5f;
+            int color = mid < footY ? DirtStart + hash % DirtCount
+                      : mid < snowY ? RockStart + (hash + (int)(mid / 3f)) % RockCount
+                      : SnowStart + hash % SnowCount;
+
+            EmitWall(v, nr, uv, t, dir, xa, xb, za, zb, a, end, color);
+            a = end;
+            if (a >= yHigh) break;
+        }
+    }
+
+    void EmitWall(List<Vector3> v, List<Vector3> nr, List<Vector2> uv, List<int> t,
+                  int dir, float xa, float xb, float za, float zb, float y0, float y1, int color)
+    {
+        switch (dir)
+        {
+            case 0:   // +X
+                AddQuad(v, nr, uv, t, new Vector3(xa, y0, za), new Vector3(xa, y1, za), new Vector3(xa, y1, zb), new Vector3(xa, y0, zb), color);
+                break;
+            case 1:   // -X
+                AddQuad(v, nr, uv, t, new Vector3(xa, y0, zb), new Vector3(xa, y1, zb), new Vector3(xa, y1, za), new Vector3(xa, y0, za), color);
+                break;
+            case 2:   // +Z
+                AddQuad(v, nr, uv, t, new Vector3(xb, y0, za), new Vector3(xb, y1, za), new Vector3(xa, y1, za), new Vector3(xa, y0, za), color);
+                break;
+            default:  // -Z
+                AddQuad(v, nr, uv, t, new Vector3(xa, y0, za), new Vector3(xa, y1, za), new Vector3(xb, y1, za), new Vector3(xb, y0, za), color);
+                break;
+        }
+    }
+
+    // Квадрат з плоским освітленням: колір береться з пікселя палітри за індексом
+    static void AddQuad(List<Vector3> v, List<Vector3> nr, List<Vector2> uv, List<int> t,
+                        Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, int color)
+    {
+        int s = v.Count;
+        Vector3 normal = Vector3.Cross(p1 - p0, p2 - p0).normalized;
+        Vector2 uvp = new Vector2((color + 0.5f) / PaletteWidth, 0.5f);
+
+        v.Add(p0); v.Add(p1); v.Add(p2); v.Add(p3);
+        for (int k = 0; k < 4; k++) { nr.Add(normal); uv.Add(uvp); }
+        t.Add(s); t.Add(s + 1); t.Add(s + 2);
+        t.Add(s); t.Add(s + 2); t.Add(s + 3);
+    }
+
+    static int Hash(int x, int z)
+    {
+        unchecked { return (int)(((uint)(x * 73856093) ^ (uint)(z * 19349663)) & 0x7fffffff); }
     }
 
     // Кільце невидимих колайдерів по краю лугу: урвище стає недосяжним
@@ -198,11 +301,11 @@ public class MountainMapGenerator : MonoBehaviour
 
         world.voxelGround = true;
 
-        byte grassA = world.GetOrAddColor(new Color32(78, 118, 46, 255));
-        byte grassB = world.GetOrAddColor(new Color32(92, 136, 54, 255));
-        byte grassC = world.GetOrAddColor(new Color32(68, 106, 42, 255));
-        byte dirtA = world.GetOrAddColor(new Color32(112, 86, 58, 255));
-        byte dirtB = world.GetOrAddColor(new Color32(96, 72, 48, 255));
+        byte grassA = world.GetOrAddColor(Palette[0]);
+        byte grassB = world.GetOrAddColor(Palette[1]);
+        byte grassC = world.GetOrAddColor(Palette[2]);
+        byte dirtA = world.GetOrAddColor(Palette[3]);
+        byte dirtB = world.GetOrAddColor(Palette[4]);
 
         float nx = seed * 5.31f + 300f;
         float nz = seed * 2.77f + 300f;
@@ -241,42 +344,5 @@ public class MountainMapGenerator : MonoBehaviour
             freq *= 2f;
         }
         return sum / norm;
-    }
-
-    static TerrainLayer MakeLayer(string name, Color a, Color b, float tile)
-    {
-        const int size = 128;
-        var tex = new Texture2D(size, size, TextureFormat.RGBA32, true)
-        {
-            wrapMode = TextureWrapMode.Repeat,
-            filterMode = FilterMode.Bilinear,
-            name = name
-        };
-
-        for (int y = 0; y < size; y++)
-        for (int x = 0; x < size; x++)
-        {
-            float n = Tileable(x, y, size, 0.09f) * 0.6f + Tileable(x, y, size, 0.4f) * 0.4f;
-            tex.SetPixel(x, y, Color.Lerp(a, b, n));
-        }
-        tex.Apply();
-
-        return new TerrainLayer
-        {
-            name = name,
-            diffuseTexture = tex,
-            tileSize = new Vector2(tile, tile)
-        };
-    }
-
-    // Шум, що безшовно повторюється (щоб текстура на землі не мала швів)
-    static float Tileable(float x, float y, float size, float scale)
-    {
-        float s = size;
-        float a = Mathf.PerlinNoise(x * scale + 100f, y * scale + 100f);
-        float b = Mathf.PerlinNoise((x - s) * scale + 100f, y * scale + 100f);
-        float c = Mathf.PerlinNoise(x * scale + 100f, (y - s) * scale + 100f);
-        float d = Mathf.PerlinNoise((x - s) * scale + 100f, (y - s) * scale + 100f);
-        return (a * (s - x) * (s - y) + b * x * (s - y) + c * (s - x) * y + d * x * y) / (s * s);
     }
 }
