@@ -471,7 +471,7 @@ ParticleSystem:
     startSize:
       serializedVersion: 2
       minMaxState: 0
-      scalar: 0.05
+      scalar: 0.01
       minScalar: 1
       maxCurve:
         serializedVersion: 2
@@ -10326,8 +10326,7 @@ Transform:
   m_LocalPosition: {x: 62.04612, y: -11.01, z: -20.31881}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
-  m_Children:
-  - {fileID: 2032603332}
+  m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1365930387
@@ -10605,7 +10604,7 @@ PrefabInstance:
   serializedVersion: 2
   m_Modification:
     serializedVersion: 3
-    m_TransformParent: {fileID: 1209053312}
+    m_TransformParent: {fileID: 0}
     m_Modifications:
     - target: {fileID: -8679921383154817045, guid: 8c1c09ebe82f0db4d91254dc0f1bd860, type: 3}
       propertyPath: m_LocalScale.x
@@ -10621,15 +10620,15 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 8c1c09ebe82f0db4d91254dc0f1bd860, type: 3}
       propertyPath: m_LocalPosition.x
-      value: -57.665897
+      value: 4.3802223
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 8c1c09ebe82f0db4d91254dc0f1bd860, type: 3}
       propertyPath: m_LocalPosition.y
-      value: 11.081
+      value: 0.0710001
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 8c1c09ebe82f0db4d91254dc0f1bd860, type: 3}
       propertyPath: m_LocalPosition.z
-      value: 21.755161
+      value: 1.4363518
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: 8c1c09ebe82f0db4d91254dc0f1bd860, type: 3}
       propertyPath: m_LocalRotation.w
@@ -10887,3 +10886,4 @@ SceneRoots:
   - {fileID: 1365930391}
   - {fileID: 1838282995}
   - {fileID: 1209053312}
+  - {fileID: 1911872437}
