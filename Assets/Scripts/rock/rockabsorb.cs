@@ -4,7 +4,8 @@ using UnityEngine.InputSystem;
 
 // Повісь на камінь. Тримай E: камінь притягує до себе уламки й шматки, що менші за нього.
 // Всмоктані фігури прилипають до поверхні як новий шар, а камінь (і його колайдер) росте.
-// Кнопка R (скрипт RockBlast) віддає половину набраного: камінь меншає, а шматки розлітаються.
+// Кнопка R (скрипт RockBlast) віддає частину набраного: камінь меншає, а шматки розлітаються.
+// Нижче початку поточної стадії камінь не меншає: на межі стадії R просто нічого не робить.
 [RequireComponent(typeof(Rigidbody), typeof(SphereCollider))]
 public class RockAbsorber : MonoBehaviour
 {
@@ -57,6 +58,8 @@ public class RockAbsorber : MonoBehaviour
 
     [Tooltip("Якщо вимкнути, стадія не падає після R (тримається по найбільшому досягнутому розміру)")]
     public bool stageCanDrop = true;
+    [Tooltip("Увімкнено: R віддає лише те, що набрано понад початок поточної стадії. Камінь не падає на попередню стадію, а на межі стадії R не діє")]
+    public bool stageFloorOnBlast = true;
     [Tooltip("Показати стадію у куті екрана (Game view) і писати зміну стадії в Console")]
     public bool showDebug = true;
 
@@ -298,21 +301,44 @@ public class RockAbsorber : MonoBehaviour
         targetRadius = Mathf.Pow(volume * 3f / (4f * Mathf.PI), 1f / 3f);
     }
 
-    // Віддає частку набраного об'єму (fraction = 0.5 -> половину того, що камінь з'їв).
-    // Камінь меншає (нижче стартового розміру не опускається), а така ж частка прикріплених
-    // шматків відв'язується від каменя і потрапляє в released. Повертає false, якщо нічого віддавати.
+    // Об'єм, нижче якого R не зменшує камінь: початок найвищої досягнутої стадії (за об'ємом).
+    // Для першої стадії це стартовий об'єм.
+    float BlastFloorVolume()
+    {
+        if (!stageFloorOnBlast || stages == null || stages.Count == 0) return startVolume;
+
+        float ratio = Mathf.Pow(volume / startVolume, 1f / 3f);
+        int s = 0;
+        for (int i = 0; i < stages.Count; i++)
+            if (ratio + 0.0001f >= stages[i].radiusRatio) s = i;
+
+        float r = Mathf.Max(1f, stages[s].radiusRatio);
+        return startVolume * r * r * r;
+    }
+
+    // Віддає частку набраного понад початок поточної стадії (fraction = 0.5 -> половину цього надлишку).
+    // Камінь меншає, але не нижче початку своєї стадії, а відповідна частка прикріплених шматків
+    // відв'язується від каменя і потрапляє в released.
+    // Повертає false, якщо камінь уже на межі стадії і віддавати нічого.
     public bool ShedFraction(float fraction, List<Transform> released)
     {
         fraction = Mathf.Clamp01(fraction);
 
-        float excess = volume - startVolume;
-        if (excess <= startVolume * 0.02f) return false;   // камінь майже нічого не з'їв
+        float floorVolume = BlastFloorVolume();
+        float excess = volume - floorVolume;
+        if (excess <= startVolume * 0.02f) return false;   // на межі стадії: R більше не діє
 
-        volume -= excess * fraction;
+        float totalGained = volume - startVolume;           // усе набране (для частки шматків)
+        float shed = excess * fraction;
+
+        volume -= shed;
         targetRadius = Mathf.Pow(volume * 3f / (4f * Mathf.PI), 1f / 3f);
 
+        // шматків відв'язуємо стільки ж, яку частку всього набраного об'єму віддали
+        float pieceFraction = totalGained > 1e-6f ? Mathf.Clamp01(shed / totalGained) : fraction;
+
         attached.RemoveAll(t => t == null);
-        int take = Mathf.CeilToInt(attached.Count * fraction);
+        int take = Mathf.CeilToInt(attached.Count * pieceFraction);
         for (int i = 0; i < take && attached.Count > 0; i++)
         {
             int idx = Random.Range(0, attached.Count);   // випадкові шматки по всій поверхні

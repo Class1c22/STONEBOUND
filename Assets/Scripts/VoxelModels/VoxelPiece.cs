@@ -112,8 +112,10 @@ public class VoxelPiece : MonoBehaviour
         if (impact < world.pieceBreakSpeed) return;
         immuneUntil = Time.time + 0.1f;
 
+        // радіус залежить від швидкості удару і від розміру шматка: великий шматок розбивається сильніше
+        float sizeRadius = Mathf.Pow(voxels.Count, 1f / 3f) * world.voxelSize * world.pieceBreakSizeFactor;
         float radius = Mathf.Min(world.pieceBreakMaxRadius,
-                                 world.pieceBreakBaseRadius + impact * world.pieceBreakRadiusPerSpeed);
+                                 world.pieceBreakBaseRadius + impact * world.pieceBreakRadiusPerSpeed + sizeRadius);
 
         // шматок, що падає на воксельний світ, трохи ламає і його
         if (world.pieceWorldDamage > 0f && c.collider.GetComponentInParent<VoxelWorld>() == world)

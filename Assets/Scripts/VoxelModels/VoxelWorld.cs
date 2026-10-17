@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -16,17 +17,27 @@ public class VoxelWorld : MonoBehaviour
     [Header("Відламані шматки")]
     [Tooltip("Шматки, що ні з чим не з'єднані із землею, відриваються і падають")]
     public bool detachFloating = true;
-    [Tooltip("Наскільки далеко (у вокселях) конструкція може триматися «на вазі» без опори знизу. Менше = крихкіші арки й навіси")]
-    public int maxOverhang = 8;
+    [Tooltip("Наскільки далеко (у вокселях) конструкція може триматися «на вазі» без опори знизу. " +
+             "0 = найсуворіша гравітація: тримається лише те, під чим є суцільний стовпчик вокселів до землі. " +
+             "Більше = міцніші арки й навіси. ВАЖЛИВО: у вже доданому на сцену компоненті значення з інспектора " +
+             "має пріоритет над цим, тому змінюй його там")]
+    public int maxOverhang = 2;
+    [Tooltip("Якщо вимкнено, шматок, що висів у повітрі ще до руйнування (не через удар), лишається висіти. " +
+             "Увімкнено = будь-що без опори падає, звідки б воно не взялося")]
+    public bool fallEvenIfAlreadyFloating = true;
+    [Tooltip("Один раз після старту перевірити весь світ: усе, що висить у повітрі, одразу падає")]
+    public bool settleOnStart = true;
     [Tooltip("Якщо шматок більший за це число вокселів, він вважається міцним і не падає (захист від лагів)")]
     public int maxPieceVoxels = 100000;
     [Tooltip("Скільки падаючих шматків живе одночасно (найстаріші зникають)")]
     public int maxPieces = 80;
 
     [Header("Падіння шматків")]
-    [Tooltip("Мінімальна швидкість удару, при якій шматок ламається")]
-    public float pieceBreakSpeed = 6f;
+    [Tooltip("Мінімальна швидкість удару, при якій шматок ламається. 2.5 м/с = падіння з ~30 см, тобто ламається майже завжди")]
+    public float pieceBreakSpeed = 2.5f;
     public float pieceBreakBaseRadius = 0.4f;
+    [Tooltip("Скільки радіуса додає розмір шматка (більший шматок ламається сильніше)")]
+    public float pieceBreakSizeFactor = 0.15f;
     [Tooltip("Скільки радіуса додає кожен м/с швидкості удару")]
     public float pieceBreakRadiusPerSpeed = 0.05f;
     public float pieceBreakMaxRadius = 2f;
@@ -57,6 +68,33 @@ public class VoxelWorld : MonoBehaviour
     [Tooltip("Нижній шар воксельної землі. Задає MountainMapGenerator. Нижче нього основа, що не ламається")]
     public int groundBottomY = -6;
 
+    [System.Serializable]
+    public struct MaterialRule
+    {
+        public string name;
+        [Tooltip("Колір матеріалу (як у палітрі моделі)")]
+        public Color color;
+        [Tooltip("Наскільки колір воксела може відрізнятися від цього (0..1)")]
+        [Range(0f, 1f)] public float tolerance;
+        [Tooltip("Міцність: 1 = дерево, 2 = цегла, 3 = бетон... Камінь ламає матеріал, якщо його сила >= міцності")]
+        public int hardness;
+    }
+
+    [Header("Міцність матеріалів")]
+    [Tooltip("Міцність вокселя, колір якого не підійшов до жодного правила")]
+    public int defaultHardness = 1;
+    [Tooltip("Правила за кольором: найближчий колір у межах tolerance визначає міцність")]
+    public List<MaterialRule> materialRules = new List<MaterialRule>
+    {
+        new MaterialRule { name = "Дерево", color = new Color(0.43f, 0.27f, 0.18f), tolerance = 0.2f,  hardness = 1 },
+        new MaterialRule { name = "Цегла",  color = new Color(0.63f, 0.25f, 0.20f), tolerance = 0.18f, hardness = 2 },
+        new MaterialRule { name = "Бетон",  color = new Color(0.45f, 0.45f, 0.45f), tolerance = 0.12f, hardness = 3 },
+        new MaterialRule { name = "Метал",  color = new Color(0.27f, 0.33f, 0.41f), tolerance = 0.15f, hardness = 4 },
+    };
+
+    // (точка удару, скільки вокселів не вдалося зламати через міцність, скільки зламано)
+    public event System.Action<Vector3, int, int> HitBlocked;
+
     public struct RemovedVoxel
     {
         public Vector3 position;
@@ -74,6 +112,7 @@ public class VoxelWorld : MonoBehaviour
     readonly Color32[] palette = new Color32[256];
     readonly Dictionary<uint, byte> paletteLookup = new Dictionary<uint, byte>();
     int paletteCount;
+    readonly byte[] hardness = new byte[256];   // міцність за індексом палітри
     bool paletteDirty = true;
     Texture2D paletteTexture;
 
@@ -85,6 +124,19 @@ public class VoxelWorld : MonoBehaviour
         new Vector3Int(0, 1, 0), new Vector3Int(0, -1, 0),
         new Vector3Int(0, 0, 1), new Vector3Int(0, 0, -1),
     };
+
+    void Start()
+    {
+        if (settleOnStart && detachFloating) StartCoroutine(SettleRoutine());
+    }
+
+    IEnumerator SettleRoutine()
+    {
+        // чекаємо, поки білдери (VoxelTestBuilder, LoadVox...) розставлять вокселі у своєму Start
+        yield return null;
+        yield return null;
+        SettleAll();
+    }
 
     void Awake()
     {
@@ -113,12 +165,40 @@ public class VoxelWorld : MonoBehaviour
 
         paletteCount++;
         palette[paletteCount] = new Color32(c.r, c.g, c.b, 255);
+        hardness[paletteCount] = (byte)ComputeHardness(c);
         paletteLookup[key] = (byte)paletteCount;
         paletteDirty = true;
         return (byte)paletteCount;
     }
 
     public Color32 GetColor(byte id) => palette[id];
+
+    public int GetHardness(byte id) => hardness[id];
+
+    // Викликай, якщо змінив materialRules вже після завантаження моделей
+    public void RecomputeHardness()
+    {
+        for (int i = 1; i <= paletteCount; i++) hardness[i] = (byte)ComputeHardness(palette[i]);
+    }
+
+    int ComputeHardness(Color32 c)
+    {
+        int best = defaultHardness;
+        float bestDist = float.MaxValue;
+        if (materialRules != null)
+        {
+            for (int i = 0; i < materialRules.Count; i++)
+            {
+                MaterialRule r = materialRules[i];
+                float dr = c.r / 255f - r.color.r;
+                float dg = c.g / 255f - r.color.g;
+                float db = c.b / 255f - r.color.b;
+                float d = Mathf.Sqrt(dr * dr + dg * dg + db * db);
+                if (d <= r.tolerance && d < bestDist) { bestDist = d; best = r.hardness; }
+            }
+        }
+        return Mathf.Clamp(best, 0, 255);
+    }
 
     // ---------- координати ----------
 
@@ -177,8 +257,9 @@ public class VoxelWorld : MonoBehaviour
 
     // ---------- руйнування ----------
 
-    // Видаляє всі вокселі в кулі. Повертає кількість видалених.
-    public int DestroySphere(Vector3 worldCenter, float worldRadius, List<RemovedVoxel> removed = null)
+    // Видаляє всі вокселі в кулі, міцність яких не більша за power. Повертає кількість видалених.
+    // Без power ламає все (так руйнують шматки, що падають).
+    public int DestroySphere(Vector3 worldCenter, float worldRadius, List<RemovedVoxel> removed = null, int power = int.MaxValue)
     {
         Vector3 c = transform.InverseTransformPoint(worldCenter) / voxelSize;   // у координатах вокселів
         float r = worldRadius / voxelSize;
@@ -188,6 +269,7 @@ public class VoxelWorld : MonoBehaviour
         Vector3Int max = new Vector3Int(Mathf.FloorToInt(c.x + r), Mathf.FloorToInt(c.y + r), Mathf.FloorToInt(c.z + r));
 
         int count = 0;
+        int blocked = 0;
         var removedGrid = new List<Vector3Int>();
         for (int z = min.z; z <= max.z; z++)
         for (int y = min.y; y <= max.y; y++)
@@ -203,6 +285,9 @@ public class VoxelWorld : MonoBehaviour
             Vector3Int l = g - cc * ChunkSize;
             byte id = chunk.Get(l.x, l.y, l.z);
             if (id == 0) continue;
+
+            // надто міцний матеріал для цієї сили: воксель лишається
+            if (hardness[id] > power) { blocked++; continue; }
 
             chunk.Set(l.x, l.y, l.z, 0);
             dirty.Add(chunk);
@@ -228,6 +313,8 @@ public class VoxelWorld : MonoBehaviour
 
         if (detachFloating && count > 0)
             DetachFloating(removedGrid);
+
+        if (blocked > 0) HitBlocked?.Invoke(worldCenter, blocked, count);
 
         return count;
     }
@@ -300,10 +387,86 @@ public class VoxelWorld : MonoBehaviour
                     }
                 }
             }
-            if (lostSupport) islands.Add(island);
+            if (lostSupport || fallEvenIfAlreadyFloating) islands.Add(island);
         }
 
         foreach (var island in islands) CreatePiece(island);
+    }
+
+    // Перевіряє ВЕСЬ світ: кожен воксель без опори (з урахуванням maxOverhang) відривається і падає.
+    // Можна викликати вручну, наприклад після того, як ти розставив вокселі кодом.
+    public void SettleAll()
+    {
+        if (!detachFloating) return;
+
+        // 1. усі непорожні вокселі світу (воксельна земля не рахується)
+        var all = new HashSet<Vector3Int>();
+        foreach (var kv in chunks)
+        {
+            Vector3Int baseG = kv.Key * ChunkSize;
+            VoxelChunk chunk = kv.Value;
+            for (int z = 0; z < ChunkSize; z++)
+            for (int y = 0; y < ChunkSize; y++)
+            for (int x = 0; x < ChunkSize; x++)
+            {
+                if (chunk.Get(x, y, z) == 0) continue;
+                Vector3Int g = baseG + new Vector3Int(x, y, z);
+                if (!IsGroundCell(g)) all.Add(g);
+            }
+        }
+        if (all.Count == 0) return;
+
+        // 2. що висить у повітрі
+        var support = ComputeSupport(all);
+        var unsupported = new HashSet<Vector3Int>();
+        foreach (var kv in support)
+            if (kv.Value < 0) unsupported.Add(kv.Key);
+        if (unsupported.Count == 0) return;
+
+        // 3. ділимо на окремі шматки
+        var seen = new HashSet<Vector3Int>();
+        var queue = new Queue<Vector3Int>();
+        var crumbs = new List<RemovedVoxel>();
+        foreach (var start in unsupported)
+        {
+            if (!seen.Add(start)) continue;
+
+            var island = new HashSet<Vector3Int> { start };
+            queue.Enqueue(start);
+            while (queue.Count > 0)
+            {
+                Vector3Int p = queue.Dequeue();
+                for (int j = 0; j < 6; j++)
+                {
+                    Vector3Int m = p + Dirs[j];
+                    if (unsupported.Contains(m) && seen.Add(m))
+                    {
+                        island.Add(m);
+                        queue.Enqueue(m);
+                    }
+                }
+            }
+
+            if (island.Count < 4)
+            {
+                // зовсім дрібне просто розсипається уламками
+                foreach (var g in island)
+                {
+                    crumbs.Add(new RemovedVoxel
+                    {
+                        position = transform.TransformPoint(new Vector3(g.x + 0.5f, g.y + 0.5f, g.z + 0.5f) * voxelSize),
+                        id = GetVoxel(g)
+                    });
+                    SetVoxel(g, 0);
+                }
+            }
+            else if (island.Count <= maxPieceVoxels)
+            {
+                CreatePiece(island);
+            }
+        }
+
+        if (crumbs.Count > 0) SpawnDebris(crumbs, crumbs[0].position, Vector3.zero);
     }
 
     // Клітинка належить воксельній землі (нижче y = 0), якщо земля увімкнена
