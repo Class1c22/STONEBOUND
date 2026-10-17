@@ -226,7 +226,7 @@ ParticleSystem:
   m_GameObject: {fileID: 256241387}
   serializedVersion: 8
   lengthInSec: 1
-  simulationSpeed: 1
+  simulationSpeed: 5
   stopAction: 0
   cullingMode: 0
   ringBufferMode: 0
@@ -471,7 +471,7 @@ ParticleSystem:
     startSize:
       serializedVersion: 2
       minMaxState: 0
-      scalar: 3.21
+      scalar: 0.03
       minScalar: 1
       maxCurve:
         serializedVersion: 2
@@ -1054,7 +1054,7 @@ ParticleSystem:
     rateOverTime:
       serializedVersion: 2
       minMaxState: 0
-      scalar: 50
+      scalar: 10
       minScalar: 10
       maxCurve:
         serializedVersion: 2
@@ -10298,37 +10298,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 1838282995}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &1209053311
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1209053312}
-  m_Layer: 0
-  m_Name: rockmain=
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &1209053312
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1209053311}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 62.04612, y: -11.01, z: -20.31881}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1365930387
 GameObject:
   m_ObjectHideFlags: 0
@@ -10902,5 +10871,4 @@ SceneRoots:
   - {fileID: 832575519}
   - {fileID: 1365930391}
   - {fileID: 1838282995}
-  - {fileID: 1209053312}
   - {fileID: 1911872437}
