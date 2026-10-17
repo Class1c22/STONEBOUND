@@ -57,33 +57,6 @@ public class VoxelWorld : MonoBehaviour
     [Tooltip("Нижній шар воксельної землі. Задає MountainMapGenerator. Нижче нього основа, що не ламається")]
     public int groundBottomY = -6;
 
-    [System.Serializable]
-    public struct MaterialRule
-    {
-        public string name;
-        [Tooltip("Колір матеріалу (як у палітрі моделі)")]
-        public Color color;
-        [Tooltip("Наскільки колір воксела може відрізнятися від цього (0..1)")]
-        [Range(0f, 1f)] public float tolerance;
-        [Tooltip("Міцність: 1 = дерево, 2 = цегла, 3 = бетон... Камінь ламає матеріал, якщо його сила >= міцності")]
-        public int hardness;
-    }
-
-    [Header("Міцність матеріалів")]
-    [Tooltip("Міцність вокселя, колір якого не підійшов до жодного правила")]
-    public int defaultHardness = 1;
-    [Tooltip("Правила за кольором: найближчий колір у межах tolerance визначає міцність")]
-    public List<MaterialRule> materialRules = new List<MaterialRule>
-    {
-        new MaterialRule { name = "Дерево", color = new Color(0.43f, 0.27f, 0.18f), tolerance = 0.2f,  hardness = 1 },
-        new MaterialRule { name = "Цегла",  color = new Color(0.63f, 0.25f, 0.20f), tolerance = 0.18f, hardness = 2 },
-        new MaterialRule { name = "Бетон",  color = new Color(0.45f, 0.45f, 0.45f), tolerance = 0.12f, hardness = 3 },
-        new MaterialRule { name = "Метал",  color = new Color(0.27f, 0.33f, 0.41f), tolerance = 0.15f, hardness = 4 },
-    };
-
-    // (точка удару, скільки вокселів не вдалося зламати через міцність, скільки зламано)
-    public event System.Action<Vector3, int, int> HitBlocked;
-
     public struct RemovedVoxel
     {
         public Vector3 position;
@@ -101,7 +74,6 @@ public class VoxelWorld : MonoBehaviour
     readonly Color32[] palette = new Color32[256];
     readonly Dictionary<uint, byte> paletteLookup = new Dictionary<uint, byte>();
     int paletteCount;
-    readonly byte[] hardness = new byte[256];   // міцність за індексом палітри
     bool paletteDirty = true;
     Texture2D paletteTexture;
 
@@ -141,40 +113,12 @@ public class VoxelWorld : MonoBehaviour
 
         paletteCount++;
         palette[paletteCount] = new Color32(c.r, c.g, c.b, 255);
-        hardness[paletteCount] = (byte)ComputeHardness(c);
         paletteLookup[key] = (byte)paletteCount;
         paletteDirty = true;
         return (byte)paletteCount;
     }
 
     public Color32 GetColor(byte id) => palette[id];
-
-    public int GetHardness(byte id) => hardness[id];
-
-    // Викликай, якщо змінив materialRules вже після завантаження моделей
-    public void RecomputeHardness()
-    {
-        for (int i = 1; i <= paletteCount; i++) hardness[i] = (byte)ComputeHardness(palette[i]);
-    }
-
-    int ComputeHardness(Color32 c)
-    {
-        int best = defaultHardness;
-        float bestDist = float.MaxValue;
-        if (materialRules != null)
-        {
-            for (int i = 0; i < materialRules.Count; i++)
-            {
-                MaterialRule r = materialRules[i];
-                float dr = c.r / 255f - r.color.r;
-                float dg = c.g / 255f - r.color.g;
-                float db = c.b / 255f - r.color.b;
-                float d = Mathf.Sqrt(dr * dr + dg * dg + db * db);
-                if (d <= r.tolerance && d < bestDist) { bestDist = d; best = r.hardness; }
-            }
-        }
-        return Mathf.Clamp(best, 0, 255);
-    }
 
     // ---------- координати ----------
 
@@ -233,9 +177,8 @@ public class VoxelWorld : MonoBehaviour
 
     // ---------- руйнування ----------
 
-    // Видаляє всі вокселі в кулі, міцність яких не більша за power. Повертає кількість видалених.
-    // Без power ламає все (так руйнують шматки, що падають).
-    public int DestroySphere(Vector3 worldCenter, float worldRadius, List<RemovedVoxel> removed = null, int power = int.MaxValue)
+    // Видаляє всі вокселі в кулі. Повертає кількість видалених.
+    public int DestroySphere(Vector3 worldCenter, float worldRadius, List<RemovedVoxel> removed = null)
     {
         Vector3 c = transform.InverseTransformPoint(worldCenter) / voxelSize;   // у координатах вокселів
         float r = worldRadius / voxelSize;
@@ -245,7 +188,6 @@ public class VoxelWorld : MonoBehaviour
         Vector3Int max = new Vector3Int(Mathf.FloorToInt(c.x + r), Mathf.FloorToInt(c.y + r), Mathf.FloorToInt(c.z + r));
 
         int count = 0;
-        int blocked = 0;
         var removedGrid = new List<Vector3Int>();
         for (int z = min.z; z <= max.z; z++)
         for (int y = min.y; y <= max.y; y++)
@@ -261,9 +203,6 @@ public class VoxelWorld : MonoBehaviour
             Vector3Int l = g - cc * ChunkSize;
             byte id = chunk.Get(l.x, l.y, l.z);
             if (id == 0) continue;
-
-            // надто міцний матеріал для цієї сили: воксель лишається
-            if (hardness[id] > power) { blocked++; continue; }
 
             chunk.Set(l.x, l.y, l.z, 0);
             dirty.Add(chunk);
@@ -289,8 +228,6 @@ public class VoxelWorld : MonoBehaviour
 
         if (detachFloating && count > 0)
             DetachFloating(removedGrid);
-
-        if (blocked > 0) HitBlocked?.Invoke(worldCenter, blocked, count);
 
         return count;
     }

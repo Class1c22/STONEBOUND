@@ -29,14 +29,34 @@ public class RockAbsorber : MonoBehaviour
     public int maxAttached = 300;
 
     [Header("Стадії розміру (за зростанням radiusRatio)")]
-    public List<RockStage> stages = new List<RockStage>
+    public List<RockStage> stages = DefaultStages();
+
+    // Стандартні стадії. Радіус росте як корінь з об'єму: об'єм у стартових = radiusRatio^3.
+    // Щоб підняти стадію, треба з'їсти (radiusRatio^3 - 1) / volumeGain стартових об'ємів.
+    public static List<RockStage> DefaultStages()
     {
-        new RockStage { name = "Камінь", radiusRatio = 1.0f, power = 1, speedMultiplier = 1.0f, forceMultiplier = 1.0f,  destroyRadiusMultiplier = 1.0f },
-        new RockStage { name = "Валун",  radiusRatio = 1.5f, power = 2, speedMultiplier = 1.1f, forceMultiplier = 1.15f, destroyRadiusMultiplier = 1.2f },
-        new RockStage { name = "Брила",  radiusRatio = 2.2f, power = 3, speedMultiplier = 1.2f, forceMultiplier = 1.3f,  destroyRadiusMultiplier = 1.45f },
-        new RockStage { name = "Скеля",  radiusRatio = 3.2f, power = 4, speedMultiplier = 1.3f, forceMultiplier = 1.5f,  destroyRadiusMultiplier = 1.75f },
-        new RockStage { name = "Гора",   radiusRatio = 4.5f, power = 5, speedMultiplier = 1.4f, forceMultiplier = 1.7f,  destroyRadiusMultiplier = 2.1f },
-    };
+        return new List<RockStage>
+        {
+            new RockStage { name = "Камінь", radiusRatio = 1.0f, speedMultiplier = 1.0f, forceMultiplier = 1.0f,  destroyRadiusMultiplier = 1.0f },
+            new RockStage { name = "Валун",  radiusRatio = 1.4f, speedMultiplier = 1.1f, forceMultiplier = 1.15f, destroyRadiusMultiplier = 1.2f },
+            new RockStage { name = "Брила",  radiusRatio = 1.9f, speedMultiplier = 1.2f, forceMultiplier = 1.3f,  destroyRadiusMultiplier = 1.45f },
+            new RockStage { name = "Скеля",  radiusRatio = 2.6f, speedMultiplier = 1.3f, forceMultiplier = 1.5f,  destroyRadiusMultiplier = 1.75f },
+            new RockStage { name = "Гора",   radiusRatio = 3.5f, speedMultiplier = 1.4f, forceMultiplier = 1.7f,  destroyRadiusMultiplier = 2.1f },
+        };
+    }
+
+    // Список стадій зберігається в сцені, тому зміна коду його не оновлює. Натисни на ⋮ компонента -> цей пункт.
+    [ContextMenu("Скинути стадії до стандартних")]
+    void ResetStagesToDefault()
+    {
+        stages = DefaultStages();
+#if UNITY_EDITOR
+        UnityEditor.EditorUtility.SetDirty(this);
+#endif
+    }
+
+    [Tooltip("Якщо вимкнути, стадія не падає після R (тримається по найбільшому досягнутому розміру)")]
+    public bool stageCanDrop = true;
     [Tooltip("Показати стадію у куті екрана (Game view) і писати зміну стадії в Console")]
     public bool showDebug = true;
 
@@ -53,7 +73,6 @@ public class RockAbsorber : MonoBehaviour
     public int Stage { get; private set; }
     public int StageCount => stages != null ? stages.Count : 0;
     public string StageName => Cur.name;
-    public int Power => Cur.power;                                   // яку міцність ламає
     public float SpeedMultiplier => Cur.speedMultiplier;
     public float ForceMultiplier => Cur.forceMultiplier;
     public float DestroyRadiusMultiplier => Cur.destroyRadiusMultiplier;
@@ -70,7 +89,7 @@ public class RockAbsorber : MonoBehaviour
         }
     }
 
-    static readonly RockStage Fallback = new RockStage { name = "—", power = int.MaxValue };
+    static readonly RockStage Fallback = new RockStage { name = "—" };
     RockStage Cur => stages != null && stages.Count > 0 ? stages[Mathf.Clamp(Stage, 0, stages.Count - 1)] : Fallback;
 
     Rigidbody rb;
@@ -113,6 +132,11 @@ public class RockAbsorber : MonoBehaviour
 
     void Update()
     {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        // тест росту: G додає 30% поточного об'єму (у релізній збірці цього коду немає)
+        var dbgKb = Keyboard.current;
+        if (dbgKb != null && dbgKb.gKey.wasPressedThisFrame) DebugGrow(0.3f);
+#endif
         // плавна зміна розміру колайдера (росте повільно, меншає швидко)
         if (!Mathf.Approximately(currentRadius, targetRadius))
         {
@@ -124,6 +148,13 @@ public class RockAbsorber : MonoBehaviour
             // камінь меншає: шматки на поверхні стискаються разом із ним, а не висять у повітрі
             if (currentRadius < prev) PullAttachedIn(currentRadius / prev);
         }
+    }
+
+    // Тестовий приріст об'єму без всмоктування (для налаштування темпу й перевірки переходу між ярусами)
+    public void DebugGrow(float fraction)
+    {
+        volume += volume * fraction;
+        targetRadius = Mathf.Pow(volume * 3f / (4f * Mathf.PI), 1f / 3f);
     }
 
     void PullAttachedIn(float ratio)
@@ -173,10 +204,11 @@ public class RockAbsorber : MonoBehaviour
             if (ratio + 0.0001f >= stages[i].radiusRatio) s = i;
 
         if (s == Stage) return;
+        if (s < Stage && !stageCanDrop) return;
         Stage = s;
         if (notify)
         {
-            if (showDebug) Debug.Log($"[Rock] Нова стадія {Stage + 1}/{StageCount}: {StageName}, ламає міцність до {Power}", this);
+            if (showDebug) Debug.Log($"[Rock] Стадія {Stage + 1}/{StageCount}: {StageName} | час {Time.timeSinceLevelLoad:0}с | з'їдено ×{(volume - startVolume) / startVolume:0.0} стартового об'єму | розмір ×{SizeRatio:0.00}", this);
             StageChanged?.Invoke(s);
         }
     }
@@ -194,7 +226,7 @@ public class RockAbsorber : MonoBehaviour
         }
 
         string text = $"Стадія {Stage + 1}/{StageCount}: {StageName}\n" +
-                      $"Розмір x{SizeRatio:0.00} | об'єм {volume:0.0} | ламає міцність до {Power}\n" +
+                      $"Розмір x{SizeRatio:0.00} | об'єм {volume:0.0}\n" +
                       $"Швидкість x{SpeedMultiplier:0.00} | сила x{ForceMultiplier:0.00} | радіус удару x{DestroyRadiusMultiplier:0.00}";
 
         // темна підкладка, щоб було видно на будь-якому фоні
