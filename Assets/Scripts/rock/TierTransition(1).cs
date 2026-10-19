@@ -13,7 +13,7 @@ using UnityEngine.SceneManagement;
 // 3) анімація 1: хмарки закривають екран;
 // 4) вантажиться наступна сцена (екран закритий);
 // 5) КАМІНЬ І КАМЕРА переносяться в нову сцену (камінь стає на місце заглушки, камера нової сцени видаляється);
-// 6) анімація 2: хмарки розлітаються.
+// 6) анімація 2: хмарки розлітаються, а камера повертається від каменя назад (зворотний відліт).
 //
 // У кожній сцені лишай свій RockAbsorber (з усім обладнанням) і свою камеру як заглушки: звідти беруться
 // позиція старту, відстань камери і посилання на воксельний світ. Так сцену можна запускати й окремо.
@@ -26,12 +26,12 @@ using UnityEngine.SceneManagement;
 //
 // Налаштування аніматорів:
 //  - Update Mode = Unscaled Time (щоб працювали, навіть якщо Time.timeScale = 0);
-//  - стан за замовчуванням: ПОРОЖНІЙ Idle (хмарок не видно, екран чистий), без переходів з нього;
+//  - стан за замовчуванням: ПОРОЖНІЙ (хмарок не видно, екран чистий); перехід з нього на закриття лише за тригером Cover Trigger;
 //  - закриття (Cover Trigger, за замовчуванням "loading"): анімація, що закриває весь екран і лишається в кінці закритою (Loop Time вимкнено);
 //  - розліт (Reveal Trigger, за замовчуванням "loadingrev"): розліт; після нього екран чистий.
-//  Стани Cover State / Reveal State в Inspector лиши порожніми: тоді скрипт запускає анімації тригерами.
-//  Якщо ж заповнити назву стану, він запуститься напряму через Animator.Play (тригери тоді не потрібні).
+//  Скрипт запускає анімації лише тригерами (Animator.SetTrigger), умови переходів між станами налаштовуєш в Animator.
 //  Після кожного переходу скрипт робить Rebind(): аніматор повертається в стан за замовчуванням.
+[DefaultExecutionOrder(1000)]   // LateUpdate після FollowCamera, щоб зворотний підліт камери накладався поверх неї
 public class TierTransition : MonoBehaviour
 {
     public static TierTransition Instance { get; private set; }
@@ -64,6 +64,22 @@ public class TierTransition : MonoBehaviour
     [Tooltip("На скільки градусів розширюється FOV під час відльоту")]
     public float fovBoost = 15f;
 
+    [Header("Повернення камери в новій сцені")]
+    [Tooltip("За скільки секунд камера підлітає назад до каменя, коли хмарки розлітаються (дзеркально до відльоту). 0 = без підльоту. Камінь стоїть, поки камера не повернулась")]
+    public float approachDuration = 1.5f;
+    [Tooltip("На скільки секунд підліт камери стартує РАНІШЕ за розліт хмарок (екран у цей час ще закритий). 0 = одночасно")]
+    public float approachLead = 0.4f;
+
+    [Header("Туман під час відльоту")]
+    [Tooltip("Туман з'являється, коли камера віддаляється, лишається під час завантаження і тане, коли камера підлітає до каменя в новій сцені")]
+    public bool useFog = true;
+    [Tooltip("Колір туману (підбери під небо / колір хмарок)")]
+    public Color fogColor = new Color(0.82f, 0.88f, 0.95f);
+    [Tooltip("Густина туману в кінці відльоту (Exponential Squared). Більше = густіше. Підбери під масштаб сцени")]
+    public float fogDensity = 0.012f;
+    [Tooltip("За яку частку відльоту туман набирає повну густину (0.3 = за перші 30% відльоту). У новій сцені дзеркально: туман тане в останній такій частці підльоту камери")]
+    [Range(0.05f, 1f)] public float fogRamp = 0.35f;
+
     [Header("UI переходу")]
     [Tooltip("Об'єкт (Canvas або його панель) з хмарками. Вимкнений на старті, вмикається на час переходу, потім знову вимикається. НЕ став сюди сам об'єкт із TierTransition")]
     public GameObject transitionUI;
@@ -72,8 +88,6 @@ public class TierTransition : MonoBehaviour
 
     [Header("Хмарки: закрити екран")]
     public Animator coverAnimator;
-    [Tooltip("Назва стану в Animator, що закриває екран. Лиши ПОРОЖНІМ, якщо керуєш тригером")]
-    public string coverState = "";
     [Tooltip("Назва параметра-тригера, що запускає закриття")]
     public string coverTrigger = "loading";
     [Tooltip("Тривалість анімації закриття, секунд (як довжина кліпу)")]
@@ -84,8 +98,6 @@ public class TierTransition : MonoBehaviour
     [Header("Хмарки: розліт у новій сцені")]
     [Tooltip("Може бути той самий Animator, що й вище")]
     public Animator revealAnimator;
-    [Tooltip("Назва стану в Animator, що відкриває екран. Лиши ПОРОЖНІМ, якщо керуєш тригером")]
-    public string revealState = "";
     [Tooltip("Назва параметра-тригера, що запускає розліт")]
     public string revealTrigger = "loadingrev";
     [Tooltip("Тривалість анімації розльоту, секунд (як довжина кліпу)")]
@@ -253,6 +265,10 @@ public class TierTransition : MonoBehaviour
             if (fx != null) fx.enabled = false;                   // щоб не змагався з відльотом за FOV
         }
 
+        bool fogOn = hasRig && useFog;
+        Scene sceneBefore = SceneManager.GetActiveScene();
+        if (fogOn) CaptureFog();
+
         SetUI(true);    // вмикаємо UI до Rebind/Play, бо на неактивному об'єкті Animator не працює
         ResetAnimators();
         Departing?.Invoke();
@@ -273,6 +289,7 @@ public class TierTransition : MonoBehaviour
                 }
                 Apply(rig, carried, Mathf.Clamp01(elapsed / flyDuration));
             }
+            if (fogOn) SetFog(Mathf.Clamp01(elapsed / (flyDuration * Mathf.Max(fogRamp, 0.01f))));
 
             yield return null;
             elapsed += Time.unscaledDeltaTime;
@@ -282,9 +299,10 @@ public class TierTransition : MonoBehaviour
             if (!grown) carried.SetSizeRatio(ratio1);
             Apply(rig, carried, 1f);
         }
+        if (fogOn) SetFog(1f);
 
         // ===== 3. анімація 1: хмарки закривають екран =====
-        Fire(coverAnimator, coverState, coverTrigger);
+        Fire(coverAnimator, coverTrigger);
         yield return new WaitForSecondsRealtime(coverDuration);
         yield return new WaitForSecondsRealtime(holdClosed);
 
@@ -313,8 +331,23 @@ public class TierTransition : MonoBehaviour
         }
 
         // ===== 4. завантаження сцени (екран закритий) =====
+        bool approach = hasRig && carried != null && keptFollow != null && keptCam != null && approachDuration > 0f;
+        bool fogCarry = false;
+
         AsyncOperation op = loader();
         while (!op.isDone) yield return null;
+        if (fogOn)
+        {
+            if (SceneManager.GetActiveScene() == sceneBefore)
+                RestoreFog();                    // сцена не змінилась (завантаження не вдалось): повертаємо старий туман
+            else if (approach)
+            {
+                CaptureFog();                    // налаштування туману нової сцени
+                SetFog(1f);                      // туман лишається, поки камера підлітає, і розсіюється разом із нею
+                fogCarry = true;
+            }
+            // без підльоту камери туман просто зникає: діють налаштування нової сцени
+        }
 
         // ===== 5. прибуття: екран ще закритий, поки нова сцена ініціалізується =====
         yield return null;
@@ -330,10 +363,57 @@ public class TierTransition : MonoBehaviour
             rock = FindFirstObjectByType<RockAbsorber>();
         }
 
-        // ===== 6. анімація 2: хмарки розлітаються =====
-        Revealing?.Invoke();
-        Fire(revealAnimator != null ? revealAnimator : coverAnimator, revealState, revealTrigger);
-        yield return new WaitForSecondsRealtime(revealDuration);
+        // ===== 6. анімація 2: хмарки розлітаються, камера підлітає назад до каменя =====
+        // Підліт камери стартує на approachLead секунд раніше за розліт хмарок.
+        float lead = approach ? Mathf.Max(0f, approachLead) : 0f;
+        bool released = false, revealed = false;
+        if (approach)
+        {
+            approachCam = keptCam;
+            approachRock = carried;
+            approachFov = rig.fov0;
+            approachRise = rig.rise;
+            approachS = 1f;
+            approachActive = true;     // камінь стоїть, поки камера не повернулась
+        }
+        else
+        {
+            ReleaseRock(carried, keptFollow);
+            released = true;
+        }
+
+        float total = Mathf.Max(approach ? approachDuration : 0f, lead + revealDuration);
+        float rt = 0f;
+        while (true)
+        {
+            if (!revealed && rt >= lead)
+            {
+                revealed = true;
+                Revealing?.Invoke();
+                Fire(revealAnimator != null ? revealAnimator : coverAnimator, revealTrigger);
+            }
+
+            if (approach && !released)
+            {
+                float u = Mathf.Clamp01(rt / approachDuration);
+                approachS = 1f - Mathf.SmoothStep(0f, 1f, u);
+                if (fogCarry) SetFog(Mathf.Clamp01((1f - u) / Mathf.Max(fogRamp, 0.01f)));
+                if (u >= 1f)
+                {
+                    approachActive = false;
+                    ReleaseRock(carried, keptFollow);
+                    released = true;
+                    if (fogCarry) { RestoreFog(); fogCarry = false; }
+                }
+            }
+
+            if (rt >= total) break;
+            yield return null;
+            rt += Time.unscaledDeltaTime;
+        }
+        approachActive = false;
+        if (!released) ReleaseRock(carried, keptFollow);
+        if (fogCarry) RestoreFog();
 
         ResetAnimators();   // назад у стан за замовчуванням (екран чистий), готово до наступного переходу
         SetUI(false);       // і ховаємо UI до наступного переходу
@@ -407,8 +487,6 @@ public class TierTransition : MonoBehaviour
                     Destroy(l);
 
             if (cam != null && fov0 > 0f) cam.fieldOfView = fov0;
-            var fx = keepCam.GetComponent<SpeedEffects>();
-            if (fx != null) fx.enabled = true;
         }
         else
         {
@@ -437,8 +515,90 @@ public class TierTransition : MonoBehaviour
 
         var speed = keepCam != null ? keepCam.GetComponent<SpeedEffects>() : FindFirstObjectByType<SpeedEffects>();
         if (speed != null) speed.target = r.GetComponent<Rigidbody>();
+        // камінь розморожується і ефекти швидкості вмикаються пізніше, в ReleaseRock, коли камера повернулась
+    }
 
+    // Камінь знову керований, ефекти швидкості (лінії, FOV) знову вмикаються
+    void ReleaseRock(RockAbsorber r, FollowCamera keepFollow)
+    {
+        if (r == null) return;
         Freeze(r, false);
+        if (keepFollow != null)
+        {
+            var fx = keepFollow.GetComponent<SpeedEffects>();
+            if (fx != null) fx.enabled = true;
+        }
+    }
+
+    // ---------- зворотний підліт камери ----------
+
+    bool approachActive;
+    float approachS, approachFov, approachRise;
+    Camera approachCam;
+    RockAbsorber approachRock;
+
+    // s = 1: камера високо над каменем (кінець відльоту), s = 0: звичайне місце за каменем.
+    // Позицію «вдома» щокадру рахує FollowCamera, ми лише відводимо камеру від неї за тією ж формулою, що й Apply.
+    void LateUpdate()
+    {
+        if (!approachActive || approachCam == null || approachRock == null) return;
+
+        Transform ct = approachCam.transform;
+        Vector3 focus = approachRock.WorldCenter;
+        Vector3 off = ct.position - focus;
+        float dist = Mathf.Max(off.magnitude, 0.1f);
+        Vector3 home = off / dist;
+
+        Vector3 flat = new Vector3(home.x, 0f, home.z);
+        flat = flat.sqrMagnitude > 1e-4f ? flat.normalized : Vector3.back;
+        Vector3 top = (Vector3.up + flat * 0.06f).normalized;
+
+        float s = approachS;
+        float k = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(s * 1.6f));
+        Vector3 dir = Vector3.Slerp(home, top, k).normalized;
+        float d = Mathf.Lerp(dist, dist + approachRise, s * s);
+
+        ct.position = focus + dir * d;
+        ct.rotation = Quaternion.LookRotation(-dir, Vector3.up);
+        approachCam.fieldOfView = approachFov + fovBoost * s;
+    }
+
+    // ---------- туман ----------
+
+    bool fogWas;
+    Color fogColorWas;
+    FogMode fogModeWas;
+    float fogDensityWas, fogStartDensity;
+
+    void CaptureFog()
+    {
+        fogWas = RenderSettings.fog;
+        fogColorWas = RenderSettings.fogColor;
+        fogModeWas = RenderSettings.fogMode;
+        fogDensityWas = RenderSettings.fogDensity;
+
+        // якщо в сцені вже був такий самий туман, плавно підсилюємо його, інакше піднімаємо з нуля
+        fogStartDensity = fogWas && fogModeWas == FogMode.ExponentialSquared ? fogDensityWas : 0f;
+        RenderSettings.fogMode = FogMode.ExponentialSquared;
+        RenderSettings.fogDensity = fogStartDensity;
+        RenderSettings.fog = true;
+    }
+
+    // t = 0..1: прогрес відльоту камери
+    void SetFog(float t)
+    {
+        float s = Mathf.SmoothStep(0f, 1f, t);
+        RenderSettings.fogDensity = Mathf.Lerp(fogStartDensity, fogDensity, s);
+        RenderSettings.fogColor = fogWas ? Color.Lerp(fogColorWas, fogColor, s) : fogColor;
+    }
+
+    // Повертає значення, які зберіг CaptureFog (налаштування сцени, у якій він викликався)
+    void RestoreFog()
+    {
+        RenderSettings.fog = fogWas;
+        RenderSettings.fogColor = fogColorWas;
+        RenderSettings.fogMode = fogModeWas;
+        RenderSettings.fogDensity = fogDensityWas;
     }
 
     // ---------- UI ----------
@@ -451,7 +611,7 @@ public class TierTransition : MonoBehaviour
 
     // ---------- аніматори ----------
 
-    static void Fire(Animator a, string state, string trigger)
+    static void Fire(Animator a, string trigger)
     {
         if (a == null)
         {
@@ -460,19 +620,6 @@ public class TierTransition : MonoBehaviour
         }
         if (!a.gameObject.activeInHierarchy)
             Debug.LogWarning("[TierTransition] Animator '" + a.name + "' неактивний.", a);
-
-        if (!string.IsNullOrEmpty(state))
-        {
-            int hash = Animator.StringToHash(state);
-            if (a.HasState(0, hash))
-            {
-                a.Play(hash, 0, 0f);
-                a.Update(0f);   // перший кадр одразу, без мигання
-                return;
-            }
-            Debug.LogWarning("[TierTransition] У '" + a.name + "' немає стану '" + state + "', пробую тригер '" + trigger + "'.", a);
-        }
-
         if (string.IsNullOrEmpty(trigger)) return;
         if (!HasParameter(a, trigger))
         {
