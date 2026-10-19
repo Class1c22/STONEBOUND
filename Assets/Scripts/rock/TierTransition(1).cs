@@ -65,10 +65,10 @@ public class TierTransition : MonoBehaviour
     public float fovBoost = 15f;
 
     [Header("Повернення камери в новій сцені")]
-    [Tooltip("За скільки секунд камера підлітає назад до каменя, коли хмарки розлітаються (дзеркально до відльоту). 0 = без підльоту. Камінь стоїть, поки камера не повернулась")]
-    public float approachDuration = 1.5f;
+    [Tooltip("Підліт камери в новій сцені дзеркальний до відльоту: така ж тривалість (Fly Duration), той самий рух у зворотний бік. Камінь стоїть, поки камера не повернулась")]
+    public bool approachOnArrive = true;
     [Tooltip("На скільки секунд підліт камери стартує РАНІШЕ за розліт хмарок (екран у цей час ще закритий). 0 = одночасно")]
-    public float approachLead = 0.4f;
+    public float approachLead = 1f;
 
     [Header("Туман під час відльоту")]
     [Tooltip("Туман з'являється, коли камера віддаляється, лишається під час завантаження і тане, коли камера підлітає до каменя в новій сцені")]
@@ -331,7 +331,7 @@ public class TierTransition : MonoBehaviour
         }
 
         // ===== 4. завантаження сцени (екран закритий) =====
-        bool approach = hasRig && carried != null && keptFollow != null && keptCam != null && approachDuration > 0f;
+        bool approach = hasRig && carried != null && keptFollow != null && keptCam != null && approachOnArrive && flyDuration > 0f;
         bool fogCarry = false;
 
         AsyncOperation op = loader();
@@ -382,7 +382,7 @@ public class TierTransition : MonoBehaviour
             released = true;
         }
 
-        float total = Mathf.Max(approach ? approachDuration : 0f, lead + revealDuration);
+        float total = Mathf.Max(approach ? flyDuration : 0f, lead + revealDuration);
         float rt = 0f;
         while (true)
         {
@@ -395,8 +395,8 @@ public class TierTransition : MonoBehaviour
 
             if (approach && !released)
             {
-                float u = Mathf.Clamp01(rt / approachDuration);
-                approachS = 1f - Mathf.SmoothStep(0f, 1f, u);
+                float u = Mathf.Clamp01(rt / flyDuration);
+                approachS = 1f - u;   // той самий рух, що й у відльоті (Apply), але у зворотному напрямку
                 if (fogCarry) SetFog(1f - u);   // дзеркально до відльоту
                 if (u >= 1f)
                 {
