@@ -12249,7 +12249,7 @@ MonoBehaviour:
   revealAnimator: {fileID: 222801954}
   revealState: loadingrev2
   revealTrigger: loadingrev
-  revealDuration: 1.5
+  revealDuration: 0.5
 --- !u!1 &2140901507
 GameObject:
   m_ObjectHideFlags: 0
