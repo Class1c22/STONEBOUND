@@ -77,8 +77,8 @@ public class TierTransition : MonoBehaviour
     public Color fogColor = new Color(0.82f, 0.88f, 0.95f);
     [Tooltip("Густина туману в кінці відльоту (Exponential Squared). Більше = густіше. Підбери під масштаб сцени")]
     public float fogDensity = 0.012f;
-    [Tooltip("За яку частку відльоту туман набирає повну густину (0.3 = за перші 30% відльоту). У новій сцені дзеркально: туман тане в останній такій частці підльоту камери")]
-    [Range(0.05f, 1f)] public float fogRamp = 0.35f;
+    [Tooltip("Скільки першої частини відльоту туману ще немає (0.4 = туман починає з'являтись після 40% відльоту і повністю набирає густину в кінці). У новій сцені дзеркально: туман тане і зникає за цю частку до кінця підльоту камери")]
+    [Range(0f, 0.9f)] public float fogDelay = 0.4f;
 
     [Header("UI переходу")]
     [Tooltip("Об'єкт (Canvas або його панель) з хмарками. Вимкнений на старті, вмикається на час переходу, потім знову вимикається. НЕ став сюди сам об'єкт із TierTransition")]
@@ -289,7 +289,7 @@ public class TierTransition : MonoBehaviour
                 }
                 Apply(rig, carried, Mathf.Clamp01(elapsed / flyDuration));
             }
-            if (fogOn) SetFog(Mathf.Clamp01(elapsed / (flyDuration * Mathf.Max(fogRamp, 0.01f))));
+            if (fogOn) SetFog(Mathf.Clamp01(elapsed / flyDuration));
 
             yield return null;
             elapsed += Time.unscaledDeltaTime;
@@ -397,7 +397,7 @@ public class TierTransition : MonoBehaviour
             {
                 float u = Mathf.Clamp01(rt / approachDuration);
                 approachS = 1f - Mathf.SmoothStep(0f, 1f, u);
-                if (fogCarry) SetFog(Mathf.Clamp01((1f - u) / Mathf.Max(fogRamp, 0.01f)));
+                if (fogCarry) SetFog(1f - u);   // дзеркально до відльоту
                 if (u >= 1f)
                 {
                     approachActive = false;
@@ -584,10 +584,12 @@ public class TierTransition : MonoBehaviour
         RenderSettings.fog = true;
     }
 
-    // t = 0..1: прогрес відльоту камери
+    // t = 0..1: прогрес відльоту камери (у новій сцені: 1 - прогрес підльоту).
+    // Перші fogDelay відльоту туману немає, потім він плавно набирає густину до повної в кінці.
     void SetFog(float t)
     {
-        float s = Mathf.SmoothStep(0f, 1f, t);
+        float d = Mathf.Clamp(fogDelay, 0f, 0.95f);
+        float s = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01((t - d) / (1f - d)));
         RenderSettings.fogDensity = Mathf.Lerp(fogStartDensity, fogDensity, s);
         RenderSettings.fogColor = fogWas ? Color.Lerp(fogColorWas, fogColor, s) : fogColor;
     }
