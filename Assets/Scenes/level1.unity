@@ -356,13 +356,14 @@ GameObject:
   - component: {fileID: 222801953}
   - component: {fileID: 222801952}
   - component: {fileID: 222801951}
+  - component: {fileID: 222801954}
   m_Layer: 0
   m_Name: loading
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &222801950
 RectTransform:
   m_ObjectHideFlags: 0
@@ -460,6 +461,28 @@ Canvas:
   m_SortingLayerID: 0
   m_SortingOrder: 0
   m_TargetDisplay: 0
+--- !u!95 &222801954
+Animator:
+  serializedVersion: 7
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 222801949}
+  m_Enabled: 1
+  m_Avatar: {fileID: 0}
+  m_Controller: {fileID: 9100000, guid: 1d1db5438f0188345b57d69ba5753007, type: 2}
+  m_CullingMode: 0
+  m_UpdateMode: 0
+  m_ApplyRootMotion: 0
+  m_LinearVelocityBlending: 0
+  m_StabilizeFeet: 0
+  m_AnimatePhysics: 0
+  m_WarningMessage: 
+  m_HasTransformHierarchy: 1
+  m_AllowConstantClipSamplingOptimization: 1
+  m_KeepAnimatorStateOnDisable: 0
+  m_WriteDefaultValuesOnDisable: 0
 --- !u!1 &256241387
 GameObject:
   m_ObjectHideFlags: 0
@@ -11841,6 +11864,9 @@ PrefabInstance:
     - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 8c1c09ebe82f0db4d91254dc0f1bd860, type: 3}
       insertIndex: -1
       addedObject: {fileID: 2032603339}
+    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 8c1c09ebe82f0db4d91254dc0f1bd860, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 2032603340}
   m_SourcePrefab: {fileID: 100100000, guid: 8c1c09ebe82f0db4d91254dc0f1bd860, type: 3}
 --- !u!4 &1961571802 stripped
 Transform:
@@ -12041,6 +12067,7 @@ MonoBehaviour:
   growSpeed: 0.05
   shrinkSpeed: 6
   maxAttached: 300
+  growOnlyOnTierUp: 1
   stages:
   - name: "\u041A\u0430\u043C\u0456\u043D\u044C"
     radiusRatio: 1
@@ -12115,6 +12142,38 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::SuctionEffect
   suctionParticles: {fileID: 256241389}
   scaleWithRock: 1
+--- !u!114 &2032603340
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2032603331}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 59e3a40bcd102aa438808c20d0e15ce8, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::TierTransition
+  autoOnTierUp: 1
+  autoDelay: 0.5
+  debugKey: 28
+  flyDuration: 3
+  growDuration: 0.8
+  minRise: 20
+  riseRadiusFactor: 8
+  fovBoost: 15
+  transitionUI: {fileID: 222801949}
+  coverAnimator: {fileID: 222801954}
+  coverState: loading
+  coverTrigger: loading
+  coverDuration: 1.5
+  coverEndsWithFlight: 1
+  coverStartTime: 1.5
+  holdClosed: 0.2
+  revealAnimator: {fileID: 222801954}
+  revealState: loadingrev
+  revealTrigger: loadingrev
+  revealDuration: 1.5
 --- !u!1 &2140901507
 GameObject:
   m_ObjectHideFlags: 0

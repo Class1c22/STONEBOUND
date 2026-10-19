@@ -69,6 +69,8 @@ public class RockAbsorber : MonoBehaviour
 
     [Header("Камера (необов'язково)")]
     public FollowCamera followCamera;
+    // Базова відстань камери для стартового розміру (без урахування росту). Потрібна для переносу камери між сценами.
+    public float BaseCameraDistance => baseCameraDistance;
     [Range(0f, 1f)] public float cameraFollowsGrowth = 0.8f;
 
     public float Radius => currentRadius;
