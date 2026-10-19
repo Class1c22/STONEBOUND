@@ -12238,16 +12238,20 @@ MonoBehaviour:
   minRise: 20
   riseRadiusFactor: 8
   fovBoost: 15
+  approachOnArrive: 1
+  approachLead: 0.4
+  useFog: 1
+  fogColor: {r: 1, g: 1, b: 1, a: 1}
+  fogDensity: 0.08
+  fogDelay: 0.4
   transitionUI: {fileID: 222801949}
   persistentUI:
   - {fileID: 222801949}
   coverAnimator: {fileID: 222801954}
-  coverState: loading1
   coverTrigger: loading
   coverDuration: 1.5
   holdClosed: 0.2
   revealAnimator: {fileID: 222801954}
-  revealState: loadingrev2
   revealTrigger: loadingrev
   revealDuration: 0.5
 --- !u!1 &2140901507
