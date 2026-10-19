@@ -24,6 +24,13 @@ public class FollowCamera : MonoBehaviour
             targetCollider = target.GetComponent<SphereCollider>();
     }
 
+    // Перепризначити ціль у рантаймі (наприклад, камінь, що перейшов у нову сцену)
+    public void SetTarget(Transform t)
+    {
+        target = t;
+        targetCollider = t != null ? t.GetComponent<SphereCollider>() : null;
+    }
+
     // справжній центр кулі (інтерпольований), а не pivot моделі
     Vector3 GetFocusPoint()
     {

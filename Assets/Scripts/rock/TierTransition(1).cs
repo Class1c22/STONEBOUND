@@ -4,12 +4,18 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.SceneManagement;
 
-// Перехід між рівнями (сценами). Хмарки робиш ти в Animator, скрипт лише запускає їх тригерами.
+// Перехід між рівнями (сценами). Хмарки робиш ти в Animator, скрипт лише запускає їх.
 //
-// 1) камінь завмирає, камера віддаляється, а камінь росте разом із нею;
-//    у потрібний момент запускається аніматор «закрити екран хмарками»;
-// 2) коли екран закритий, вантажиться наступна сцена;
-// 3) у новій сцені запускається аніматор «хмарки розлітаються».
+// Камінь під час рівня не росте: об'єм лише накопичується (RockAbsorber.growOnlyOnTierUp).
+// Коли набрано поріг наступної стадії (RockAbsorber.CanTierUp), запускається перехід:
+// 1) камінь завмирає, ОДРАЗУ виростає до наступної стадії, камера віддаляється вгору,
+//    і грається анімація «хмарки закривають екран»;
+// 2) коли екран закритий, вантажиться наступна сцена, а КАМІНЬ ПЕРЕНОСИТЬСЯ в неї
+//    (на місце каменя-заглушки нової сцени; заглушка видаляється, камера й посилання перепризначаються);
+// 3) у новій сцені грається анімація «хмарки розлітаються».
+//
+// У кожній сцені лишай свій RockAbsorber (з усім обладнанням) як заглушку: звідти беруться позиція
+// старту і посилання на воксельний світ. Так сцену можна запускати й окремо.
 //
 // Постав на порожній ROOT-об'єкт у ПЕРШІЙ сцені. Об'єкт переживає завантаження сцен, тому
 // Canvas/хмарки й аніматори роби ДІТЬМИ цього об'єкта (тоді вони теж не зникнуть).
@@ -19,10 +25,11 @@ using UnityEngine.SceneManagement;
 //
 // Налаштування аніматорів:
 //  - Update Mode = Unscaled Time (щоб працювали, навіть якщо Time.timeScale = 0);
-//  - стан за замовчуванням: хмарок не видно (екран чистий);
-//  - Cover: тригер (за замовчуванням "Cover") запускає анімацію, що закриває весь екран і лишається в кінці закритою;
-//  - Reveal: тригер (за замовчуванням "Reveal") запускає розліт; після нього екран чистий.
-//  Можна один Animator зі станами Idle -> Cover -> Reveal -> Idle, а можна два окремих.
+//  - стан за замовчуванням: ПОРОЖНІЙ Idle (хмарок не видно, екран чистий), без переходів з нього;
+//  - Cover State (за замовчуванням "loading"): анімація, що закриває весь екран і лишається в кінці закритою (Loop Time вимкнено);
+//  - Reveal State (за замовчуванням "loadingrev"): розліт; після нього екран чистий.
+//  Скрипт запускає стани за назвою (Animator.Play), параметри й переходи між станами не потрібні.
+//  Якщо натомість заповнити Cover Trigger / Reveal Trigger і лишити назву стану порожньою, використовуються тригери.
 //  Після кожного переходу скрипт робить Rebind(): аніматор повертається в стан за замовчуванням.
 public class TierTransition : MonoBehaviour
 {
@@ -36,17 +43,18 @@ public class TierTransition : MonoBehaviour
     public event Action Finished;       // перехід закінчено
 
     [Header("Запуск")]
-    [Tooltip("Автоперехід, коли камінь тримає останню стадію")]
-    public bool autoAtMaxStage = true;
-    [Tooltip("Скільки секунд камінь має тримати останню стадію (щоб встиг показатись баннер)")]
-    public float autoDelay = 3f;
+    [Tooltip("Автоперехід, щойно набрано поріг наступної стадії")]
+    [UnityEngine.Serialization.FormerlySerializedAs("autoAtMaxStage")]
+    public bool autoOnTierUp = true;
+    [Tooltip("Пауза між досягненням порога і початком переходу, секунд")]
+    public float autoDelay = 0.5f;
     [Tooltip("Тестова кнопка (тільки в Editor і Development build)")]
     public Key debugKey = Key.N;
 
     [Header("Відліт камери")]
     public float flyDuration = 3f;
-    [Tooltip("У скільки разів камінь виростає за час відльоту")]
-    public float rockGrowMultiplier = 2.5f;
+    [Tooltip("За скільки секунд від початку відльоту камінь виростає до наступної стадії (0 = миттєво)")]
+    public float growDuration = 0.8f;
     [Tooltip("Додаткове віддалення камери понад ріст каменя: мінімум, метрів")]
     public float minRise = 20f;
     [Tooltip("Додаткове віддалення = радіус каменя × це число (береться більше з двох)")]
@@ -54,8 +62,14 @@ public class TierTransition : MonoBehaviour
     [Tooltip("На скільки градусів розширюється FOV під час відльоту")]
     public float fovBoost = 15f;
 
+    [Header("UI переходу")]
+    [Tooltip("Об'єкт (Canvas або його панель) з хмарками. Вимкнений на старті, вмикається на час переходу, потім знову вимикається. НЕ став сюди сам об'єкт із TierTransition")]
+    public GameObject transitionUI;
+
     [Header("Хмарки: закрити екран")]
     public Animator coverAnimator;
+    [Tooltip("Назва стану в Animator, що закриває екран. Якщо порожньо, використовується тригер")]
+    public string coverState = "loading";
     public string coverTrigger = "Cover";
     [Tooltip("Тривалість анімації закриття, секунд (як довжина кліпу)")]
     public float coverDuration = 1.5f;
@@ -69,6 +83,8 @@ public class TierTransition : MonoBehaviour
     [Header("Хмарки: розліт у новій сцені")]
     [Tooltip("Може бути той самий Animator, що й вище")]
     public Animator revealAnimator;
+    [Tooltip("Назва стану в Animator, що відкриває екран. Якщо порожньо, використовується тригер")]
+    public string revealState = "loadingrev";
     public string revealTrigger = "Reveal";
     [Tooltip("Тривалість анімації розльоту, секунд (як довжина кліпу)")]
     public float revealDuration = 1.5f;
@@ -78,7 +94,7 @@ public class TierTransition : MonoBehaviour
     {
         public Camera cam;
         public Vector3 dirHome, dirTop;
-        public float distHome, rise, fov0;
+        public float distHome, rise, fov0, radius0;
     }
 
     RockAbsorber rock;
@@ -95,6 +111,7 @@ public class TierTransition : MonoBehaviour
         }
         Instance = this;
         DontDestroyOnLoad(gameObject);
+        SetUI(false);   // на старті гри UI переходу сховано
     }
 
     void OnDestroy()
@@ -117,7 +134,7 @@ public class TierTransition : MonoBehaviour
         if (kb != null && kb[debugKey].wasPressedThisFrame) { GoToNext(); return; }
 #endif
 
-        if (!autoAtMaxStage) return;
+        if (!autoOnTierUp) return;
 
         if (rock == null)
         {
@@ -131,8 +148,7 @@ public class TierTransition : MonoBehaviour
             return;
         }
 
-        bool atMax = rock.StageCount > 0 && rock.Stage >= rock.StageCount - 1;
-        maxTimer = atMax ? maxTimer + Time.deltaTime : 0f;
+        maxTimer = rock.CanTierUp ? maxTimer + Time.deltaTime : 0f;
         if (maxTimer >= autoDelay) GoToNext();
     }
 
@@ -174,31 +190,35 @@ public class TierTransition : MonoBehaviour
         IsBusy = true;
         maxTimer = 0f;
 
+        RockAbsorber carried = rock;
         Camera cam = FindCamera();
         FollowCamera follow = FindFirstObjectByType<FollowCamera>();
-        bool hasRig = rock != null && cam != null;
+        bool hasRig = carried != null && cam != null;
 
         Rig rig = null;
-        Vector3 scale0 = Vector3.one;
+        float ratio0 = 1f, ratio1 = 1f;
         if (hasRig)
         {
-            Freeze(rock, true);
-            scale0 = rock.transform.localScale;
-            rig = BuildRig(cam, rock);
+            Freeze(carried, true);
+            ratio0 = carried.SizeRatio;
+            ratio1 = Mathf.Max(ratio0, carried.NextStageRatio);   // до якого розміру камінь виросте
+            rig = BuildRig(cam, carried, carried.StartRadius * ratio1);
             if (follow != null) follow.enabled = false;
         }
 
         AsyncOperation op = loader();
         op.allowSceneActivation = false;   // вантажимо у фоні, поки летить камера
 
+        SetUI(true);    // вмикаємо UI до Rebind/Play, бо на неактивному об'єкті Animator не працює
         ResetAnimators();
         Departing?.Invoke();
 
-        // ===== відліт: камера віддаляється, камінь росте, хмарки закривають екран =====
+        // ===== відліт: камінь миттєво виростає, камера віддаляється вгору, хмарки закривають екран =====
         float coverAt = coverEndsWithFlight ? Mathf.Max(0f, flyDuration - coverDuration) : coverStartTime;
         bool coverStarted = false;
         float coverStartedAt = 0f;
         float elapsed = 0f;
+        bool grown = ratio1 <= ratio0;
 
         while (elapsed < flyDuration)
         {
@@ -206,23 +226,35 @@ public class TierTransition : MonoBehaviour
             {
                 coverStarted = true;
                 coverStartedAt = Time.unscaledTime;
-                Fire(coverAnimator, coverTrigger);
+                Fire(coverAnimator, coverState, coverTrigger);
             }
 
-            float t = Mathf.Clamp01(elapsed / flyDuration);
-            if (hasRig && rock != null) Apply(rig, scale0, t);
+            if (hasRig && carried != null)
+            {
+                if (!grown)
+                {
+                    float gt = growDuration > 0f ? Mathf.Clamp01(elapsed / growDuration) : 1f;
+                    carried.SetSizeRatio(Mathf.Lerp(ratio0, ratio1, Mathf.SmoothStep(0f, 1f, gt)));
+                    if (gt >= 1f) grown = true;
+                }
+                Apply(rig, carried, Mathf.Clamp01(elapsed / flyDuration));
+            }
 
             yield return null;
             elapsed += Time.unscaledDeltaTime;
         }
-        if (hasRig && rock != null) Apply(rig, scale0, 1f);
+        if (hasRig && carried != null)
+        {
+            if (!grown) carried.SetSizeRatio(ratio1);
+            Apply(rig, carried, 1f);
+        }
 
         // якщо закриття ще не запускалось (coverStartTime більше за політ) або ще триває, чекаємо його кінця
         if (!coverStarted)
         {
             coverStarted = true;
             coverStartedAt = Time.unscaledTime;
-            Fire(coverAnimator, coverTrigger);
+            Fire(coverAnimator, coverState, coverTrigger);
         }
         while (Time.unscaledTime - coverStartedAt < coverDuration) yield return null;
 
@@ -230,6 +262,14 @@ public class TierTransition : MonoBehaviour
         yield return new WaitForSecondsRealtime(holdClosed);
 
         FullyCovered?.Invoke();
+
+        // камінь їде в нову сцену: стає кореневим і не знищується разом зі старою сценою
+        if (carried != null)
+        {
+            carried.transform.SetParent(null, true);
+            DontDestroyOnLoad(carried.gameObject);
+        }
+
         op.allowSceneActivation = true;
         while (!op.isDone) yield return null;
 
@@ -237,23 +277,103 @@ public class TierTransition : MonoBehaviour
         yield return null;
         yield return null;
 
-        rock = FindFirstObjectByType<RockAbsorber>();
+        if (carried != null)
+        {
+            Arrive(carried);
+            rock = carried;
+        }
+        else
+        {
+            rock = FindFirstObjectByType<RockAbsorber>();
+        }
 
         Revealing?.Invoke();
-        Fire(revealAnimator, revealTrigger);
+        Fire(revealAnimator, revealState, revealTrigger);
         yield return new WaitForSecondsRealtime(revealDuration);
 
         ResetAnimators();   // назад у стан за замовчуванням (екран чистий), готово до наступного переходу
+        SetUI(false);       // і ховаємо UI до наступного переходу
         maxTimer = 0f;
         IsBusy = false;
         Finished?.Invoke();
     }
 
+    // Нова сцена вже активна: ставимо камінь на місце заглушки і перепризначаємо посилання.
+    void Arrive(RockAbsorber r)
+    {
+        RockAbsorber spawn = null;
+        foreach (var other in FindObjectsByType<RockAbsorber>(FindObjectsSortMode.None))
+        {
+            if (other == r) continue;
+            if (spawn == null) spawn = other;
+            else Destroy(other.gameObject);
+        }
+
+        VoxelWorld world = null;
+        if (spawn != null)
+        {
+            var d = spawn.GetComponent<VoxelDestroyer>();
+            if (d != null) world = d.world;
+
+            // той самий «низ», що в заглушки: більший камінь піднімається на різницю радіусів
+            Vector3 wanted = spawn.WorldCenter + Vector3.up * (r.Radius - spawn.Radius);
+            r.transform.position += wanted - r.WorldCenter;
+            Destroy(spawn.gameObject);
+        }
+        else
+        {
+            Debug.LogWarning("[TierTransition] У новій сцені немає каменя-заглушки (RockAbsorber): камінь лишився на старих координатах.", this);
+        }
+        Physics.SyncTransforms();
+
+        if (world == null) world = FindFirstObjectByType<VoxelWorld>();
+
+        FollowCamera follow = FindFirstObjectByType<FollowCamera>();
+        Camera cam = FindCamera();
+        if (follow != null)
+        {
+            follow.enabled = true;
+            follow.SetTarget(r.transform);
+            r.RebindCamera(follow);
+        }
+
+        var ctrl = r.GetComponent<RockController>();
+        if (ctrl != null)
+            ctrl.cameraTransform = follow != null ? follow.transform : (cam != null ? cam.transform : null);
+
+        if (world != null)
+        {
+            var destroyer = r.GetComponent<VoxelDestroyer>();
+            if (destroyer != null) destroyer.world = world;
+            var blast = r.GetComponent<RockBlast>();
+            if (blast != null) blast.world = world;
+        }
+
+        var speed = FindFirstObjectByType<SpeedEffects>();
+        if (speed != null) speed.target = r.GetComponent<Rigidbody>();
+
+        Freeze(r, false);
+    }
+
+    // ---------- UI ----------
+
+    void SetUI(bool on)
+    {
+        if (transitionUI != null && transitionUI != gameObject)
+            transitionUI.SetActive(on);
+    }
+
     // ---------- аніматори ----------
 
-    static void Fire(Animator a, string trigger)
+    static void Fire(Animator a, string state, string trigger)
     {
-        if (a == null || string.IsNullOrEmpty(trigger)) return;
+        if (a == null) return;
+        if (!string.IsNullOrEmpty(state))
+        {
+            a.Play(state, 0, 0f);
+            return;
+        }
+        if (string.IsNullOrEmpty(trigger)) return;
         a.ResetTrigger(trigger);
         a.SetTrigger(trigger);
     }
@@ -279,7 +399,7 @@ public class TierTransition : MonoBehaviour
         return c != null ? c : FindFirstObjectByType<Camera>();
     }
 
-    Rig BuildRig(Camera cam, RockAbsorber r)
+    Rig BuildRig(Camera cam, RockAbsorber r, float finalRadius)
     {
         Vector3 focus = r.WorldCenter;
         Vector3 off = cam.transform.position - focus;
@@ -295,20 +415,19 @@ public class TierTransition : MonoBehaviour
             dirHome = home,
             dirTop = (Vector3.up + flat * 0.06f).normalized,   // майже вертикально вгору (без вирождення LookRotation)
             distHome = dist,
-            rise = Mathf.Max(minRise, r.Radius * riseRadiusFactor),
-            fov0 = cam.fieldOfView
+            rise = Mathf.Max(minRise, finalRadius * riseRadiusFactor),
+            fov0 = cam.fieldOfView,
+            radius0 = Mathf.Max(r.Radius, 0.01f)
         };
     }
 
-    // s = 0: початок, s = 1: кінець відльоту.
-    void Apply(Rig r, Vector3 scale0, float s)
+    // s = 0: початок, s = 1: кінець відльоту. Розмір каменя вже виставлено, камера слідує за ним.
+    void Apply(Rig r, RockAbsorber rk, float s)
     {
-        // камінь росте
-        float g = Mathf.Lerp(1f, rockGrowMultiplier, Mathf.SmoothStep(0f, 1f, s));
-        rock.transform.localScale = scale0 * g;
+        float g = rk.Radius / r.radius0;   // у скільки разів камінь уже більший за початковий
 
         // камера: віддаляється разом із ростом каменя (кадр не змінюється) + ще підіймається вгору
-        Vector3 focus = rock.WorldCenter;   // центр може зсуватись разом зі scale
+        Vector3 focus = rk.WorldCenter;
         float k = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(s * 1.6f));
         Vector3 dir = Vector3.Slerp(r.dirHome, r.dirTop, k).normalized;
         float baseDist = r.distHome * g;
