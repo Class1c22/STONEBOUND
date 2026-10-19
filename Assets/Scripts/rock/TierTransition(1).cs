@@ -4,24 +4,25 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.SceneManagement;
 
-// Перехід між рівнями (сценами). Хмарки робиш ти в Animator, скрипт лише запускає їх.
+// Перехід між рівнями (сцен). Хмарки робиш ти в Animator, скрипт лише запускає їх.
 //
 // Камінь під час рівня не росте: об'єм лише накопичується (RockAbsorber.growOnlyOnTierUp).
-// Коли набрано поріг наступної стадії (RockAbsorber.CanTierUp), запускається перехід:
-// 1) камінь завмирає, ОДРАЗУ виростає до наступної стадії, камера віддаляється вгору,
-//    і грається анімація «хмарки закривають екран»;
-// 2) коли екран закритий, вантажиться наступна сцена, а КАМІНЬ ПЕРЕНОСИТЬСЯ в неї
-//    (на місце каменя-заглушки нової сцени; заглушка видаляється, камера й посилання перепризначаються);
-// 3) у новій сцені грається анімація «хмарки розлітаються».
+// Коли набрано поріг наступної стадії (RockAbsorber.CanTierUp), запускається перехід. Послідовність:
+// 1) камінь завмирає і росте до наступної стадії;
+// 2) камера віддаляється вгору (разом із ростом каменя);
+// 3) анімація 1: хмарки закривають екран;
+// 4) вантажиться наступна сцена (екран закритий);
+// 5) КАМІНЬ І КАМЕРА переносяться в нову сцену (камінь стає на місце заглушки, камера нової сцени видаляється);
+// 6) анімація 2: хмарки розлітаються.
 //
-// У кожній сцені лишай свій RockAbsorber (з усім обладнанням) як заглушку: звідти беруться позиція
-// старту і посилання на воксельний світ. Так сцену можна запускати й окремо.
+// У кожній сцені лишай свій RockAbsorber (з усім обладнанням) і свою камеру як заглушки: звідти беруться
+// позиція старту, відстань камери і посилання на воксельний світ. Так сцену можна запускати й окремо.
 //
 // Постав на порожній ROOT-об'єкт у ПЕРШІЙ сцені. Об'єкт переживає завантаження сцен, тому
 // Canvas/хмарки й аніматори роби ДІТЬМИ цього об'єкта (тоді вони теж не зникнуть).
 // Сцени мають бути в Build Profiles по порядку. Дублікати в наступних сценах самі видаляються.
-// У старій сцені потрібні RockAbsorber на камені (RockController і RockBlast за наявності) і Camera.
-// FollowCamera необов'язковий. У новій сцені від скрипта нічого не потрібно.
+// У старій сцені потрібні RockAbsorber на камені (RockController і RockBlast за наявності) і Camera
+// (бажано з FollowCamera: тоді камера переноситься в нову сцену).
 //
 // Налаштування аніматорів:
 //  - Update Mode = Unscaled Time (щоб працювали, навіть якщо Time.timeScale = 0);
@@ -51,7 +52,8 @@ public class TierTransition : MonoBehaviour
     [Tooltip("Тестова кнопка (тільки в Editor і Development build)")]
     public Key debugKey = Key.N;
 
-    [Header("Відліт камери")]
+    [Header("Ріст каменя і відліт камери (до хмарок)")]
+    [Tooltip("Скільки триває ріст каменя і віддалення камери, секунд. Хмарки стартують ПІСЛЯ цього")]
     public float flyDuration = 3f;
     [Tooltip("За скільки секунд від початку відльоту камінь виростає до наступної стадії (0 = миттєво)")]
     public float growDuration = 0.8f;
@@ -65,6 +67,8 @@ public class TierTransition : MonoBehaviour
     [Header("UI переходу")]
     [Tooltip("Об'єкт (Canvas або його панель) з хмарками. Вимкнений на старті, вмикається на час переходу, потім знову вимикається. НЕ став сюди сам об'єкт із TierTransition")]
     public GameObject transitionUI;
+    [Tooltip("Інший UI (HUD, лічильники тощо), який теж має переживати завантаження сцен (DontDestroyOnLoad). Сюди ставити кореневі Canvas. UI, що вже є дітьми цього об'єкта, додавати не треба")]
+    public GameObject[] persistentUI;
 
     [Header("Хмарки: закрити екран")]
     public Animator coverAnimator;
@@ -73,11 +77,7 @@ public class TierTransition : MonoBehaviour
     public string coverTrigger = "Cover";
     [Tooltip("Тривалість анімації закриття, секунд (як довжина кліпу)")]
     public float coverDuration = 1.5f;
-    [Tooltip("Запустити закриття так, щоб воно закінчилось разом із відльотом камери")]
-    public bool coverEndsWithFlight = true;
-    [Tooltip("Якщо вимкнено: коли запускати закриття, секунд від початку відльоту")]
-    public float coverStartTime = 1.5f;
-    [Tooltip("Скільки тримати екран закритим перед активацією нової сцени")]
+    [Tooltip("Скільки тримати екран закритим перед початком завантаження сцени")]
     public float holdClosed = 0.2f;
 
     [Header("Хмарки: розліт у новій сцені")]
@@ -106,12 +106,42 @@ public class TierTransition : MonoBehaviour
         if (Instance != null && Instance != this)
         {
             enabled = false;
+            // копія UI з нової сцени теж зайва: оригінал уже переїхав разом із першим ROOT
+            DestroyIfOutside(transitionUI);
+            if (persistentUI != null)
+                foreach (var go in persistentUI) DestroyIfOutside(go);
             Destroy(gameObject);
             return;
         }
         Instance = this;
         DontDestroyOnLoad(gameObject);
+
+        // UI, що лежить поза цим об'єктом, теж переносимо між сценами
+        MakePersistent(transitionUI);
+        if (persistentUI != null)
+            foreach (var go in persistentUI) MakePersistent(go);
+
         SetUI(false);   // на старті гри UI переходу сховано
+    }
+
+    // Робить кореневий об'єкт безсмертним. Діти цього ROOT і так переживають сцени.
+    void MakePersistent(GameObject go)
+    {
+        if (go == null || go == gameObject) return;
+        if (go.transform.IsChildOf(transform)) return;
+        if (go.transform.parent != null)
+        {
+            Debug.LogWarning("[TierTransition] UI '" + go.name + "' лежить не в корені сцени, відчіплюю від батька, щоб перенести між сценами.", go);
+            go.transform.SetParent(null, true);
+        }
+        DontDestroyOnLoad(go);
+    }
+
+    void DestroyIfOutside(GameObject go)
+    {
+        if (go == null || go == gameObject) return;
+        if (go.transform.IsChildOf(transform)) return;   // піде разом із цим ROOT
+        Destroy(go);
     }
 
     void OnDestroy()
@@ -191,9 +221,23 @@ public class TierTransition : MonoBehaviour
         maxTimer = 0f;
 
         RockAbsorber carried = rock;
-        Camera cam = FindCamera();
         FollowCamera follow = FindFirstObjectByType<FollowCamera>();
+        Camera cam = null;
+        if (follow != null)
+        {
+            cam = follow.GetComponent<Camera>();
+            if (cam == null) cam = follow.GetComponentInChildren<Camera>(true);
+            if (cam == null) cam = follow.GetComponentInParent<Camera>();
+        }
+        if (cam == null) cam = FindCamera();
+        SpeedEffects fx = cam != null ? cam.GetComponentInParent<SpeedEffects>() : null;
+        if (fx == null && cam != null) fx = cam.GetComponentInChildren<SpeedEffects>(true);
         bool hasRig = carried != null && cam != null;
+
+        if (follow == null)
+            Debug.LogWarning("[TierTransition] FollowCamera не знайдено в поточній сцені: камера НЕ переноситься, у новій сцені буде її власна камера.", this);
+        else if (carried == null)
+            Debug.LogWarning("[TierTransition] RockAbsorber не знайдено: камера не переноситься.", this);
 
         Rig rig = null;
         float ratio0 = 1f, ratio1 = 1f;
@@ -204,31 +248,19 @@ public class TierTransition : MonoBehaviour
             ratio1 = Mathf.Max(ratio0, carried.NextStageRatio);   // до якого розміру камінь виросте
             rig = BuildRig(cam, carried, carried.StartRadius * ratio1);
             if (follow != null) follow.enabled = false;
+            if (fx != null) fx.enabled = false;                   // щоб не змагався з відльотом за FOV
         }
-
-        AsyncOperation op = loader();
-        op.allowSceneActivation = false;   // вантажимо у фоні, поки летить камера
 
         SetUI(true);    // вмикаємо UI до Rebind/Play, бо на неактивному об'єкті Animator не працює
         ResetAnimators();
         Departing?.Invoke();
 
-        // ===== відліт: камінь миттєво виростає, камера віддаляється вгору, хмарки закривають екран =====
-        float coverAt = coverEndsWithFlight ? Mathf.Max(0f, flyDuration - coverDuration) : coverStartTime;
-        bool coverStarted = false;
-        float coverStartedAt = 0f;
+        // ===== 1-2. камінь росте, камера віддаляється (хмарок ще немає) =====
         float elapsed = 0f;
         bool grown = ratio1 <= ratio0;
 
         while (elapsed < flyDuration)
         {
-            if (!coverStarted && elapsed >= coverAt)
-            {
-                coverStarted = true;
-                coverStartedAt = Time.unscaledTime;
-                Fire(coverAnimator, coverState, coverTrigger);
-            }
-
             if (hasRig && carried != null)
             {
                 if (!grown)
@@ -249,37 +281,46 @@ public class TierTransition : MonoBehaviour
             Apply(rig, carried, 1f);
         }
 
-        // якщо закриття ще не запускалось (coverStartTime більше за політ) або ще триває, чекаємо його кінця
-        if (!coverStarted)
-        {
-            coverStarted = true;
-            coverStartedAt = Time.unscaledTime;
-            Fire(coverAnimator, coverState, coverTrigger);
-        }
-        while (Time.unscaledTime - coverStartedAt < coverDuration) yield return null;
-
-        while (op.progress < 0.9f) yield return null;
+        // ===== 3. анімація 1: хмарки закривають екран =====
+        Fire(coverAnimator, coverState, coverTrigger);
+        yield return new WaitForSecondsRealtime(coverDuration);
         yield return new WaitForSecondsRealtime(holdClosed);
 
         FullyCovered?.Invoke();
 
-        // камінь їде в нову сцену: стає кореневим і не знищується разом зі старою сценою
+        // камінь і камера їдуть у нову сцену: стають кореневими і не знищуються разом зі старою сценою
         if (carried != null)
         {
             carried.transform.SetParent(null, true);
             DontDestroyOnLoad(carried.gameObject);
         }
+        // переносимо той об'єкт, де лежить FollowCamera (він сам ставить позицію камери щокадру, тож відчепити його безпечно)
+        FollowCamera keptFollow = hasRig && follow != null ? follow : null;
+        Camera keptCam = keptFollow != null ? cam : null;
+        if (keptFollow != null)
+        {
+            keptFollow.transform.SetParent(null, true);
+            DontDestroyOnLoad(keptFollow.gameObject);
+            // якщо Camera лежить окремо від FollowCamera (не в його ієрархії), переносимо й її
+            if (keptCam != null && !keptCam.transform.IsChildOf(keptFollow.transform))
+            {
+                keptCam.transform.SetParent(null, true);
+                DontDestroyOnLoad(keptCam.gameObject);
+            }
+            Debug.Log("[TierTransition] Камера '" + keptFollow.name + "' переноситься в нову сцену.", this);
+        }
 
-        op.allowSceneActivation = true;
+        // ===== 4. завантаження сцени (екран закритий) =====
+        AsyncOperation op = loader();
         while (!op.isDone) yield return null;
 
-        // ===== прибуття: екран ще закритий, поки нова сцена ініціалізується =====
+        // ===== 5. прибуття: екран ще закритий, поки нова сцена ініціалізується =====
         yield return null;
         yield return null;
 
         if (carried != null)
         {
-            Arrive(carried);
+            Arrive(carried, keptFollow, rig != null ? rig.fov0 : 0f);
             rock = carried;
         }
         else
@@ -287,6 +328,7 @@ public class TierTransition : MonoBehaviour
             rock = FindFirstObjectByType<RockAbsorber>();
         }
 
+        // ===== 6. анімація 2: хмарки розлітаються =====
         Revealing?.Invoke();
         Fire(revealAnimator, revealState, revealTrigger);
         yield return new WaitForSecondsRealtime(revealDuration);
@@ -299,7 +341,7 @@ public class TierTransition : MonoBehaviour
     }
 
     // Нова сцена вже активна: ставимо камінь на місце заглушки і перепризначаємо посилання.
-    void Arrive(RockAbsorber r)
+    void Arrive(RockAbsorber r, FollowCamera keepCam, float fov0)
     {
         RockAbsorber spawn = null;
         foreach (var other in FindObjectsByType<RockAbsorber>(FindObjectsSortMode.None))
@@ -328,8 +370,50 @@ public class TierTransition : MonoBehaviour
 
         if (world == null) world = FindFirstObjectByType<VoxelWorld>();
 
-        FollowCamera follow = FindFirstObjectByType<FollowCamera>();
-        Camera cam = FindCamera();
+        FollowCamera follow;
+        Camera cam;
+        if (keepCam != null)
+        {
+            // камера з попередньої сцени лишається, камеру нової сцени видаляємо
+            follow = keepCam;
+            cam = keepCam.GetComponent<Camera>();
+
+            // відстань беремо з камери нової сцени (задана для стартового розміру), інакше з базової
+            float baseDist = r.BaseCameraDistance;
+            foreach (var other in FindObjectsByType<FollowCamera>(FindObjectsSortMode.None))
+            {
+                if (other == keepCam) continue;
+                baseDist = other.distance;
+                Destroy(other.gameObject);
+            }
+            keepCam.distance = baseDist;
+
+            // інші камери нової сцени, що малюють на екран, прибираємо, щоб вони не перекривали перенесену
+            foreach (var c in FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                if (c == cam || c == null) continue;
+                if (cam != null && c.transform.IsChildOf(keepCam.transform)) continue;
+                if (c.targetTexture != null) continue;                 // камери в RenderTexture (мінікарта тощо) не чіпаємо
+                if (c.CompareTag("MainCamera") || c.GetComponent<FollowCamera>() != null)
+                    Destroy(c.gameObject);
+                else
+                    Debug.LogWarning("[TierTransition] У новій сцені є ще одна камера '" + c.name + "'. Вона може перекривати перенесену; зніми з неї тег MainCamera або видали.", c);
+            }
+            // зайві AudioListener (лишається один, на перенесеній камері)
+            foreach (var l in FindObjectsByType<AudioListener>(FindObjectsInactive.Exclude, FindObjectsSortMode.None))
+                if (!l.transform.IsChildOf(keepCam.transform) && (cam == null || !l.transform.IsChildOf(cam.transform)))
+                    Destroy(l);
+
+            if (cam != null && fov0 > 0f) cam.fieldOfView = fov0;
+            var fx = keepCam.GetComponent<SpeedEffects>();
+            if (fx != null) fx.enabled = true;
+        }
+        else
+        {
+            follow = FindFirstObjectByType<FollowCamera>();
+            cam = FindCamera();
+        }
+
         if (follow != null)
         {
             follow.enabled = true;
@@ -349,7 +433,7 @@ public class TierTransition : MonoBehaviour
             if (blast != null) blast.world = world;
         }
 
-        var speed = FindFirstObjectByType<SpeedEffects>();
+        var speed = keepCam != null ? keepCam.GetComponent<SpeedEffects>() : FindFirstObjectByType<SpeedEffects>();
         if (speed != null) speed.target = r.GetComponent<Rigidbody>();
 
         Freeze(r, false);
