@@ -32,6 +32,7 @@ public class SpeedEffects : MonoBehaviour
 
     Camera cam;
     float baseFov;
+    bool started;
 
     void Start()
     {
@@ -53,6 +54,35 @@ public class SpeedEffects : MonoBehaviour
             var e = speedLines.emission;
             e.rateOverTime = 0f;
             if (!speedLines.isPlaying) speedLines.Play();
+        }
+
+        started = true;
+    }
+
+    // Нова сцена: TierTransition знову вмикає скрипт, партікли оживають
+    void OnEnable()
+    {
+        if (started) SetLines(true);
+    }
+
+    // Початок переходу: TierTransition вимикає скрипт, партікли зупиняються і зникають
+    void OnDisable()
+    {
+        SetLines(false);
+    }
+
+    void SetLines(bool on)
+    {
+        if (speedLines == null) return;
+        var e = speedLines.emission;
+        e.rateOverTime = 0f;
+        if (on)
+        {
+            if (!speedLines.isPlaying) speedLines.Play();
+        }
+        else
+        {
+            speedLines.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
         }
     }
 

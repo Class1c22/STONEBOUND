@@ -27,10 +27,10 @@ using UnityEngine.SceneManagement;
 // Налаштування аніматорів:
 //  - Update Mode = Unscaled Time (щоб працювали, навіть якщо Time.timeScale = 0);
 //  - стан за замовчуванням: ПОРОЖНІЙ Idle (хмарок не видно, екран чистий), без переходів з нього;
-//  - Cover State (за замовчуванням "loading"): анімація, що закриває весь екран і лишається в кінці закритою (Loop Time вимкнено);
-//  - Reveal State (за замовчуванням "loadingrev"): розліт; після нього екран чистий.
-//  Скрипт запускає стани за назвою (Animator.Play), параметри й переходи між станами не потрібні.
-//  Якщо натомість заповнити Cover Trigger / Reveal Trigger і лишити назву стану порожньою, використовуються тригери.
+//  - закриття (Cover Trigger, за замовчуванням "loading"): анімація, що закриває весь екран і лишається в кінці закритою (Loop Time вимкнено);
+//  - розліт (Reveal Trigger, за замовчуванням "loadingrev"): розліт; після нього екран чистий.
+//  Стани Cover State / Reveal State в Inspector лиши порожніми: тоді скрипт запускає анімації тригерами.
+//  Якщо ж заповнити назву стану, він запуститься напряму через Animator.Play (тригери тоді не потрібні).
 //  Після кожного переходу скрипт робить Rebind(): аніматор повертається в стан за замовчуванням.
 public class TierTransition : MonoBehaviour
 {
@@ -72,9 +72,10 @@ public class TierTransition : MonoBehaviour
 
     [Header("Хмарки: закрити екран")]
     public Animator coverAnimator;
-    [Tooltip("Назва стану в Animator, що закриває екран. Якщо порожньо, використовується тригер")]
-    public string coverState = "loading";
-    public string coverTrigger = "Cover";
+    [Tooltip("Назва стану в Animator, що закриває екран. Лиши ПОРОЖНІМ, якщо керуєш тригером")]
+    public string coverState = "";
+    [Tooltip("Назва параметра-тригера, що запускає закриття")]
+    public string coverTrigger = "loading";
     [Tooltip("Тривалість анімації закриття, секунд (як довжина кліпу)")]
     public float coverDuration = 1.5f;
     [Tooltip("Скільки тримати екран закритим перед початком завантаження сцени")]
@@ -83,9 +84,10 @@ public class TierTransition : MonoBehaviour
     [Header("Хмарки: розліт у новій сцені")]
     [Tooltip("Може бути той самий Animator, що й вище")]
     public Animator revealAnimator;
-    [Tooltip("Назва стану в Animator, що відкриває екран. Якщо порожньо, використовується тригер")]
-    public string revealState = "loadingrev";
-    public string revealTrigger = "Reveal";
+    [Tooltip("Назва стану в Animator, що відкриває екран. Лиши ПОРОЖНІМ, якщо керуєш тригером")]
+    public string revealState = "";
+    [Tooltip("Назва параметра-тригера, що запускає розліт")]
+    public string revealTrigger = "loadingrev";
     [Tooltip("Тривалість анімації розльоту, секунд (як довжина кліпу)")]
     public float revealDuration = 1.5f;
 
@@ -330,7 +332,7 @@ public class TierTransition : MonoBehaviour
 
         // ===== 6. анімація 2: хмарки розлітаються =====
         Revealing?.Invoke();
-        Fire(revealAnimator, revealState, revealTrigger);
+        Fire(revealAnimator != null ? revealAnimator : coverAnimator, revealState, revealTrigger);
         yield return new WaitForSecondsRealtime(revealDuration);
 
         ResetAnimators();   // назад у стан за замовчуванням (екран чистий), готово до наступного переходу
@@ -451,15 +453,41 @@ public class TierTransition : MonoBehaviour
 
     static void Fire(Animator a, string state, string trigger)
     {
-        if (a == null) return;
-        if (!string.IsNullOrEmpty(state))
+        if (a == null)
         {
-            a.Play(state, 0, 0f);
+            Debug.LogWarning("[TierTransition] Animator не призначено, анімація не запуститься.");
             return;
         }
+        if (!a.gameObject.activeInHierarchy)
+            Debug.LogWarning("[TierTransition] Animator '" + a.name + "' неактивний.", a);
+
+        if (!string.IsNullOrEmpty(state))
+        {
+            int hash = Animator.StringToHash(state);
+            if (a.HasState(0, hash))
+            {
+                a.Play(hash, 0, 0f);
+                a.Update(0f);   // перший кадр одразу, без мигання
+                return;
+            }
+            Debug.LogWarning("[TierTransition] У '" + a.name + "' немає стану '" + state + "', пробую тригер '" + trigger + "'.", a);
+        }
+
         if (string.IsNullOrEmpty(trigger)) return;
+        if (!HasParameter(a, trigger))
+        {
+            Debug.LogWarning("[TierTransition] У '" + a.name + "' немає параметра '" + trigger + "'.", a);
+            return;
+        }
         a.ResetTrigger(trigger);
         a.SetTrigger(trigger);
+    }
+
+    static bool HasParameter(Animator a, string name)
+    {
+        foreach (var p in a.parameters)
+            if (p.name == name) return true;
+        return false;
     }
 
     static void Reset(Animator a)
