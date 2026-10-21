@@ -5920,6 +5920,66 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 721804174}
   m_CullTransparentMesh: 1
+--- !u!1 &742711977
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 742711978}
+  - component: {fileID: 742711979}
+  m_Layer: 0
+  m_Name: FloorGenerator
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &742711978
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 742711977}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: -44.048, y: 0, z: -12.474999}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1838282995}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &742711979
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 742711977}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b90265da90cacfa468e7af7a015f82ce, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::FloorGenerator
+  size: 1200
+  thickness: 20
+  tileSize: 8
+  textureResolution: 32
+  colorA: {r: 0.3, g: 0.48, b: 0.18, a: 1}
+  colorB: {r: 0.36, g: 0.55, b: 0.22, a: 1}
+  dirtAmount: 0.5
+  dirtColor: {r: 0.4, g: 0.3, b: 0.2, a: 1}
+  seed: 7
+  receiveShadows: 1
+  friction: 0.6
+  bounciness: 0.255
+  rock: {fileID: 2032603337}
+  world: {fileID: 843798773}
+  oldGround: {fileID: 0}
+  oldMountains: {fileID: 0}
 --- !u!1 &778889212
 GameObject:
   m_ObjectHideFlags: 0
@@ -11622,6 +11682,109 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1405249335}
   m_CullTransparentMesh: 1
+--- !u!1 &1634029173
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1634029174}
+  - component: {fileID: 1634029175}
+  m_Layer: 0
+  m_Name: GrassField
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1634029174
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1634029173}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: -44.048, y: -3.21632, z: -12.474999}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1838282995}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1634029175
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1634029173}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 974132704d16fd44d87c8ba9f973f4dd, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GrassField
+  rock: {fileID: 2032603337}
+  scaleFromRock: 1
+  voxelSizeInRockRadii: 1.2
+  grassScale: 6
+  voxelSize: 0.25
+  seed: 5000
+  chunkCells: 10
+  viewChunks: 3
+  chunksPerFrame: 2
+  startDelay: 0.5
+  meadowSizeCells: 12
+  meadowAmount: 0.95
+  meadowEdgeSoftness: 0.12
+  meadowDensity: 1
+  sparseDensity: 0.04
+  meadowDoubleChance: 0.8
+  placementJitter: 0.7
+  tallInCenter: 0.6
+  useRaycast: 1
+  groundMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  rayHeight: 40
+  maxSlope: 45
+  minVoxels: 2
+  maxVoxels: 4
+  thickness: 0.45
+  tipThickness: 0.25
+  levelMaterials: []
+  colorBands: 3
+  baseColor: {r: 0.1, g: 0.28, b: 0.08, a: 1}
+  tipColor: {r: 0.55, g: 0.8, b: 0.25, a: 1}
+  receiveShadows: 1
+  breakable: 1
+  breakRadiusFactor: 1
+  breakOnSuck: 0
+  suckBreakFactor: 0.8
+  bladeResolution: 6
+  radiusBoostAtFullDamage: 0.6
+  fallingPieces: 1
+  minPieceVoxels: 12
+  pieceMassInRocks: 0.4
+  pieceTipSpeed: 1.2
+  pieceKick: 0.4
+  maxPieces: 40
+  pieceLifetime: 25
+  maxPiecesPerHit: 8
+  fullDamageSpeed: 25
+  minCubesPerBlade: 1
+  maxCubesPerBlade: 10
+  suckDamage: 0.4
+  maxCubesPerHit: 60
+  maxCubeGrow: 2.5
+  debrisSizeInRockRadii: 0.45
+  debrisSpread: 4
+  maxDebris: 6000
+  maxDebrisPerFrame: 400
+  absorbVolumeFactor: 1
+  debris: 1
 --- !u!1 &1775355352
 GameObject:
   m_ObjectHideFlags: 0
@@ -11669,75 +11832,6 @@ MonoBehaviour:
   world: {fileID: 843798773}
   voxFile: {fileID: 0}
   voxOrigin: {x: 0, y: 0, z: 80}
---- !u!1 &1782221769
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1782221770}
-  - component: {fileID: 1782221771}
-  m_Layer: 0
-  m_Name: MountainMapGenerator
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &1782221770
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1782221769}
-  serializedVersion: 2
-  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: -18.91645, y: 0, z: -8.53037}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 1838282995}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &1782221771
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1782221769}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: b90265da90cacfa468e7af7a015f82ce, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::MountainMapGenerator
-  mapSize: 600
-  mountainHeight: 160
-  mountainBlockSize: 2
-  heightStep: 0.25
-  chunkColumns: 50
-  meadowRadius: 100
-  flatRadius: 45
-  flatBlend: 30
-  groundAmplitude: 2
-  groundWavelength: 45
-  cliffWidth: 40
-  world: {fileID: 843798773}
-  minPeakHeight: 0.6
-  mountainNoiseScale: 3.5
-  ridgeWarp: 1.2
-  surfaceDetail: 4
-  footRagged: 0.5
-  seed: 12345
-  snowLine: 0.72
-  snowVariation: 12
-  grassLine: 0.06
-  strataThickness: 0.75
-  invisibleCliffWall: 1
-  colliderMargin: 40
-  oldGround: {fileID: 1365930387}
 --- !u!1 &1827139849
 GameObject:
   m_ObjectHideFlags: 0
@@ -11842,10 +11936,11 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
+  - {fileID: 742711978}
   - {fileID: 843798774}
   - {fileID: 1775355353}
   - {fileID: 416857264}
-  - {fileID: 1782221770}
+  - {fileID: 1634029174}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1001 &1911872437
@@ -12250,6 +12345,7 @@ MonoBehaviour:
   coverAnimator: {fileID: 222801954}
   coverTrigger: loading
   coverDuration: 1.5
+  coverLead: 1
   holdClosed: 0.2
   revealAnimator: {fileID: 222801954}
   revealTrigger: loadingrev
