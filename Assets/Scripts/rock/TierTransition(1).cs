@@ -10,7 +10,7 @@ using UnityEngine.SceneManagement;
 // Коли набрано поріг наступної стадії (RockAbsorber.CanTierUp), запускається перехід. Послідовність:
 // 1) камінь завмирає і росте до наступної стадії;
 // 2) камера віддаляється вгору (разом із ростом каменя);
-// 3) анімація 1: хмарки закривають екран;
+// 3) анімація 1: хмарки закривають екран (стартують за Cover Lead секунд ДО кінця відльоту камери);
 // 4) вантажиться наступна сцена (екран закритий);
 // 5) КАМІНЬ І КАМЕРА переносяться в нову сцену (камінь стає на місце заглушки, камера нової сцени видаляється);
 // 6) анімація 2: хмарки розлітаються, а камера повертається від каменя назад (зворотний відліт).
@@ -53,7 +53,7 @@ public class TierTransition : MonoBehaviour
     public Key debugKey = Key.N;
 
     [Header("Ріст каменя і відліт камери (до хмарок)")]
-    [Tooltip("Скільки триває ріст каменя і віддалення камери, секунд. Хмарки стартують ПІСЛЯ цього")]
+    [Tooltip("Скільки триває ріст каменя і віддалення камери, секунд. Хмарки стартують Cover Lead секунд ДО кінця цього часу")]
     public float flyDuration = 3f;
     [Tooltip("За скільки секунд від початку відльоту камінь виростає до наступної стадії (0 = миттєво)")]
     public float growDuration = 0.8f;
@@ -92,6 +92,8 @@ public class TierTransition : MonoBehaviour
     public string coverTrigger = "loading";
     [Tooltip("Тривалість анімації закриття, секунд (як довжина кліпу)")]
     public float coverDuration = 1.5f;
+    [Tooltip("На скільки секунд хмарки стартують РАНІШЕ за кінець відльоту камери (0 = після відльоту, як було). Не більше Fly Duration")]
+    public float coverLead = 1f;
     [Tooltip("Скільки тримати екран закритим перед початком завантаження сцени")]
     public float holdClosed = 0.2f;
 
@@ -273,9 +275,12 @@ public class TierTransition : MonoBehaviour
         ResetAnimators();
         Departing?.Invoke();
 
-        // ===== 1-2. камінь росте, камера віддаляється (хмарок ще немає) =====
+        // ===== 1-2. камінь росте, камера віддаляється; хмарки стартують за coverLead до кінця =====
         float elapsed = 0f;
         bool grown = ratio1 <= ratio0;
+
+        bool coverFired = false;
+        float coverStart = Mathf.Max(0f, flyDuration - Mathf.Max(0f, coverLead));
 
         while (elapsed < flyDuration)
         {
@@ -291,6 +296,13 @@ public class TierTransition : MonoBehaviour
             }
             if (fogOn) SetFog(Mathf.Clamp01(elapsed / flyDuration));
 
+            // хмарки починають закривати екран раніше, ще під час відльоту
+            if (!coverFired && elapsed >= coverStart)
+            {
+                coverFired = true;
+                Fire(coverAnimator, coverTrigger);
+            }
+
             yield return null;
             elapsed += Time.unscaledDeltaTime;
         }
@@ -302,8 +314,14 @@ public class TierTransition : MonoBehaviour
         if (fogOn) SetFog(1f);
 
         // ===== 3. анімація 1: хмарки закривають екран =====
-        Fire(coverAnimator, coverTrigger);
-        yield return new WaitForSecondsRealtime(coverDuration);
+        if (!coverFired)
+        {
+            coverFired = true;
+            Fire(coverAnimator, coverTrigger);
+        }
+        // хмарки вже грають coverPlayed секунд під час відльоту, тож лишилось дограти решту
+        float coverPlayed = Mathf.Max(0f, flyDuration - coverStart);
+        yield return new WaitForSecondsRealtime(Mathf.Max(0f, coverDuration - coverPlayed));
         yield return new WaitForSecondsRealtime(holdClosed);
 
         FullyCovered?.Invoke();
