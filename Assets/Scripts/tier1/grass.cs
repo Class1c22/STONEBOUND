@@ -17,8 +17,10 @@ public class GrassField : MonoBehaviour
     [Tooltip("Камінь, від розміру якого рахується трава та уламки")]
     public RockAbsorber rock;
     public bool scaleFromRock = true;
-    [Tooltip("Розмір вокселя трави = початковий радіус каменя × це число. Було 2.5, ×5 = 12.5. Висота травинки = воксель × кількість вокселів")]
-    public float voxelSizeInRockRadii = 12.5f;
+    [Tooltip("Базовий розмір вокселя трави в радіусах каменя (було 2.5). Не чіпай, міняй множник нижче")]
+    public float voxelSizeInRockRadii = 2.5f;
+    [Tooltip("У скільки разів трава більша за базову: 5 = травинки як дерева. Нове поле, тому сцена не тримає стару цифру")]
+    public float grassScale = 5f;
     [Tooltip("Розмір вокселя у метрах, якщо камінь не береться в розрахунок")]
     public float voxelSize = 6f;
 
@@ -65,23 +67,36 @@ public class GrassField : MonoBehaviour
     public bool breakable = true;
     [Tooltip("Радіус ламання дотиком = радіус каменя × це число")]
     public float breakRadiusFactor = 1f;
-    [Tooltip("Поки затиснута E, травинки в зоні всмоктування розпадаються на кубики, які камінь втягує")]
-    public bool suckBreaksGrass = true;
+    [Tooltip("Вимкнено (за замовчуванням): E трави не ламає, її ламає лише дотик/удар каменя. Увімкни, якщо хочеш, щоб E теж розсипала траву в зоні всмоктування. Нове поле, тому сцена не тримає стару цифру")]
+    public bool breakOnSuck = false;
     [Tooltip("Яка частка радіуса всмоктування (RockAbsorber.suckRadius) руйнує траву по E")]
     [Range(0.1f, 1f)] public float suckBreakFactor = 0.8f;
 
     [Header("Уламки-кубики (фізичні, як у VoxelWorld)")]
     public bool debris = true;
-    [Tooltip("Скільки кубиків дає одна зламана травинка")]
-    public int cubesPerBlade = 30;
+    [Header("Сила удару -> кількість частинок")]
+    [Tooltip("Швидкість каменя (м/с), при якій удар вважається найсильнішим")]
+    public float fullDamageSpeed = 25f;
+    [Tooltip("Скільки кубиків дає травинка при найслабшому дотику")]
+    public int minCubesPerBlade = 1;
+    [Tooltip("Скільки кубиків дає травинка при найсильнішому ударі")]
+    public int maxCubesPerBlade = 10;
+    [Tooltip("Сила (0..1), коли трава руйнується по E. Не залежить від швидкості каменя")]
+    [Range(0f, 1f)] public float suckDamage = 0.4f;
+    [Tooltip("Усього кубиків за один кадр на всі травинки разом. Це головний захист від мільярда частинок")]
+    public int maxCubesPerHit = 60;
+    [Tooltip("Якщо кубиків мало, вони більші (об'єм зберігається). Найбільше збільшення ребра")]
+    public float maxCubeGrow = 2.5f;
+
+    [Header("Кубики")]
     [Tooltip("Ребро кубика = початковий радіус каменя × це число (кубик має бути досить малий, щоб камінь міг його всмоктати)")]
     public float debrisSizeInRockRadii = 0.45f;
     [Tooltip("Швидкість розльоту")]
     public float debrisSpread = 4f;
     [Tooltip("Розмір пулу кубиків (найстаріші використовуються повторно, як у VoxelWorld)")]
-    public int maxDebris = 1500;
+    public int maxDebris = 600;
     [Tooltip("Стеля нових кубиків за кадр (захист від просадки FPS)")]
-    public int maxDebrisPerFrame = 400;
+    public int maxDebrisPerFrame = 120;
     [Tooltip("Множник об'єму, який кубик додає каменю при всмоктуванні (1 = ребро в кубі)")]
     public float absorbVolumeFactor = 1f;
 
@@ -122,6 +137,7 @@ public class GrassField : MonoBehaviour
     int debrisIndex, spawnedThisFrame;
     Transform debrisRoot;
     static readonly RaycastHit[] hitBuffer = new RaycastHit[16];
+    readonly List<Vector4> brokenBlades = new List<Vector4>();   // xyz = низ травинки, w = висота у вокселях
 
     IEnumerator Start()
     {
@@ -166,7 +182,7 @@ public class GrassField : MonoBehaviour
         // після переходу між сценами заглушка каменя знищується, тож шукаємо актуальний
         if (scaleFromRock && rock == null) rock = FindFirstObjectByType<RockAbsorber>();
         if (scaleFromRock && rock != null)
-            return Mathf.Max(0.01f, rock.StartRadius * voxelSizeInRockRadii);
+            return Mathf.Max(0.01f, rock.StartRadius * voxelSizeInRockRadii * grassScale);
         return Mathf.Max(0.01f, voxelSize);
     }
 
@@ -370,7 +386,7 @@ public class GrassField : MonoBehaviour
         float r = rock.Radius * breakRadiusFactor;
 
         var kb = Keyboard.current;
-        if (suckBreaksGrass && kb != null && kb.eKey.isPressed)
+        if (breakOnSuck && kb != null && kb.eKey.isPressed)
             r = Mathf.Max(r, rock.suckRadius * rock.SizeRatio * suckBreakFactor);
         float r2 = r * r;
 
@@ -378,6 +394,11 @@ public class GrassField : MonoBehaviour
         var rockBody = rock.GetComponent<Rigidbody>();
         if (rockBody != null) rockVel = rockBody.linearVelocity;
 
+        // сила удару: від швидкості каменя, а по E не нижче suckDamage
+        float damage = Mathf.Clamp01(rockVel.magnitude / Mathf.Max(0.01f, fullDamageSpeed));
+        if (breakOnSuck && kb != null && kb.eKey.isPressed) damage = Mathf.Max(damage, suckDamage);
+
+        brokenBlades.Clear();
         int broken = 0;
         foreach (var chunk in chunks.Values)
         {
@@ -397,7 +418,7 @@ public class GrassField : MonoBehaviour
                     float dx = c.x - p.x, dy = c.y - y, dz = c.z - p.z;
                     if (dx * dx + dy * dy + dz * dz > reach * reach) continue;
 
-                    if (debris) SpawnCubes(p, heightVoxels, c, rockVel);
+                    if (debris) brokenBlades.Add(new Vector4(p.x, p.y, p.z, heightVoxels));
 
                     m[i] = m[b.count - 1];
                     b.count--;
@@ -408,6 +429,7 @@ public class GrassField : MonoBehaviour
 
         if (broken > 0)
         {
+            if (debris) SpawnForBlades(damage, c, rockVel);
             TotalBroken += broken;
             BladesBroken?.Invoke(broken);
         }
@@ -421,9 +443,37 @@ public class GrassField : MonoBehaviour
         return Mathf.Max(0.02f, baseRadius * debrisSizeInRockRadii);
     }
 
-    void SpawnCubes(Vector3 basePos, int heightVoxels, Vector3 rockCenter, Vector3 rockVel)
+    // Розподіляє бюджет кубиків на всі травинки, зламані цього кадру.
+    // Слабкий удар = мало кубиків, сильний = більше, але разом не більше maxCubesPerHit.
+    void SpawnForBlades(float damage, Vector3 rockCenter, Vector3 rockVel)
     {
-        for (int k = 0; k < cubesPerBlade; k++)
+        int bladeCount = brokenBlades.Count;
+        if (bladeCount == 0) return;
+
+        float perBlade = Mathf.Lerp(minCubesPerBlade, Mathf.Max(minCubesPerBlade, maxCubesPerBlade), damage);
+        float budget = Mathf.Min(maxCubesPerHit, maxDebrisPerFrame - spawnedThisFrame);
+        perBlade = Mathf.Min(perBlade, budget / bladeCount);   // багато травинок: кожна дає менше
+        if (perBlade <= 0f) return;
+
+        // скільки максимум кубиків могло б бути, щоб кубик ріс, коли їх мало (об'єм травинки зберігається)
+        float refCubes = Mathf.Max(1f, maxCubesPerBlade);
+
+        for (int i = 0; i < bladeCount; i++)
+        {
+            Vector4 bl = brokenBlades[i];
+            int count = Mathf.FloorToInt(perBlade);
+            if (Random.value < perBlade - count) count++;   // дробову частину кидаємо жеребом
+            if (count <= 0) continue;
+
+            float grow = Mathf.Clamp(Mathf.Pow(refCubes / count, 1f / 3f), 1f, maxCubeGrow);
+            SpawnCubes(new Vector3(bl.x, bl.y, bl.z), Mathf.RoundToInt(bl.w), count, grow, rockCenter, rockVel);
+        }
+        brokenBlades.Clear();
+    }
+
+    void SpawnCubes(Vector3 basePos, int heightVoxels, int count, float grow, Vector3 rockCenter, Vector3 rockVel)
+    {
+        for (int k = 0; k < count; k++)
         {
             if (spawnedThisFrame >= maxDebrisPerFrame) return;
             spawnedThisFrame++;
@@ -449,6 +499,12 @@ public class GrassField : MonoBehaviour
             d.linearVelocity = dir * Random.Range(1f, debrisSpread) + rockVel * 0.3f + Random.insideUnitSphere;
             d.angularVelocity = Random.insideUnitSphere * 5f;
             d.GetComponent<Renderer>().sharedMaterial = materials[band];
+
+            // розмір і об'єм кубика (камінь росте від об'єму, тому він має відповідати розміру)
+            float edge = DebrisEdge() * grow;
+            d.transform.localScale = Vector3.one * edge;
+            var ab = d.GetComponent<Absorbable>();
+            if (ab != null) ab.volume = edge * edge * edge * absorbVolumeFactor;
         }
     }
 
