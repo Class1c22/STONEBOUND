@@ -5968,9 +5968,9 @@ MonoBehaviour:
   thickness: 20
   tileSize: 8
   textureResolution: 32
-  colorA: {r: 0.3, g: 0.48, b: 0.18, a: 1}
-  colorB: {r: 0.36, g: 0.55, b: 0.22, a: 1}
-  dirtAmount: 0.5
+  colorA: {r: 0.24623892, g: 0.6320754, b: 0.16398184, a: 1}
+  colorB: {r: 0.3888922, g: 0.7075472, b: 0.15686187, a: 1}
+  dirtAmount: 0.285
   dirtColor: {r: 0.4, g: 0.3, b: 0.2, a: 1}
   seed: 7
   receiveShadows: 1
@@ -11682,6 +11682,72 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1405249335}
   m_CullTransparentMesh: 1
+--- !u!1 &1587048920
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1587048921}
+  - component: {fileID: 1587048922}
+  m_Layer: 0
+  m_Name: WorldDecorator
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1587048921
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1587048920}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: -44.048, y: -3.21632, z: -12.474999}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1838282995}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1587048922
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1587048920}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e98dda4d340fd014096a428d21c5a0ac, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::WorldDecorator
+  world: {fileID: 843798773}
+  rock: {fileID: 2032603337}
+  seed: 11
+  cellSizeInRockRadii: 10
+  viewRadiusInRockRadii: 70
+  cellsPerFrame: 2
+  startDelay: 0.3
+  clearZoneInRockRadii: 4
+  boulderDensity: 1.2
+  moundDensity: 0.7
+  bushDensity: 0.8
+  flowerPatchDensity: 0.3
+  mushroomPatchDensity: 0.4
+  pebbleDensity: 4
+  boulderRadius: {x: 0.5, y: 2}
+  moundRadius: {x: 1, y: 3}
+  bushRadius: {x: 0.4, y: 0.9}
+  flowerHeight: {x: 0.5, y: 1.1}
+  mushroomHeight: {x: 0.2, y: 0.5}
+  pebbleRadius: {x: 0.08, y: 0.22}
+  maxBoulderVoxels: 36
+  mossAmount: 0.35
 --- !u!1 &1634029173
 GameObject:
   m_ObjectHideFlags: 0
@@ -11750,6 +11816,7 @@ MonoBehaviour:
     m_Bits: 4294967295
   rayHeight: 40
   maxSlope: 45
+  ignoreVoxelColliders: 1
   minVoxels: 2
   maxVoxels: 4
   thickness: 0.45
@@ -11785,53 +11852,6 @@ MonoBehaviour:
   maxDebrisPerFrame: 400
   absorbVolumeFactor: 1
   debris: 1
---- !u!1 &1775355352
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1775355353}
-  - component: {fileID: 1775355354}
-  m_Layer: 0
-  m_Name: VoxelTestBuilder
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &1775355353
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1775355352}
-  serializedVersion: 2
-  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: -42.59999, y: 0, z: -6.5591893}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 1838282995}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &1775355354
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1775355352}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 12e7db3bff6187c499104e0e637344d8, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::VoxelTestBuilder
-  world: {fileID: 843798773}
-  voxFile: {fileID: 0}
-  voxOrigin: {x: 0, y: 0, z: 80}
 --- !u!1 &1827139849
 GameObject:
   m_ObjectHideFlags: 0
@@ -11936,9 +11956,9 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
+  - {fileID: 1587048921}
   - {fileID: 742711978}
   - {fileID: 843798774}
-  - {fileID: 1775355353}
   - {fileID: 416857264}
   - {fileID: 1634029174}
   m_Father: {fileID: 0}
@@ -12235,36 +12255,41 @@ MonoBehaviour:
   maxSizeRatio: 0.35
   coreVisual: {fileID: 1961571802}
   volumeGain: 0.3
-  growSpeed: 0.05
+  growSpeed: 5
   shrinkSpeed: 6
   maxAttached: 300
   growOnlyOnTierUp: 1
   stages:
   - name: "\u041A\u0430\u043C\u0456\u043D\u044C"
     radiusRatio: 1
-    speedMultiplier: 1
-    forceMultiplier: 1
+    speedMultiplier: 1.2
+    forceMultiplier: 2
     destroyRadiusMultiplier: 1
+    absorbCostMultiplier: 25
   - name: "\u0412\u0430\u043B\u0443\u043D"
     radiusRatio: 1.5
     speedMultiplier: 1.1
     forceMultiplier: 1.15
     destroyRadiusMultiplier: 1.2
+    absorbCostMultiplier: 1.5
   - name: "\u0411\u0440\u0438\u043B\u0430"
     radiusRatio: 2.2
     speedMultiplier: 1.2
     forceMultiplier: 1.3
     destroyRadiusMultiplier: 1.45
+    absorbCostMultiplier: 2
   - name: "\u0421\u043A\u0435\u043B\u044F"
     radiusRatio: 3.2
     speedMultiplier: 1.3
     forceMultiplier: 1.5
     destroyRadiusMultiplier: 1.75
+    absorbCostMultiplier: 2.75
   - name: "\u0413\u043E\u0440\u0430"
     radiusRatio: 4.5
     speedMultiplier: 1.4
     forceMultiplier: 1.7
     destroyRadiusMultiplier: 2.1
+    absorbCostMultiplier: 3.5
   stageCanDrop: 1
   stageFloorOnBlast: 1
   showDebug: 1
