@@ -63,6 +63,9 @@ public class GrassField : MonoBehaviour
     [Tooltip("Максимальний ухил поверхні, градусів")]
     [Range(0f, 90f)] public float maxSlope = 45f;
 
+    [Tooltip("Не ставити траву на воксельні об'єкти (валуни, горби, будинки): ґрунтом вважається лише підлога. Трава під ними просто ховається")]
+    public bool ignoreVoxelColliders = true;
+
     [Header("Травинка (у вокселях)")]
     public int minVoxels = 6;
     public int maxVoxels = 10;
@@ -411,6 +414,7 @@ public class GrassField : MonoBehaviour
         {
             RaycastHit h = hitBuffer[i];
             if (h.collider.attachedRigidbody != null) continue;
+            if (ignoreVoxelColliders && h.collider.GetComponent<VoxelChunk>() != null) continue;
             if (h.distance < best)
             {
                 best = h.distance;
