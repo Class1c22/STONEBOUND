@@ -42,11 +42,11 @@ public class RockAbsorber : MonoBehaviour
     {
         return new List<RockStage>
         {
-            new RockStage { name = "Камінь", radiusRatio = 1.0f, speedMultiplier = 1.0f, forceMultiplier = 1.0f,  destroyRadiusMultiplier = 1.0f },
-            new RockStage { name = "Валун",  radiusRatio = 1.4f, speedMultiplier = 1.1f, forceMultiplier = 1.15f, destroyRadiusMultiplier = 1.2f },
-            new RockStage { name = "Брила",  radiusRatio = 1.9f, speedMultiplier = 1.2f, forceMultiplier = 1.3f,  destroyRadiusMultiplier = 1.45f },
-            new RockStage { name = "Скеля",  radiusRatio = 2.6f, speedMultiplier = 1.3f, forceMultiplier = 1.5f,  destroyRadiusMultiplier = 1.75f },
-            new RockStage { name = "Гора",   radiusRatio = 3.5f, speedMultiplier = 1.4f, forceMultiplier = 1.7f,  destroyRadiusMultiplier = 2.1f },
+            new RockStage { name = "Камінь", radiusRatio = 1.0f, speedMultiplier = 1.0f, forceMultiplier = 1.0f,  destroyRadiusMultiplier = 1.0f,  absorbCostMultiplier = 1.0f },
+            new RockStage { name = "Валун",  radiusRatio = 1.4f, speedMultiplier = 1.1f, forceMultiplier = 1.15f, destroyRadiusMultiplier = 1.2f,  absorbCostMultiplier = 1.5f },
+            new RockStage { name = "Брила",  radiusRatio = 1.9f, speedMultiplier = 1.2f, forceMultiplier = 1.3f,  destroyRadiusMultiplier = 1.45f, absorbCostMultiplier = 2.0f },
+            new RockStage { name = "Скеля",  radiusRatio = 2.6f, speedMultiplier = 1.3f, forceMultiplier = 1.5f,  destroyRadiusMultiplier = 1.75f, absorbCostMultiplier = 2.75f },
+            new RockStage { name = "Гора",   radiusRatio = 3.5f, speedMultiplier = 1.4f, forceMultiplier = 1.7f,  destroyRadiusMultiplier = 2.1f,  absorbCostMultiplier = 3.5f },
         };
     }
 
@@ -85,6 +85,8 @@ public class RockAbsorber : MonoBehaviour
     public float SpeedMultiplier => Cur.speedMultiplier;
     public float ForceMultiplier => Cur.forceMultiplier;
     public float DestroyRadiusMultiplier => Cur.destroyRadiusMultiplier;
+    // Скільки шматків треба на поточній стадії (більша стадія = більше шматків для того ж приросту об'єму)
+    public float AbsorbCostMultiplier => Mathf.Max(0.1f, Cur.absorbCostMultiplier);
     public float SizeRatio => currentRadius / startRadius;
     public float StartRadius => startRadius;
 
@@ -354,7 +356,7 @@ public class RockAbsorber : MonoBehaviour
         }
 
         // камінь росте
-        volume += a.volume * volumeGain;
+        volume += a.volume * volumeGain / AbsorbCostMultiplier;
         RefreshTarget();
     }
 

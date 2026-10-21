@@ -13,4 +13,6 @@ public class RockStage
     public float forceMultiplier = 1f;
     [Tooltip("Множник радіуса руйнування (VoxelDestroyer і шматки)")]
     public float destroyRadiusMultiplier = 1f;
+    [Tooltip("Скільки шматків треба з'їсти, щоб рости на цій стадії (1 = як зараз, 2 = удвічі більше шматків). Береться за поточною стадією каменя")]
+    [Min(0.1f)] public float absorbCostMultiplier = 1f;
 }
