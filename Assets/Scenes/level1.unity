@@ -11728,6 +11728,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::WorldDecorator
   world: {fileID: 843798773}
   rock: {fileID: 2032603337}
+  grass: {fileID: 1634029175}
+  onlyOnLawns: 1
+  maxMeadow: 0.1
   seed: 11
   cellSizeInRockRadii: 10
   viewRadiusInRockRadii: 70
@@ -11737,17 +11740,59 @@ MonoBehaviour:
   boulderDensity: 1.2
   moundDensity: 0.7
   bushDensity: 0.8
-  flowerPatchDensity: 0.3
-  mushroomPatchDensity: 0.4
+  mossPatchDensity: 1.5
   pebbleDensity: 4
   boulderRadius: {x: 0.5, y: 2}
   moundRadius: {x: 1, y: 3}
   bushRadius: {x: 0.4, y: 0.9}
-  flowerHeight: {x: 0.5, y: 1.1}
-  mushroomHeight: {x: 0.2, y: 0.5}
+  mossPatchRadius: {x: 0.8, y: 1.8}
   pebbleRadius: {x: 0.08, y: 0.22}
   maxBoulderVoxels: 36
   mossAmount: 0.35
+  stoneModels:
+  - {fileID: 4900000, guid: 334ada0a0978f86429009c593bd9950d, type: 3}
+  - {fileID: 4900000, guid: 2b6fdef50bf317d4fb626aaf19d52bda, type: 3}
+  - {fileID: 4900000, guid: 201462e242d7aab46801fcae3cfdf0f7, type: 3}
+  flowerModels:
+  - {fileID: 4900000, guid: 040c7afd871fa9b4a9fb82f73b1cd80c, type: 3}
+  - {fileID: 4900000, guid: acd2f177c81613548b668cf488c75023, type: 3}
+  - {fileID: 4900000, guid: 5361e3abdf4a0cf48adfed5ea55d5fd6, type: 3}
+  flowerHeightInGrass: {x: 0.9, y: 1.3}
+  stoneHeightInGrass: {x: 0.6, y: 1.1}
+  flowerChance: 0.01
+  stoneChance: 0.005
+  modelCellGrassCells: 6
+  modelCellsPerFrame: 4
+  grassClearance: 0.35
+  modelsCastShadows: 0
+  modelsReceiveShadows: 1
+  breakable: 1
+  breakRadiusFactor: 1
+  fullDamageSpeed: 25
+  radiusBoostAtFullDamage: 0.6
+  breakSubdivision: 2
+  fallingPieces: 1
+  minPieceCells: 12
+  maxPiecesPerHit: 6
+  pieceWeight: 3
+  debrisWeight: 0.15
+  maxPushOutSpeed: 1.5
+  pieceBreakSpeed: 3
+  pieceImpactRadius: 0.25
+  pieceGraceTime: 0.5
+  pieceGrassMinSpeed: 1
+  pieceGrassRadius: 0.7
+  pieceGrassDrag: 0.92
+  maxPieces: 30
+  pieceLifetime: 25
+  debrisSizeInRockRadii: 0.45
+  debrisSpread: 4
+  maxDebris: 300
+  minCubesPerHit: 2
+  maxCubesPerHit: 40
+  cubeFraction: 0.25
+  maxCubeGrow: 2.5
+  absorbVolumeFactor: 1
 --- !u!1 &1634029173
 GameObject:
   m_ObjectHideFlags: 0
