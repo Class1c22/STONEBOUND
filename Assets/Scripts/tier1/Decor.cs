@@ -74,6 +74,8 @@ public class WorldDecorator : MonoBehaviour
     public int modelCellGrassCells = 6;
     [Tooltip("Скільки клітинок моделей генерується за кадр (перше заповнення йде одразу все)")]
     public int modelCellsPerFrame = 4;
+    [Tooltip("Запас між краєм моделі й травою, у клітинках сітки трави. Збільш, якщо трава ще лізе в модель")]
+    [Range(0f, 2f)] public float grassClearance = 0.35f;
     public bool modelsCastShadows = false;
     public bool modelsReceiveShadows = true;
 
@@ -92,7 +94,12 @@ public class WorldDecorator : MonoBehaviour
     [Tooltip("Менші шматки не падають, а розсипаються на кубики (в дрібних вокселях)")]
     public int minPieceCells = 12;
     public int maxPiecesPerHit = 6;
-    public float pieceMassInRocks = 0.4f;
+    [Tooltip("Маса відламаного шматка відносно маси каменя. Більше = важчий, камінь його не відкидає, а штовхає")]
+    public float pieceWeight = 3f;
+    [Tooltip("Маса уламка-кубика відносно маси каменя (мінімум 0.05)")]
+    public float debrisWeight = 0.15f;
+    [Tooltip("Максимальна швидкість, з якою фізика виштовхує шматок із каменя. Мало = не підстрибує, коли з'являється поруч з каменем")]
+    public float maxPushOutSpeed = 1.5f;
     public int maxPieces = 30;
     public float pieceLifetime = 25f;
     [Tooltip("Розмір уламка-кубика в радіусах стартового каменя")]
@@ -578,6 +585,8 @@ public class WorldDecorator : MonoBehaviour
         visible = null;
         if (modelMat != null) Destroy(modelMat);
         if (modelPalette != null) Destroy(modelPalette);
+        if (deadMat != null) Destroy(deadMat);
+        deadMat = null;
         modelMat = null;
         modelPalette = null;
     }
@@ -940,8 +949,10 @@ public class WorldDecorator : MonoBehaviour
             inst.bounds = new Bounds(new Vector3(px, gy + h * 0.5f, pz), new Vector3(half * 2.9f, h * 1.1f, half * 2.9f));
             cell.insts.Add(inst);
 
-            // під моделлю трава не росте (ширина моделі + пів товщини травинки)
-            zones.Add(new Vector3(px, pz, half * 1.05f + grass.CellSize * 0.35f));
+            // Під моделлю трава не росте. Зона = коло, що накриває всю квадратну основу при будь-якому yaw:
+            // 1.42 (діагональ квадрата) * half + пів товщини травинки (її бокова грань) + запас grassClearance.
+            float bladeHalf = grass.CellSize * 0.5f;
+            zones.Add(new Vector3(px, pz, half * 1.42f + bladeHalf + grass.CellSize * grassClearance));
 
             if (!any) { total = inst.bounds; any = true; }
             else total.Encapsulate(inst.bounds);
@@ -1227,6 +1238,29 @@ public class WorldDecorator : MonoBehaviour
         if (debrisRoot == null) debrisRoot = new GameObject("DecorDebris").transform;
     }
 
+    // Матеріал без відскоку і з великим тертям: шматки й кубики не пригають від каменя
+    PhysicsMaterial deadMat;
+
+    PhysicsMaterial DeadMaterial()
+    {
+        if (deadMat != null) return deadMat;
+        deadMat = new PhysicsMaterial("DecorDead")
+        {
+            bounciness = 0f,
+            dynamicFriction = 0.9f,
+            staticFriction = 1f,
+            bounceCombine = PhysicsMaterialCombine.Minimum,
+            frictionCombine = PhysicsMaterialCombine.Maximum
+        };
+        return deadMat;
+    }
+
+    float RockMass()
+    {
+        if (rockBody == null && rock != null) rockBody = rock.GetComponent<Rigidbody>();
+        return rockBody != null ? rockBody.mass : 1f;
+    }
+
     // Падаючий шматок моделі: compIdx містить його вокселі
     void SpawnPiece(ModelInst inst, int gw, int gh, int gd, Vector3 rockCenter, Vector3 rockVel)
     {
@@ -1261,11 +1295,13 @@ public class WorldDecorator : MonoBehaviour
         var box = go.AddComponent<BoxCollider>();
         box.center = bnd.center;
         box.size = Vector3.Max(bnd.size, Vector3.one * 0.001f);
+        box.sharedMaterial = DeadMaterial();
 
         var rb = go.AddComponent<Rigidbody>();
-        float rockMass = rockBody != null ? rockBody.mass : 1f;
-        rb.mass = Mathf.Max(0.05f, rockMass * pieceMassInRocks);
-        rb.angularDamping = 0.5f;
+        rb.mass = Mathf.Max(0.05f, RockMass() * pieceWeight);
+        rb.linearDamping = 0.2f;
+        rb.angularDamping = 1f;
+        rb.maxDepenetrationVelocity = Mathf.Max(0.1f, maxPushOutSpeed);
 
         // валиться від каменя: горизонтальний напрямок від нього
         Vector3 away = go.transform.TransformPoint(bnd.center) - rockCenter;
@@ -1346,8 +1382,11 @@ public class WorldDecorator : MonoBehaviour
             rend.shadowCastingMode = ShadowCastingMode.Off;
             var box = cube.AddComponent<BoxCollider>();
             box.size = Vector3.one;
+            box.sharedMaterial = DeadMaterial();
             d = cube.AddComponent<Rigidbody>();
-            d.mass = 0.05f;
+            d.mass = Mathf.Max(0.05f, RockMass() * debrisWeight);
+            d.angularDamping = 0.5f;
+            d.maxDepenetrationVelocity = Mathf.Max(0.1f, maxPushOutSpeed);
             cube.AddComponent<Absorbable>();
             debrisPool[debrisIndex] = d;
         }
