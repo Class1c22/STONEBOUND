@@ -284,7 +284,7 @@ public class GrassField : MonoBehaviour
     // ---------- доступ для інших скриптів (Decor.cs ставить декор лише на лужайки й під розмір трави) ----------
 
     // Трава створена і знає свій розмір (після Setup)
-    public bool Ready => built && vs > 0f;
+    public bool Ready => built && vs > 0f && streamInit && !initialFill;
     // Розмір великого вокселя трави = сторона клітинки сітки, в метрах
     public float CellSize => vs;
     public float MinBladeHeight => minVoxels * vs;
@@ -299,6 +299,72 @@ public class GrassField : MonoBehaviour
     {
         if (vs <= 0f) return 0f;
         return MeadowMask(Mathf.FloorToInt(worldPos.x / vs), Mathf.FloorToInt(worldPos.z / vs));
+    }
+
+    // Чи є ціла травинка поблизу точки (для дрібного декору: не ставити його всередину трави).
+    // Чанк, якого ще немає, вважається порожнім.
+    public bool BladeNear(Vector3 p, float radius)
+    {
+        if (vs <= 0f) return false;
+        float half = thickness * vs * 0.5f;
+        float rr = radius + half;
+        float cw = chunkCells * vs;
+        int cx0 = Mathf.FloorToInt((p.x - rr) / cw), cx1 = Mathf.FloorToInt((p.x + rr) / cw);
+        int cz0 = Mathf.FloorToInt((p.z - rr) / cw), cz1 = Mathf.FloorToInt((p.z + rr) / cw);
+        for (int cz = cz0; cz <= cz1; cz++)
+        for (int cx = cx0; cx <= cx1; cx++)
+        {
+            if (!chunks.TryGetValue(new Vector2Int(cx, cz), out Chunk ch) || ch.empty) continue;
+            foreach (var b in ch.blades)
+                if (Mathf.Abs(b.pos.x - p.x) <= rr && Mathf.Abs(b.pos.z - p.z) <= rr) return true;
+        }
+        return false;
+    }
+
+    // Зони без трави під моделі декору: owner = клітинка декору, zone = (x, z, радіус).
+    // Травинки в цих зонах зникають і більше не садяться, поки зони не зняті.
+    readonly Dictionary<Vector2Int, List<Vector3>> freeZones = new Dictionary<Vector2Int, List<Vector3>>();
+
+    bool InFreeZone(float x, float z)
+    {
+        foreach (var list in freeZones.Values)
+            for (int i = 0; i < list.Count; i++)
+            {
+                Vector3 zn = list[i];
+                float dx = x - zn.x, dz = z - zn.y;
+                if (dx * dx + dz * dz < zn.z * zn.z) return true;
+            }
+        return false;
+    }
+
+    public void SetFreeZones(Vector2Int owner, List<Vector3> zones)
+    {
+        freeZones[owner] = zones;
+
+        // прибираємо вже посаджені цілі травинки (вдарені не чіпаємо)
+        foreach (var zn in zones)
+        foreach (var chunk in chunks.Values)
+        {
+            if (chunk.empty) continue;
+            if (chunk.bounds.SqrDistance(new Vector3(zn.x, chunk.bounds.center.y, zn.y)) > zn.z * zn.z) continue;
+
+            bool changed = false;
+            for (int i = chunk.blades.Count - 1; i >= 0; i--)
+            {
+                Blade b = chunk.blades[i];
+                if (b.cells != null) continue;
+                float dx = b.pos.x - zn.x, dz = b.pos.z - zn.y;
+                if (dx * dx + dz * dz >= zn.z * zn.z) continue;
+                chunk.blades.RemoveAt(i);
+                changed = true;
+            }
+            if (changed) chunk.dirty = true;
+        }
+    }
+
+    public void RemoveFreeZones(Vector2Int owner)
+    {
+        freeZones.Remove(owner);
     }
 
     // Висота землі в точці (той самий промінь і ліміт нахилу, що й для травинок)
@@ -478,6 +544,7 @@ public class GrassField : MonoBehaviour
 
         float px = (ix + 0.5f + (jx - 0.5f) * placementJitter) * vs;
         float pz = (iz + 0.5f + (jz - 0.5f) * placementJitter) * vs;
+        if (freeZones.Count > 0 && InFreeZone(px, pz)) return;
         if (!SampleGround(px, pz, minNormalY, out float py)) return;
         py -= vs * 0.1f;   // трохи в землю, щоб не було щілин
 
