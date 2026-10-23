@@ -11,7 +11,8 @@ using UnityEngine.Rendering;
 // - ціла травинка = стовпчик із кубів, малюється GPU-інстансингом без кастомного шейдера (матеріали URP/Lit);
 // - при ударі травинка стає дрібною воксельною сіткою, як стіна у VoxelWorld: камінь вибиває кулю вокселів
 //   (видно дірку), решта травинки стоїть далі, а шматки, що відірвались від землі, падають з фізикою;
-// - вибиті вокселі розлітаються кубиками (Rigidbody + Absorbable): камінь всмоктує їх по E (RockAbsorber.Suck) і росте.
+// - вибиті вокселі розлітаються кубиками (Rigidbody + Absorbable): камінь всмоктує їх по E (RockAbsorber.Suck) і росте;
+// - BreakInSphere: траву в сфері ламають і падаючі шматки декору (WorldDecorator).
 public class GrassField : MonoBehaviour
 {
     [Header("Масштаб")]
@@ -107,7 +108,7 @@ public class GrassField : MonoBehaviour
     public float pieceTipSpeed = 1.2f;
     [Tooltip("Яку частку швидкості каменя шматок перейме")]
     [Range(0f, 1f)] public float pieceKick = 0.4f;
-    [Tooltip("Скільки шматків одночасно живе (найстаріші зникають)")]
+    [Tooltip("Скільки шматків одночасно живе (найстарші зникають)")]
     public int maxPieces = 40;
     [Tooltip("Скільки секунд лежить шматок, потім зникає")]
     public float pieceLifetime = 25f;
@@ -133,7 +134,7 @@ public class GrassField : MonoBehaviour
     public float debrisSizeInRockRadii = 0.45f;
     [Tooltip("Швидкість розльоту")]
     public float debrisSpread = 4f;
-    [Tooltip("Розмір пулу кубиків (найстаріші використовуються повторно, як у VoxelWorld)")]
+    [Tooltip("Розмір пулу кубиків (найстарші використовуються повторно, як у VoxelWorld)")]
     public int maxDebris = 600;
     [Tooltip("Стеля нових кубиків за кадр (захист від просадки FPS)")]
     public int maxDebrisPerFrame = 120;
@@ -789,8 +790,25 @@ public class GrassField : MonoBehaviour
         float damage = Mathf.Clamp01(rockVel.magnitude / Mathf.Max(0.01f, fullDamageSpeed));
         if (sucking) damage = Mathf.Max(damage, suckDamage);
         r *= 1f + damage * Mathf.Max(0f, radiusBoostAtFullDamage);   // сильніший удар = більша яма
-        float r2 = r * r;
 
+        BreakSphere(c, r, damage, rockVel);
+    }
+
+    // Те саме для будь-якого тіла: падаючий шматок декору (WorldDecorator) ламає траву, в яку врізається.
+    // Повертає, скільки травинок зачеплено.
+    public int BreakInSphere(Vector3 c, float r, Vector3 vel)
+    {
+        if (!Ready || r <= 0f) return 0;
+
+        float damage = Mathf.Clamp01(vel.magnitude / Mathf.Max(0.01f, fullDamageSpeed));
+        r *= 1f + damage * Mathf.Max(0f, radiusBoostAtFullDamage);
+        return BreakSphere(c, r, damage, vel);
+    }
+
+    // Спільне ядро: вибиває кулю вокселів у всіх травинках, яких торкається сфера (c, r)
+    int BreakSphere(Vector3 c, float r, float damage, Vector3 vel)
+    {
+        float r2 = r * r;
         float half = thickness * vs * 0.5f;
 
         destroyedCells.Clear();
@@ -804,7 +822,7 @@ public class GrassField : MonoBehaviour
             {
                 Blade b = list[i];
 
-                // швидка перевірка: найближча точка вихідного стовпчика до центру каменя
+                // швидка перевірка: найближча точка вихідного стовпчика до центру сфери
                 float top = b.pos.y + b.H * vs;
                 Vector3 q = new Vector3(
                     Mathf.Clamp(c.x, b.pos.x - half, b.pos.x + half),
@@ -812,7 +830,7 @@ public class GrassField : MonoBehaviour
                     Mathf.Clamp(c.z, b.pos.z - half, b.pos.z + half));
                 if ((c - q).sqrMagnitude > r2) continue;
 
-                if (!Carve(b, chunk, c, r, rockVel)) continue;
+                if (!Carve(b, chunk, c, r, vel)) continue;
                 broken++;
 
                 if (b.count <= 0) list.RemoveAt(i);
@@ -822,11 +840,12 @@ public class GrassField : MonoBehaviour
 
         if (broken > 0)
         {
-            if (debris) SpawnForCells(damage, broken, c, rockVel);
+            if (debris) SpawnForCells(damage, broken, c, vel);
             destroyedCells.Clear();
             TotalBroken += broken;
             BladesBroken?.Invoke(broken);
         }
+        return broken;
     }
 
     // ---------- падаючий шматок травинки ----------
@@ -835,7 +854,7 @@ public class GrassField : MonoBehaviour
     {
         EnsureRoot();
 
-        // не тримаємо більше maxPieces шматків: найстаріші зникають
+        // не тримаємо більше maxPieces шматків: найстарші зникають
         while (pieces.Count >= Mathf.Max(1, maxPieces))
         {
             GameObject old = pieces.Dequeue();

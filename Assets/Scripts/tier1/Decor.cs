@@ -100,6 +100,18 @@ public class WorldDecorator : MonoBehaviour
     public float debrisWeight = 0.15f;
     [Tooltip("Максимальна швидкість, з якою фізика виштовхує шматок із каменя. Мало = не підстрибує, коли з'являється поруч з каменем")]
     public float maxPushOutSpeed = 1.5f;
+    [Tooltip("Швидкість удару (м/с), з якої шматок, що впав або вдарився, ламається (вибиває яму в собі)")]
+    public float pieceBreakSpeed = 3f;
+    [Tooltip("Радіус ями від удару об землю, в частках висоти шматка")]
+    public float pieceImpactRadius = 0.25f;
+    [Tooltip("Скільки секунд після відлому шматок не ламається (щоб не розбивався в момент появи)")]
+    public float pieceGraceTime = 0.5f;
+    [Tooltip("Шматок ламає траву, в яку врізається, коли летить швидше за це (м/с)")]
+    public float pieceGrassMinSpeed = 1f;
+    [Tooltip("Радіус, яким шматок б'є траву, в частках його розміру")]
+    public float pieceGrassRadius = 0.7f;
+    [Tooltip("Яку частку швидкості шматок зберігає після удару по траві (менше = трава гальмує сильніше)")]
+    [Range(0.5f, 1f)] public float pieceGrassDrag = 0.92f;
     public int maxPieces = 30;
     public float pieceLifetime = 25f;
     [Tooltip("Розмір уламка-кубика в радіусах стартового каменя")]
@@ -547,6 +559,7 @@ public class WorldDecorator : MonoBehaviour
     readonly Stack<int> stack = new Stack<int>();
     readonly Dictionary<byte, Mesh> cubeMeshes = new Dictionary<byte, Mesh>();
     readonly Queue<GameObject> pieces = new Queue<GameObject>();
+    readonly List<DecorPieceBody> livePieces = new List<DecorPieceBody>();
     Rigidbody[] debrisPool;
     int debrisIndex, piecesThisHit;
     Transform debrisRoot;
@@ -1079,8 +1092,199 @@ public class WorldDecorator : MonoBehaviour
             }
         }
 
-        if (hit) SpawnCubes(damage, c, rockVel);
+        // лежачі й падаючі шматки камінь ламає так само, як стоячі моделі
+        for (int i = livePieces.Count - 1; i >= 0; i--)
+        {
+            DecorPieceBody p = livePieces[i];
+            if (p == null || p.dead) { livePieces.RemoveAt(i); continue; }
+            if (Time.time - p.spawnTime < pieceGraceTime) continue;
+            if (p.rend.bounds.SqrDistance(c) > r2) continue;
+            if (CarvePiece(p, c, r)) hit = true;
+            if (p.dead) livePieces.RemoveAt(i);
+        }
+
+        if (hit) SpawnCubes(damage, c, rockVel, true);
         destroyed.Clear();
+    }
+
+    // =====================================================================================
+    // Ламання відірваних шматків (падіння, удар об землю, удар каменя, удар по траві)
+    // =====================================================================================
+
+    // Вибиває кулю вокселів у шматку, відкидає уламки, що відірвались від його основної частини
+    bool CarvePiece(DecorPieceBody p, Vector3 c, float r)
+    {
+        int gw = p.gw, gh = p.gh, gd = p.gd;
+        Transform t = p.transform;
+        float u = 1f / gh;
+        float offX = gw * 0.5f * u, offZ = gd * 0.5f * u;
+        Vector3 lc = Quaternion.Inverse(t.rotation) * (c - t.position) / p.scale;
+        float rl = r / p.scale;
+        float rl2 = rl * rl, half = u * 0.5f;
+
+        int x0 = Mathf.Max(0, Mathf.FloorToInt((lc.x + offX - rl) / u));
+        int x1 = Mathf.Min(gw - 1, Mathf.FloorToInt((lc.x + offX + rl) / u));
+        int y0 = Mathf.Max(0, Mathf.FloorToInt((lc.y - rl) / u));
+        int y1 = Mathf.Min(gh - 1, Mathf.FloorToInt((lc.y + rl) / u));
+        int z0 = Mathf.Max(0, Mathf.FloorToInt((lc.z + offZ - rl) / u));
+        int z1 = Mathf.Min(gd - 1, Mathf.FloorToInt((lc.z + offZ + rl) / u));
+
+        int removed = 0;
+        for (int z = z0; z <= z1; z++)
+        for (int y = y0; y <= y1; y++)
+        for (int x = x0; x <= x1; x++)
+        {
+            int idx = x + gw * (y + gh * z);
+            byte id = p.cells[idx];
+            if (id == 0) continue;
+
+            Vector3 q = new Vector3((x + 0.5f) * u - offX, (y + 0.5f) * u, (z + 0.5f) * u - offZ);
+            float dx = Mathf.Max(Mathf.Abs(lc.x - q.x) - half, 0f);
+            float dy = Mathf.Max(Mathf.Abs(lc.y - q.y) - half, 0f);
+            float dz = Mathf.Max(Mathf.Abs(lc.z - q.z) - half, 0f);
+            if (dx * dx + dy * dy + dz * dz > rl2) continue;
+
+            p.cells[idx] = 0;
+            p.count--;
+            removed++;
+            AddDestPiece(p, x, y, z, id);
+        }
+        if (removed == 0) return false;
+
+        if (p.count > 0) SplitPiece(p);
+        RefreshPiece(p);
+        return true;
+    }
+
+    void AddDestPiece(DecorPieceBody p, int x, int y, int z, byte id)
+    {
+        float u = 1f / p.gh;
+        Vector3 lp = new Vector3((x + 0.5f - p.gw * 0.5f) * u, (y + 0.5f) * u, (z + 0.5f - p.gd * 0.5f) * u);
+        destroyed.Add(new Dest { pos = p.transform.TransformPoint(lp), id = id, size = u * p.scale });
+    }
+
+    // Лишає найбільшу зв'язну частину шматка, решта розсипається на кубики
+    void SplitPiece(DecorPieceBody p)
+    {
+        byte[] cells = p.cells;
+        int gw = p.gw, gh = p.gh, gd = p.gd;
+        int layer = gw * gh;
+        var visited = new bool[cells.Length];
+        int comps = 0, bestStart = -1, bestSize = 0;
+
+        for (int start = 0; start < cells.Length; start++)
+        {
+            if (cells[start] == 0 || visited[start]) continue;
+            comps++;
+            int size = 0;
+            stack.Clear();
+            stack.Push(start);
+            visited[start] = true;
+            while (stack.Count > 0)
+            {
+                int idx = stack.Pop();
+                size++;
+                int z = idx / layer;
+                int rem = idx - z * layer;
+                int y = rem / gw;
+                int x = rem - y * gw;
+                TryVisit(cells, visited, x + 1, y, z, gw, gh, gd);
+                TryVisit(cells, visited, x - 1, y, z, gw, gh, gd);
+                TryVisit(cells, visited, x, y + 1, z, gw, gh, gd);
+                TryVisit(cells, visited, x, y - 1, z, gw, gh, gd);
+                TryVisit(cells, visited, x, y, z + 1, gw, gh, gd);
+                TryVisit(cells, visited, x, y, z - 1, gw, gh, gd);
+            }
+            if (size > bestSize) { bestSize = size; bestStart = start; }
+        }
+        if (comps <= 1) return;
+
+        // позначаємо найбільшу частину, все інше розсипається
+        var keep = new bool[cells.Length];
+        stack.Clear();
+        stack.Push(bestStart);
+        keep[bestStart] = true;
+        while (stack.Count > 0)
+        {
+            int idx = stack.Pop();
+            int z = idx / layer;
+            int rem = idx - z * layer;
+            int y = rem / gw;
+            int x = rem - y * gw;
+            TryVisit(cells, keep, x + 1, y, z, gw, gh, gd);
+            TryVisit(cells, keep, x - 1, y, z, gw, gh, gd);
+            TryVisit(cells, keep, x, y + 1, z, gw, gh, gd);
+            TryVisit(cells, keep, x, y - 1, z, gw, gh, gd);
+            TryVisit(cells, keep, x, y, z + 1, gw, gh, gd);
+            TryVisit(cells, keep, x, y, z - 1, gw, gh, gd);
+        }
+
+        int n = 0;
+        for (int i = 0; i < cells.Length; i++)
+        {
+            if (cells[i] == 0 || keep[i]) continue;
+            if (n++ % 3 == 0)
+            {
+                int z = i / layer;
+                int rem = i - z * layer;
+                int y = rem / gw;
+                int x = rem - y * gw;
+                AddDestPiece(p, x, y, z, cells[i]);
+            }
+            cells[i] = 0;
+            p.count--;
+        }
+    }
+
+    // Оновлює меш, колайдер, масу й об'єм шматка після ламання
+    void RefreshPiece(DecorPieceBody p)
+    {
+        if (p.count <= 0)
+        {
+            p.dead = true;
+            Destroy(p.gameObject);
+            return;
+        }
+
+        FillMesh(p.mesh, p.cells, p.gw, p.gh, p.gd);
+        Bounds b = p.mesh.bounds;
+        p.box.center = b.center;
+        p.box.size = Vector3.Max(b.size, Vector3.one * 0.001f);
+        p.rb.mass = Mathf.Max(0.05f, p.baseMass * p.count / (float)p.initialCount);
+
+        var a = p.GetComponent<Absorbable>();
+        if (a != null) a.volume = p.count * p.voxelVolume * absorbVolumeFactor;
+    }
+
+    // Викликається зі шматка при зіткненні: сильний удар об землю чи стіну вибиває яму в самому шматку
+    public void OnPieceImpact(DecorPieceBody p, Collision col)
+    {
+        if (p.dead || Time.time - p.spawnTime < pieceGraceTime) return;
+        if (col.collider.GetComponentInParent<RockAbsorber>() != null) return;   // камінь ламає шматок окремо
+        if (col.rigidbody != null && col.rigidbody.mass < p.rb.mass * 0.2f) return;   // дрібні кубики не ламають
+
+        float speed = col.relativeVelocity.magnitude;
+        if (speed < pieceBreakSpeed) return;
+
+        ContactPoint cp = col.GetContact(0);
+        float damage = Mathf.Clamp01(speed / Mathf.Max(0.01f, fullDamageSpeed));
+        float r = Mathf.Max(p.scale / p.gh * 1.5f, p.scale * pieceImpactRadius * (1f + damage));
+
+        destroyed.Clear();
+        if (CarvePiece(p, cp.point, r)) SpawnCubes(damage, cp.point, p.rb.linearVelocity, false);
+        destroyed.Clear();
+    }
+
+    // Викликається зі шматка щофізикакадр: летючий шматок ламає траву, в яку врізається
+    public void PieceVsGrass(DecorPieceBody p)
+    {
+        if (p.dead || grass == null || !grass.Ready || p.rb == null) return;
+        Vector3 v = p.rb.linearVelocity;
+        if (v.magnitude < pieceGrassMinSpeed) return;
+
+        Bounds b = p.rend.bounds;
+        float rad = (b.extents.x + b.extents.y + b.extents.z) / 3f * pieceGrassRadius;
+        if (grass.BreakInSphere(b.center, rad, v) > 0) p.rb.linearVelocity = v * pieceGrassDrag;
     }
 
     // Дрібна сітка екземпляра: кожен воксель моделі ділиться на s x s x s
@@ -1315,6 +1519,22 @@ public class WorldDecorator : MonoBehaviour
         var a = go.AddComponent<Absorbable>();
         a.volume = compIdx.Count * vox * vox * vox * absorbVolumeFactor;
 
+        // шматок знає свої вокселі: його можна розбити (удар об землю, камінь), він б'є траву
+        var body = go.AddComponent<DecorPieceBody>();
+        body.owner = this;
+        body.cells = mask;
+        body.gw = gw; body.gh = gh; body.gd = gd;
+        body.scale = inst.scale;
+        body.count = body.initialCount = compIdx.Count;
+        body.voxelVolume = vox * vox * vox;
+        body.baseMass = rb.mass;
+        body.spawnTime = Time.time;
+        body.mesh = mesh;
+        body.rb = rb;
+        body.box = box;
+        body.rend = rend;
+        livePieces.Add(body);
+
         pieces.Enqueue(go);
         Destroy(go, Mathf.Max(1f, pieceLifetime));
     }
@@ -1327,7 +1547,8 @@ public class WorldDecorator : MonoBehaviour
     }
 
     // Кубики з вибитих вокселів: слабкий удар = мало, сильний = більше, але не більше maxCubesPerHit
-    void SpawnCubes(float damage, Vector3 rockCenter, Vector3 rockVel)
+    // origin = центр каменя (avoidRock = true) або точка удару шматка (avoidRock = false)
+    void SpawnCubes(float damage, Vector3 rockCenter, Vector3 rockVel, bool avoidRock)
     {
         int n = destroyed.Count;
         if (n == 0 || modelMat == null) return;
@@ -1350,7 +1571,7 @@ public class WorldDecorator : MonoBehaviour
             Vector3 dir = pos - rockCenter;
             float dist = dir.magnitude;
             dir = dist > 1e-4f ? dir / dist : Random.onUnitSphere;
-            float minDist = rock.Radius * 1.1f;
+            float minDist = avoidRock ? rock.Radius * 1.1f : 0f;
             if (dist < minDist) pos = rockCenter + dir * minDist;
 
             Rigidbody d = GetDebris(dst.id);
@@ -1398,5 +1619,30 @@ public class WorldDecorator : MonoBehaviour
         d.GetComponent<MeshFilter>().sharedMesh = CubeMesh(id);
         debrisIndex = (debrisIndex + 1) % debrisPool.Length;   // найстаріший кубик використовується повторно
         return d;
+    }
+}
+
+// Відірваний від моделі шматок. Живе в WorldDecorator.cs, бо створюється лише кодом (AddComponent).
+// Знає свої вокселі, тому ламається при ударі об землю чи від каменя, а в польоті ламає траву.
+public class DecorPieceBody : MonoBehaviour
+{
+    [System.NonSerialized] public WorldDecorator owner;
+    [System.NonSerialized] public byte[] cells;
+    [System.NonSerialized] public int gw, gh, gd, count, initialCount;
+    [System.NonSerialized] public float scale, voxelVolume, baseMass, spawnTime;
+    [System.NonSerialized] public Mesh mesh;
+    [System.NonSerialized] public Rigidbody rb;
+    [System.NonSerialized] public BoxCollider box;
+    [System.NonSerialized] public MeshRenderer rend;
+    [System.NonSerialized] public bool dead;
+
+    void OnCollisionEnter(Collision col)
+    {
+        if (owner != null) owner.OnPieceImpact(this, col);
+    }
+
+    void FixedUpdate()
+    {
+        if (owner != null) owner.PieceVsGrass(this);
     }
 }
