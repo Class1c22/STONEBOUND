@@ -281,6 +281,32 @@ public class GrassField : MonoBehaviour
         return Mathf.Max(0.01f, voxelSize);
     }
 
+    // ---------- доступ для інших скриптів (Decor.cs ставить декор лише на лужайки й під розмір трави) ----------
+
+    // Трава створена і знає свій розмір (після Setup)
+    public bool Ready => built && vs > 0f;
+    // Розмір великого вокселя трави = сторона клітинки сітки, в метрах
+    public float CellSize => vs;
+    public float MinBladeHeight => minVoxels * vs;
+    public float MaxBladeHeight => maxVoxels * vs;
+    public float AverageBladeHeight => 0.5f * (minVoxels + maxVoxels) * vs;
+
+    // Маска лужайки 0..1 для клітинки сітки (1 = центр лужайки, 0 = поза лужайкою)
+    public float MeadowAt(int ix, int iz) => MeadowMask(ix, iz);
+
+    // Те саме для точки у світі
+    public float MeadowAt(Vector3 worldPos)
+    {
+        if (vs <= 0f) return 0f;
+        return MeadowMask(Mathf.FloorToInt(worldPos.x / vs), Mathf.FloorToInt(worldPos.z / vs));
+    }
+
+    // Висота землі в точці (той самий промінь і ліміт нахилу, що й для травинок)
+    public bool TryGetGround(float x, float z, out float y)
+    {
+        return SampleGround(x, z, Mathf.Cos(maxSlope * Mathf.Deg2Rad), out y);
+    }
+
     void PrepareMaterials()
     {
         materials = new Material[colorBands];
