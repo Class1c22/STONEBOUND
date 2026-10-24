@@ -1,9 +1,11 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 // Генератор міста для 2 рівня: дороги, будинки, дерева й паркани з вокселів.
-// Повісь на порожній GameObject, перетягни VoxelWorld (RockAbsorber знайдеться сам).
+// Повісь на порожній GameObject, перетягни VoxelWorld. Камінь береться зі сцени сам (у Inspector його
+// призначати не треба): це працює й тоді, коли камінь приходить зі сцени 1 через TierTransition.
 //
 // Як це працює:
 //  * Світ ділиться на квартали. Вздовж західного й південного краю кожного кварталу йде дорога,
@@ -24,9 +26,8 @@ public class Tier2CityGenerator : MonoBehaviour
     }
 
     [Header("Зв'язки")]
+    [Tooltip("Якщо порожньо, береться VoxelWorld зі сцени")]
     public VoxelWorld world;
-    [Tooltip("Якщо порожньо, шукається сам")]
-    public RockAbsorber rock;
     public int seed = 12345;
 
     [Header("Стрімінг")]
@@ -98,6 +99,9 @@ public class Tier2CityGenerator : MonoBehaviour
     float vs;                                  // розмір вокселя
     int blockV, roadV, lotV, floorV, wallV, fenceV, gateV;
     int doorHalf = 4, doorH = 9;
+
+    // камінь береться зі сцени автоматично (див. FindRock), у Inspector його немає
+    RockAbsorber rock;
 
     float scanTimer;
     bool haveStart;
@@ -201,13 +205,32 @@ public class Tier2CityGenerator : MonoBehaviour
         if (scanTimer > 0f) return;
         scanTimer = Mathf.Max(0.05f, scanInterval);
 
-        if (rock == null)
+        RockAbsorber found = FindRock();
+        if (found == null) return;
+
+        // камінь змінився (заглушка нової сцени → справжній камінь): стартова точка береться заново
+        if (found != rock)
         {
-            rock = FindFirstObjectByType<RockAbsorber>();
-            if (rock == null) return;
+            rock = found;
+            haveStart = false;
         }
 
         ScanBlocks();
+    }
+
+    // Під час переходу між сценами одночасно існують заглушка нової сцени й камінь, що прийшов зі сцени 1
+    // (він ще може стояти на старих координатах). Беремо заглушку: вона стоїть там, де камінь опиниться
+    // після прибуття, і лише потім TierTransition її знищує. Коли камінь один, беремо його.
+    RockAbsorber FindRock()
+    {
+        RockAbsorber[] all = FindObjectsByType<RockAbsorber>(FindObjectsSortMode.None);
+        if (all.Length == 0) return null;
+        if (all.Length == 1) return all[0];
+
+        Scene active = SceneManager.GetActiveScene();
+        for (int i = 0; i < all.Length; i++)
+            if (all[i].gameObject.scene == active) return all[i];
+        return all[0];
     }
 
     void ScanBlocks()
