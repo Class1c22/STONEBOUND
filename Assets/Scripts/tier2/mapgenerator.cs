@@ -117,6 +117,13 @@ public class Tier2CityGenerator : MonoBehaviour
     // камінь береться зі сцени автоматично (див. FindRock), у Inspector його немає
     RockAbsorber rock;
 
+    // для Tier2Grass: які квартали вже повністю розставлені
+    readonly HashSet<Vector2Int> doneBlocks = new HashSet<Vector2Int>();
+    public bool LayoutReady => vs > 0f && blockV > 0;
+    public int BlockVoxels => blockV;
+    public int RoadVoxels => roadV;
+    public bool IsBlockDone(int bx, int bz) => doneBlocks.Contains(new Vector2Int(bx, bz));
+
     float scanTimer;
     bool haveStart;
     Vector2 startLocal, lastRockLocal;
@@ -440,6 +447,7 @@ public class Tier2CityGenerator : MonoBehaviour
                 yield return null;
             }
             ops.Clear();
+            doneBlocks.Add(block);
             yield return null;
         }
     }

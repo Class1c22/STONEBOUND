@@ -119,6 +119,75 @@ NavMeshSettings:
     debug:
       m_Flags: 0
   m_NavMeshData: {fileID: 0}
+--- !u!1 &261910510
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 261910511}
+  - component: {fileID: 261910512}
+  m_Layer: 0
+  m_Name: Tier2Grass
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &261910511
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 261910510}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: -44.048, y: -3.21632, z: -12.474999}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1838282995}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &261910512
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 261910510}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0471071becf137f41b61255e8c9881a0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Tier2Grass
+  city: {fileID: 498176891}
+  world: {fileID: 843798773}
+  seed: 777
+  bladesPerCell: 1.2
+  heightMinVoxels: 1.5
+  heightMaxVoxels: 3
+  widthVoxels: 0.55
+  groundY: 0
+  roadMarginCells: 0
+  viewRadius: 40
+  viewRadiusInRockRadii: 20
+  chunksPerBlockSide: 4
+  chunksPerScan: 3
+  scanInterval: 0.15
+  maxBendAngle: 80
+  wakeBend: 0.55
+  wakeWidth: 0.5
+  pressSpeed: 10
+  recoverTime: 8
+  travelInfluence: 0.7
+  fullWakeSpeed: 8
+  colorBands: 3
+  baseColor: {r: 0.16, g: 0.42, b: 0.12, a: 1}
+  tipColor: {r: 0.46, g: 0.74, b: 0.22, a: 1}
+  receiveShadows: 1
 --- !u!1 &410087039
 GameObject:
   m_ObjectHideFlags: 0
@@ -346,10 +415,14 @@ MonoBehaviour:
   lotsPerSide: 2
   roadMode: 0
   roadHeight: 0.03
+  streetLampChance: 0.7
   houseChance: 0.6
   treeLotChance: 0.25
+  specialLotChance: 0.25
   fenceChance: 0.6
   treesPerYardMax: 2
+  propsPerYardMax: 2
+  mailboxChance: 0.7
   treesPerGroveMin: 2
   treesPerGroveMax: 5
   houseWidthMin: 6
@@ -362,6 +435,8 @@ MonoBehaviour:
   flatRoofChance: 0.2
   chimneyChance: 0.5
   hollowHouses: 0
+  pillarSpacing: 10
+  furnishHouses: 1
   trunkHeightMin: 3.5
   trunkHeightMax: 5.5
   crownRadiusMin: 1.6
@@ -692,6 +767,7 @@ Transform:
   - {fileID: 843798774}
   - {fileID: 416857264}
   - {fileID: 1782221770}
+  - {fileID: 261910511}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1660057539 &9223372036854775807
