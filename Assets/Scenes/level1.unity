@@ -11757,10 +11757,19 @@ MonoBehaviour:
   - {fileID: 4900000, guid: 040c7afd871fa9b4a9fb82f73b1cd80c, type: 3}
   - {fileID: 4900000, guid: acd2f177c81613548b668cf488c75023, type: 3}
   - {fileID: 4900000, guid: 5361e3abdf4a0cf48adfed5ea55d5fd6, type: 3}
+  proceduralGiants: 1
+  giantModels: []
+  giantHeightInGrass: {x: 8, y: 16}
+  giantCellInGrass: 25
+  giantChance: 1
+  giantViewInGrass: 70
+  giantClearInGrass: 8
+  giantColliders: 1
+  giantsCastShadows: 0
   flowerHeightInGrass: {x: 0.9, y: 1.3}
   stoneHeightInGrass: {x: 0.6, y: 1.1}
-  flowerChance: 0.01
-  stoneChance: 0.005
+  flowerChance: 0.007
+  stoneChance: 0.007
   modelCellGrassCells: 6
   modelCellsPerFrame: 4
   grassClearance: 0.35
