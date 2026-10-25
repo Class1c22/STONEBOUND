@@ -62,6 +62,25 @@ public class WorldDecorator : MonoBehaviour
     public TextAsset[] stoneModels;
     [Tooltip("3 квітки. Файл .vox перейменуй у .vox.bytes і перетягни сюди")]
     public TextAsset[] flowerModels;
+
+    [Header("Гіганти: об'єкти 2 рівня на фоні (щоб було видно, що ти на рівні 1)")]
+    [Tooltip("Будувати гігантів кодом: 3 будинки, дерево, ялина, 2 машини, водонапірна вежа. Файли .vox не потрібні")]
+    public bool proceduralGiants = true;
+    [Tooltip("Додаткові свої моделі (необов'язково): файл .vox перейменуй у .vox.bytes і перетягни сюди. Вони стоять разом із процедурними")]
+    public TextAsset[] giantModels;
+    [Tooltip("Висота гіганта в середніх висотах травинки (8-16 = у рази вищий за траву)")]
+    public Vector2 giantHeightInGrass = new Vector2(8f, 16f);
+    [Tooltip("Сторона клітинки розстановки гігантів, у висотах травинки. Менше = гіганти частіше")]
+    public float giantCellInGrass = 25f;
+    [Tooltip("Шанс гіганта в клітинці")]
+    [Range(0f, 1f)] public float giantChance = 0.5f;
+    [Tooltip("Як далеко від каменя є гіганти, у висотах травинки (камера має це бачити: Far Clip Plane)")]
+    public float giantViewInGrass = 70f;
+    [Tooltip("Навколо місця старту гігантів немає, у висотах травинки")]
+    public float giantClearInGrass = 8f;
+    [Tooltip("Камінь не проїжджає крізь гігантів (коробковий колайдер за розміром моделі)")]
+    public bool giantColliders = true;
+    public bool giantsCastShadows = false;
     [Tooltip("Висота квітки в середніх висотах травинки (1 = як трава)")]
     public Vector2 flowerHeightInGrass = new Vector2(0.9f, 1.3f);
     [Tooltip("Висота каменя в середніх висотах травинки (1 = як трава)")]
@@ -504,6 +523,7 @@ public class WorldDecorator : MonoBehaviour
         public int W, H, D;
         public float inv;             // 1 / H
         public float halfFootprint;   // половина найбільшої ширини в висотах моделі
+        public float giantScale = 1f; // відносна висота гіганта (машина нижча за будинок)
     }
 
     // Один екземпляр моделі у світі
@@ -536,7 +556,7 @@ public class WorldDecorator : MonoBehaviour
     }
 
     DecorModel[] models = new DecorModel[0];   // спершу камені (stoneCount штук), далі квіти
-    int stoneCount, flowerCount;
+    int stoneCount, flowerCount, giantCount;
     Material modelMat;
     Texture2D modelPalette;
     bool modelsBuilt;
@@ -574,6 +594,7 @@ public class WorldDecorator : MonoBehaviour
 
     void ResetModelStream()
     {
+        ClearGiants();
         if (grass != null) foreach (var k in modelCells.Keys) grass.RemoveFreeZones(k);
         modelCells.Clear();
         modelPending.Clear();
@@ -588,13 +609,14 @@ public class WorldDecorator : MonoBehaviour
 
     void DestroyModels()
     {
+        ClearGiants();
         foreach (var m in models) if (m != null && m.mesh != null) Destroy(m.mesh);
         foreach (var cell in modelCells.Values)
             foreach (var inst in cell.insts) if (inst.mesh != null) Destroy(inst.mesh);
         foreach (var m in cubeMeshes.Values) if (m != null) Destroy(m);
         cubeMeshes.Clear();
         models = new DecorModel[0];
-        stoneCount = flowerCount = 0;
+        stoneCount = flowerCount = giantCount = 0;
         visible = null;
         if (modelMat != null) Destroy(modelMat);
         if (modelPalette != null) Destroy(modelPalette);
@@ -629,6 +651,8 @@ public class WorldDecorator : MonoBehaviour
         var list = new List<DecorModel>();
         stoneCount = AddModels(stoneModels, list, Idx);
         flowerCount = AddModels(flowerModels, list, Idx);
+        int procedural = proceduralGiants ? AddProceduralGiants(list, Idx) : 0;   // гіганти завжди в кінці списку
+        giantCount = procedural + AddModels(giantModels, list, Idx);
         models = list.ToArray();
         if (models.Length == 0)
         {
@@ -659,7 +683,7 @@ public class WorldDecorator : MonoBehaviour
         visible = new List<Matrix4x4>[models.Length];
         for (int i = 0; i < visible.Length; i++) visible[i] = new List<Matrix4x4>();
 
-        Debug.Log("[WorldDecorator] Моделей: " + stoneCount + " каменів, " + flowerCount + " квіток.", this);
+        Debug.Log("[WorldDecorator] Моделей: " + stoneCount + " каменів, " + flowerCount + " квіток, " + giantCount + " гігантів.", this);
     }
 
     int AddModels(TextAsset[] assets, List<DecorModel> list, System.Func<Color32, byte> idx)
@@ -843,6 +867,8 @@ public class WorldDecorator : MonoBehaviour
 
         if (breakable) BreakAroundRock();
         RenderModels();
+        UpdateGiants(focus);
+        RenderGiants();
     }
 
     // Вивантажує клітинки позаду (вони детерміновані, тож повернуться такими самими) і складає чергу нових
@@ -1537,6 +1563,461 @@ public class WorldDecorator : MonoBehaviour
 
         pieces.Enqueue(go);
         Destroy(go, Mathf.Max(1f, pieceLifetime));
+    }
+
+    // =====================================================================================
+    // Гіганти: об'єкти 2 рівня (будинки, паркани, машини...) у масштабі, поряд з яким камінь рівня 1 крихітний.
+    // Це нерухомий фон: не ламаються, ставляться за детермінованою сіткою навколо каменя без кінця.
+    // =====================================================================================
+
+    class GiantInst
+    {
+        public int model;
+        public Matrix4x4 matrix;
+        public Bounds bounds;
+        public GameObject body;   // колайдер (може бути null)
+    }
+
+    readonly Dictionary<Vector2Int, List<GiantInst>> giants = new Dictionary<Vector2Int, List<GiantInst>>();
+    readonly List<Vector2Int> giantRemove = new List<Vector2Int>();
+    Transform giantRoot;
+    float giantTimer;
+
+    // Ключ власника зон без трави: окремий від ключів клітинок моделей, щоб не перетиналися
+    static Vector2Int GiantOwner(Vector2Int k) => new Vector2Int(k.x + 1000003, k.y - 1000003);
+
+    void ClearGiants()
+    {
+        foreach (var kv in giants)
+        {
+            foreach (var g in kv.Value) if (g.body != null) Destroy(g.body);
+            if (grass != null) grass.RemoveFreeZones(GiantOwner(kv.Key));
+        }
+        giants.Clear();
+        giantTimer = 0f;
+    }
+
+    void UpdateGiants(Vector3 focus)
+    {
+        if (giantCount <= 0 || modelMat == null) return;
+        giantTimer -= Time.deltaTime;
+        if (giantTimer > 0f) return;
+        giantTimer = 0.25f;
+
+        float grassH = grass.AverageBladeHeight;
+        float cw = Mathf.Max(1f, giantCellInGrass * grassH);
+        int R = Mathf.Max(1, Mathf.CeilToInt(giantViewInGrass * grassH / cw));
+        var center = new Vector2Int(Mathf.FloorToInt(focus.x / cw), Mathf.FloorToInt(focus.z / cw));
+
+        // вивантажуємо далеких (вони детерміновані, тож повернуться такими самими)
+        float keep = R + 1.5f;
+        giantRemove.Clear();
+        foreach (var kv in giants)
+        {
+            float dx = kv.Key.x - center.x, dz = kv.Key.y - center.y;
+            if (dx * dx + dz * dz > keep * keep) giantRemove.Add(kv.Key);
+        }
+        foreach (var k in giantRemove)
+        {
+            foreach (var g in giants[k]) if (g.body != null) Destroy(g.body);
+            grass.RemoveFreeZones(GiantOwner(k));
+            giants.Remove(k);
+        }
+
+        for (int dz = -R; dz <= R; dz++)
+        for (int dx = -R; dx <= R; dx++)
+        {
+            if (dx * dx + dz * dz > (R + 0.5f) * (R + 0.5f)) continue;
+            var key = new Vector2Int(center.x + dx, center.y + dz);
+            if (!giants.ContainsKey(key)) giants[key] = GenerateGiantCell(key, cw, grassH);
+        }
+    }
+
+    List<GiantInst> GenerateGiantCell(Vector2Int key, float cw, float grassH)
+    {
+        var list = new List<GiantInst>();
+        var rng = new System.Random(unchecked(seed * 19349663 ^ key.x * 83492791 ^ key.y * 73856093 ^ 0x2545F491));
+
+        // усі числа беремо наперед: те саме місце завжди дає те саме
+        double roll = rng.NextDouble(), pick = rng.NextDouble(), sz = rng.NextDouble();
+        float jx = (float)rng.NextDouble(), jz = (float)rng.NextDouble();
+        float yaw = (float)rng.NextDouble() * 360f;
+
+        if (roll >= giantChance) return list;
+
+        int mi = stoneCount + flowerCount + Mathf.Min(giantCount - 1, (int)(pick * giantCount));
+        DecorModel dm = models[mi];
+        float h = grassH * Mathf.Lerp(giantHeightInGrass.x, giantHeightInGrass.y, (float)sz) * dm.giantScale;
+        float half = dm.halfFootprint * h;
+
+        // всередині клітинки з відступом від країв, щоб сусідні гіганти не злипалися
+        float px = (key.x + 0.15f + 0.7f * jx) * cw;
+        float pz = (key.y + 0.15f + 0.7f * jz) * cw;
+
+        // не на старті каменя
+        float clear = giantClearInGrass * grassH + half * 1.42f;
+        float sdx = px - spawn.x, sdz = pz - spawn.z;
+        if (sdx * sdx + sdz * sdz < clear * clear) return list;
+
+        grass.TryGetGround(px, pz, out float gy);   // якщо землі під променем немає, лишається висота об'єкта трави
+        gy -= h * 0.01f;
+
+        Quaternion rot = Quaternion.Euler(0f, yaw, 0f);
+        var inst = new GiantInst
+        {
+            model = mi,
+            matrix = Matrix4x4.TRS(new Vector3(px, gy, pz), rot, Vector3.one * h),
+            bounds = new Bounds(new Vector3(px, gy + h * 0.5f, pz), new Vector3(half * 2.9f, h * 1.1f, half * 2.9f))
+        };
+
+        if (giantColliders)
+        {
+            if (giantRoot == null) giantRoot = new GameObject("DecorGiants").transform;
+            var go = new GameObject("DecorGiant");
+            go.transform.SetParent(giantRoot, false);
+            go.transform.SetPositionAndRotation(new Vector3(px, gy, pz), rot);
+            var box = go.AddComponent<BoxCollider>();
+            box.center = new Vector3(0f, h * 0.5f, 0f);
+            box.size = new Vector3(dm.W * dm.inv * h, h, dm.D * dm.inv * h);
+            inst.body = go;
+        }
+        list.Add(inst);
+
+        // під гігантом трава не росте
+        float bladeHalf = grass.CellSize * 0.5f;
+        grass.SetFreeZones(GiantOwner(key), new List<Vector3> { new Vector3(px, pz, half * 1.42f + bladeHalf) });
+        return list;
+    }
+
+    void RenderGiants()
+    {
+        if (giantCount <= 0 || modelMat == null || giants.Count == 0) return;
+        Camera cam = Camera.main;
+        if (cam == null) return;
+        GeometryUtility.CalculateFrustumPlanes(cam, planes);
+
+        var rp = new RenderParams(modelMat)
+        {
+            shadowCastingMode = giantsCastShadows ? ShadowCastingMode.On : ShadowCastingMode.Off,
+            receiveShadows = modelsReceiveShadows,
+            layer = gameObject.layer
+        };
+        foreach (var list in giants.Values)
+            foreach (var g in list)
+            {
+                if (!GeometryUtility.TestPlanesAABB(planes, g.bounds)) continue;
+                rp.worldBounds = g.bounds;
+                Graphics.RenderMesh(rp, models[g.model].mesh, 0, g.matrix);
+            }
+    }
+
+    // =====================================================================================
+    // Процедурні гіганти: будуються кодом із вокселів, тому .vox не потрібні.
+    // Кожен малюється в полотні VoxCanvas (x + W * (y + H * z), низ = y 0), потім стає моделлю DecorModel.
+    // =====================================================================================
+
+    sealed class VoxCanvas
+    {
+        public readonly int W, H, D;
+        public readonly byte[] g;
+
+        public VoxCanvas(int w, int h, int d) { W = w; H = h; D = d; g = new byte[w * h * d]; }
+
+        public void Set(int x, int y, int z, byte id)
+        {
+            if (x < 0 || y < 0 || z < 0 || x >= W || y >= H || z >= D) return;
+            g[x + W * (y + H * z)] = id;
+        }
+
+        public byte Get(int x, int y, int z)
+        {
+            if (x < 0 || y < 0 || z < 0 || x >= W || y >= H || z >= D) return 0;
+            return g[x + W * (y + H * z)];
+        }
+
+        public void Box(int x0, int y0, int z0, int sx, int sy, int sz, byte id)
+        {
+            for (int z = z0; z < z0 + sz; z++)
+            for (int y = y0; y < y0 + sy; y++)
+            for (int x = x0; x < x0 + sx; x++) Set(x, y, z, id);
+        }
+
+        // Вертикальний циліндр із центром (cx, cz), шари y0..y1 включно
+        public void Cyl(float cx, float cz, float r, int y0, int y1, byte id)
+        {
+            for (int y = y0; y <= y1; y++)
+            for (int z = 0; z < D; z++)
+            for (int x = 0; x < W; x++)
+            {
+                float dx = x + 0.5f - cx, dz = z + 0.5f - cz;
+                if (dx * dx + dz * dz <= r * r) Set(x, y, z, id);
+            }
+        }
+    }
+
+    // Вікно в передній/задній стіні: рамка на шарі face, скло на крок углиб (dz = +1 або -1)
+    static void WindowZ(VoxCanvas v, int x0, int y0, int w, int h, int face, int dz, byte frame, byte glass)
+    {
+        for (int y = y0; y < y0 + h; y++)
+        for (int x = x0; x < x0 + w; x++)
+        {
+            bool edge = x == x0 || x == x0 + w - 1 || y == y0 || y == y0 + h - 1;
+            if (edge) { v.Set(x, y, face, frame); continue; }
+            v.Set(x, y, face, 0);
+            v.Set(x, y, face + dz, glass);
+        }
+    }
+
+    // Те саме для бокових стін (шар x = face)
+    static void WindowX(VoxCanvas v, int z0, int y0, int w, int h, int face, int dx, byte frame, byte glass)
+    {
+        for (int y = y0; y < y0 + h; y++)
+        for (int z = z0; z < z0 + w; z++)
+        {
+            bool edge = z == z0 || z == z0 + w - 1 || y == y0 || y == y0 + h - 1;
+            if (edge) { v.Set(face, y, z, frame); continue; }
+            v.Set(face, y, z, 0);
+            v.Set(face + dx, y, z, glass);
+        }
+    }
+
+    // Обрізає порожнє полотно зверху й робить із нього модель. rel = висота відносно будинку (1 = як будинок)
+    DecorModel MakeGiant(VoxCanvas v, string name, float rel)
+    {
+        int top = 0;
+        for (int i = 0; i < v.g.Length; i++)
+        {
+            if (v.g[i] == 0) continue;
+            int y = (i / v.W) % v.H;
+            if (y > top) top = y;
+        }
+        int H = top + 1;
+        byte[] grid = v.g;
+        if (H < v.H)
+        {
+            grid = new byte[v.W * H * v.D];
+            for (int z = 0; z < v.D; z++)
+            for (int y = 0; y < H; y++)
+            for (int x = 0; x < v.W; x++)
+                grid[x + v.W * (y + H * z)] = v.g[x + v.W * (y + v.H * z)];
+        }
+
+        var mesh = new Mesh { name = "DecorGiant_" + name };
+        FillMesh(mesh, grid, v.W, H, v.D);
+        return new DecorModel
+        {
+            mesh = mesh, grid = grid, W = v.W, H = H, D = v.D, inv = 1f / H,
+            halfFootprint = 0.5f * Mathf.Max(v.W, v.D) / H,
+            giantScale = rel
+        };
+    }
+
+    int AddProceduralGiants(List<DecorModel> list, System.Func<Color32, byte> idx)
+    {
+        int before = list.Count;
+        list.Add(GiantHouse(idx, false, new Color32(226, 206, 170, 255), new Color32(168, 66, 52, 255), "house"));
+        list.Add(GiantHouse(idx, true, new Color32(196, 214, 226, 255), new Color32(92, 98, 110, 255), "house2"));
+        list.Add(GiantHouse(idx, false, new Color32(214, 170, 148, 255), new Color32(86, 92, 104, 255), "house3"));
+        list.Add(GiantTree(idx));
+        list.Add(GiantPine(idx));
+        list.Add(GiantCar(idx, new Color32(190, 44, 44, 255), "car_red"));
+        list.Add(GiantCar(idx, new Color32(48, 96, 178, 255), "car_blue"));
+        list.Add(GiantTower(idx));
+        return list.Count - before;
+    }
+
+    // Будинок: стіни, цоколь, двері, вікна (вдавлені), дах. Одноповерховий із двосхилим дахом і комином
+    // або двоповерховий із плоским дахом і парапетом.
+    DecorModel GiantHouse(System.Func<Color32, byte> idx, bool twoFloor, Color32 wallC, Color32 roofC, string name)
+    {
+        byte C(int r, int g, int b) => idx(new Color32((byte)r, (byte)g, (byte)b, 255));
+        byte wall = idx(wallC), roof = idx(roofC);
+        byte plinth = C(120, 118, 112), trim = C(236, 232, 222), door = C(110, 70, 42);
+        byte glass = C(150, 200, 228), frame = C(240, 238, 232), brick = C(150, 74, 58), cap = C(96, 48, 40), step = C(150, 148, 142);
+
+        int W = twoFloor ? 30 : 34, D = twoFloor ? 24 : 26;
+        int wallH = twoFloor ? 30 : 20;
+        int ox = 2, oz = 2;
+        int ch = twoFloor ? wallH + 6 : wallH + (D + 2) / 2 + 1;
+        var v = new VoxCanvas(W + 4, ch, D + 4);
+
+        v.Box(ox, 0, oz, W, wallH, D, wall);
+
+        // цоколь і смуга між поверхами лише на поверхні стін
+        for (int y = 0; y < wallH; y++)
+        {
+            bool isPlinth = y < 2, isBand = twoFloor && (y == 15 || y == 16);
+            if (!isPlinth && !isBand) continue;
+            for (int z = oz; z < oz + D; z++)
+            for (int x = ox; x < ox + W; x++)
+                if (x == ox || x == ox + W - 1 || z == oz || z == oz + D - 1) v.Set(x, y, z, isPlinth ? plinth : trim);
+        }
+
+        if (!twoFloor)
+        {
+            // двосхилий дах: кожен шар на 1 вужчий; торці (фронтони) лишаються кольору стіни
+            int zmin = oz - 1, zmax = oz + D;
+            for (int k = 0; ; k++)
+            {
+                int z0 = zmin + k, z1 = zmax - k;
+                if (z0 > z1) break;
+                for (int z = z0; z <= z1; z++)
+                for (int x = ox - 1; x <= ox + W; x++)
+                {
+                    bool gable = x >= ox && x < ox + W && z > z0 && z < z1;
+                    v.Set(x, wallH + k, z, gable ? wall : roof);
+                }
+            }
+            v.Box(ox + W - 9, wallH, oz + 5, 4, 14, 4, brick);
+            v.Box(ox + W - 10, wallH + 13, oz + 4, 6, 1, 6, cap);
+        }
+        else
+        {
+            // плоский дах з парапетом
+            v.Box(ox - 1, wallH, oz - 1, W + 2, 2, D + 2, roof);
+            for (int z = oz - 1; z <= oz + D; z++)
+            for (int x = ox - 1; x <= ox + W; x++)
+                if (x == ox - 1 || x == ox + W || z == oz - 1 || z == oz + D)
+                {
+                    v.Set(x, wallH + 2, z, trim);
+                    v.Set(x, wallH + 3, z, trim);
+                }
+        }
+
+        // двері й сходинка на передній стіні (z = oz)
+        int cx = ox + W / 2;
+        for (int y = 2; y < 13; y++)
+        for (int x = cx - 3; x < cx + 3; x++) v.Set(x, y, oz, door);
+        v.Box(cx - 5, 0, oz - 1, 10, 1, 1, step);
+
+        // вікна
+        int[] rows = twoFloor ? new[] { 6, 19 } : new[] { 6 };
+        int[] xs = { ox + 4, ox + W - 10 };
+        foreach (int wy in rows)
+        {
+            foreach (int wx in xs)
+            {
+                WindowZ(v, wx, wy, 6, 7, oz, 1, frame, glass);
+                WindowZ(v, wx, wy, 6, 7, oz + D - 1, -1, frame, glass);
+            }
+            WindowZ(v, cx - 3, wy, 6, 7, oz + D - 1, -1, frame, glass);
+            if (wy > 10) WindowZ(v, cx - 3, wy, 6, 7, oz, 1, frame, glass);
+            WindowX(v, oz + D / 2 - 3, wy, 6, 7, ox, 1, frame, glass);
+            WindowX(v, oz + D / 2 - 3, wy, 6, 7, ox + W - 1, -1, frame, glass);
+        }
+
+        return MakeGiant(v, name, 1f);
+    }
+
+    // Листяне дерево: стовбур і нерівна крона з трьох відтінків зеленого
+    DecorModel GiantTree(System.Func<Color32, byte> idx)
+    {
+        byte C(int r, int g, int b) => idx(new Color32((byte)r, (byte)g, (byte)b, 255));
+        byte bark = C(95, 66, 42), bark2 = C(80, 56, 36);
+        byte[] leaves = { C(52, 122, 46), C(64, 140, 52), C(42, 104, 40) };
+
+        var v = new VoxCanvas(28, 38, 28);
+        v.Cyl(14, 14, 2.4f, 0, 18, bark);
+        for (int y = 0; y <= 18; y++)
+        for (int z = 0; z < 28; z++)
+        for (int x = 0; x < 28; x++)
+            if (v.Get(x, y, z) == bark && ((x * 7 + y * 3 + z) & 3) == 0) v.Set(x, y, z, bark2);
+
+        for (int y = 14; y < 38; y++)
+        for (int z = 0; z < 28; z++)
+        for (int x = 0; x < 28; x++)
+        {
+            float dx = x + 0.5f - 14f, dy = y + 0.5f - 26f, dz = z + 0.5f - 14f;
+            float n = Mathf.PerlinNoise(x * 0.28f + 3.1f, z * 0.28f + y * 0.22f + 7.7f) - 0.5f;
+            if (dx * dx + dy * dy * 1.15f + dz * dz < 121f * (1f + n * 0.5f))
+                v.Set(x, y, z, leaves[Hash(x, y, z, 5) % 3]);
+        }
+        return MakeGiant(v, "tree", 0.75f);
+    }
+
+    // Ялина: стовбур і чотири яруси-конуси
+    DecorModel GiantPine(System.Func<Color32, byte> idx)
+    {
+        byte C(int r, int g, int b) => idx(new Color32((byte)r, (byte)g, (byte)b, 255));
+        byte bark = C(88, 62, 40);
+        byte[] greens = { C(30, 92, 52), C(38, 108, 60), C(26, 80, 46) };
+
+        var v = new VoxCanvas(24, 46, 24);
+        v.Cyl(12, 12, 1.8f, 0, 10, bark);
+        for (int t = 0; t < 4; t++)
+        {
+            int baseY = 5 + t * 9;
+            float baseR = 11f - t * 2.2f;
+            for (int k = 0; k < 12; k++)
+            {
+                float r = baseR * (1f - k / 12f);
+                int y = baseY + k;
+                for (int z = 0; z < 24; z++)
+                for (int x = 0; x < 24; x++)
+                {
+                    float dx = x + 0.5f - 12f, dz = z + 0.5f - 12f;
+                    if (dx * dx + dz * dz <= r * r) v.Set(x, y, z, greens[Hash(x, y, z, 9) % 3]);
+                }
+            }
+        }
+        return MakeGiant(v, "pine", 0.85f);
+    }
+
+    // Машина: кузов, кабіна зі склом, колеса, фари, бампери. Довжина вздовж осі x
+    DecorModel GiantCar(System.Func<Color32, byte> idx, Color32 bodyC, string name)
+    {
+        byte C(int r, int g, int b) => idx(new Color32((byte)r, (byte)g, (byte)b, 255));
+        byte body = idx(bodyC), glass = C(120, 170, 200), dark = C(34, 34, 38);
+        byte gray = C(150, 150, 155), lamp = C(250, 230, 150), tail = C(200, 30, 30);
+
+        var v = new VoxCanvas(32, 14, 16);
+        v.Box(1, 3, 1, 30, 5, 14, body);
+        v.Box(8, 8, 2, 14, 5, 12, body);
+
+        for (int y = 9; y <= 11; y++)
+        {
+            for (int x = 9; x <= 20; x++) { v.Set(x, y, 2, glass); v.Set(x, y, 13, glass); }
+            for (int z = 3; z <= 12; z++) { v.Set(8, y, z, glass); v.Set(21, y, z, glass); }
+        }
+
+        foreach (int wx in new[] { 4, 23 })
+        {
+            v.Box(wx, 0, 0, 5, 5, 2, dark);
+            v.Box(wx, 0, 14, 5, 5, 2, dark);
+        }
+
+        v.Box(0, 3, 1, 1, 2, 14, gray);
+        v.Box(31, 3, 1, 1, 2, 14, gray);
+        for (int y = 5; y <= 6; y++)
+        for (int z = 3; z <= 4; z++)
+        {
+            v.Set(30, y, z, lamp); v.Set(30, y, z + 8, lamp);
+            v.Set(1, y, z, tail); v.Set(1, y, z + 8, tail);
+        }
+        return MakeGiant(v, name, 0.28f);
+    }
+
+    // Водонапірна вежа: чотири ноги з перемичками, бак зі смугами й конічний дах
+    DecorModel GiantTower(System.Func<Color32, byte> idx)
+    {
+        byte C(int r, int g, int b) => idx(new Color32((byte)r, (byte)g, (byte)b, 255));
+        byte metal = C(110, 112, 118), tank = C(176, 196, 208), band = C(120, 140, 156), roofC = C(150, 60, 50);
+
+        var v = new VoxCanvas(26, 42, 26);
+        foreach (int lx in new[] { 6, 17 })
+        foreach (int lz in new[] { 6, 17 })
+            v.Box(lx, 0, lz, 3, 22, 3, metal);
+
+        v.Box(6, 10, 6, 14, 1, 3, metal);
+        v.Box(6, 10, 17, 14, 1, 3, metal);
+        v.Box(6, 10, 6, 3, 1, 14, metal);
+        v.Box(17, 10, 6, 3, 1, 14, metal);
+
+        v.Cyl(13, 13, 10f, 22, 33, tank);
+        v.Cyl(13, 13, 10f, 24, 24, band);
+        v.Cyl(13, 13, 10f, 31, 31, band);
+        for (int k = 0; k < 8; k++) v.Cyl(13, 13, 11f * (1f - k / 8f), 34 + k, 34 + k, roofC);
+        return MakeGiant(v, "tower", 1.3f);
     }
 
     // ---------- уламки-кубики ----------
