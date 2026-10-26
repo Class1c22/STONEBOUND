@@ -407,6 +407,83 @@ Transform:
   m_Children: []
   m_Father: {fileID: 1838282995}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &951145352
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 951145353}
+  - component: {fileID: 951145354}
+  m_Layer: 0
+  m_Name: VillageGenerator
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &951145353
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 951145352}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: -29.312141, y: -11.01, z: -0.38524914}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1838282995}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &951145354
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 951145352}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8e3bfbc9502c49a43ace1e277b9b7c28, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VillageGenerator
+  world: {fileID: 843798773}
+  seed: 3003
+  mapRadius: 150
+  tileSize: 48
+  voxelsPerFrame: 6000
+  borderBand: 22
+  invisibleWalls: 1
+  wallHeightMeters: 400
+  mainRoadWidth: 6
+  laneWidth: 4
+  roadCurve: 14
+  roadWave: 0.035
+  roadHeight: 0.03
+  laneCount: 6
+  laneLengthMin: 28
+  laneLengthMax: 50
+  river: 1
+  riverWidth: 12
+  villageHalfLength: 100
+  yardWidthMin: 20
+  yardWidthMax: 26
+  yardDepth: 22
+  houseChance: 0.85
+  houseWidthMin: 10
+  houseWidthMax: 13
+  houseDepthMin: 7
+  houseDepthMax: 9
+  wallHeight: 5
+  thatchChance: 0.5
+  chimneyChance: 0.6
+  fenceChance: 0.8
+  treesPerYardMax: 2
+  plotSize: 48
 --- !u!1 &1365930387
 GameObject:
   m_ObjectHideFlags: 0
@@ -520,53 +597,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &1775355352
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1775355353}
-  - component: {fileID: 1775355354}
-  m_Layer: 0
-  m_Name: VoxelTestBuilder
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &1775355353
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1775355352}
-  serializedVersion: 2
-  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: -42.59999, y: 0, z: -6.5591893}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 1838282995}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &1775355354
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1775355352}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 12e7db3bff6187c499104e0e637344d8, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::VoxelTestBuilder
-  world: {fileID: 843798773}
-  voxFile: {fileID: 0}
-  voxOrigin: {x: 0, y: 0, z: 80}
 --- !u!1 &1782221769
 GameObject:
   m_ObjectHideFlags: 0
@@ -611,31 +641,22 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b90265da90cacfa468e7af7a015f82ce, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::MountainMapGenerator
-  mapSize: 600
-  mountainHeight: 160
-  mountainBlockSize: 2
-  heightStep: 0.25
-  chunkColumns: 50
-  meadowRadius: 100
-  flatRadius: 45
-  flatBlend: 30
-  groundAmplitude: 2
-  groundWavelength: 45
-  cliffWidth: 40
-  world: {fileID: 843798773}
-  minPeakHeight: 0.6
-  mountainNoiseScale: 3.5
-  ridgeWarp: 1.2
-  surfaceDetail: 4
-  footRagged: 0.5
+  size: 1200
+  thickness: 20
+  tileSize: 8
+  textureResolution: 32
+  colorA: {r: 0.3, g: 0.48, b: 0.18, a: 1}
+  colorB: {r: 0.36, g: 0.55, b: 0.22, a: 1}
+  dirtAmount: 0.12
+  dirtColor: {r: 0.4, g: 0.3, b: 0.2, a: 1}
   seed: 12345
-  snowLine: 0.72
-  snowVariation: 12
-  grassLine: 0.06
-  strataThickness: 0.75
-  invisibleCliffWall: 1
-  colliderMargin: 40
+  receiveShadows: 1
+  friction: 0.6
+  bounciness: 0
+  rock: {fileID: 0}
+  world: {fileID: 843798773}
   oldGround: {fileID: 1365930387}
+  oldMountains: {fileID: 0}
 --- !u!1 &1838282994
 GameObject:
   m_ObjectHideFlags: 0
@@ -665,8 +686,8 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
+  - {fileID: 951145353}
   - {fileID: 843798774}
-  - {fileID: 1775355353}
   - {fileID: 416857264}
   - {fileID: 1782221770}
   m_Father: {fileID: 0}

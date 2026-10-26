@@ -12325,7 +12325,7 @@ MonoBehaviour:
     speedMultiplier: 1.1
     forceMultiplier: 1.15
     destroyRadiusMultiplier: 1.2
-    absorbCostMultiplier: 25
+    absorbCostMultiplier: 5
   - name: "\u0411\u0440\u0438\u043B\u0430"
     radiusRatio: 2.2
     speedMultiplier: 1.2
