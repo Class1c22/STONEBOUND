@@ -11,6 +11,9 @@ using UnityEngine.Rendering;
 // - ціла травинка = стовпчик із кубів, малюється GPU-інстансингом без кастомного шейдера (матеріали URP/Lit);
 // - ВІТЕР: травинки нахиляються навколо основи в бік вітру. Напрям блукає, сила йде хвилями й шквалами,
 //   пориви біжать полем, а кожна травинка ще трохи тремтить по-своєму (усе на шумі Перліна, без шейдера);
+// - ЧАСТИНКИ ВІТРУ: дві системи частинок їздять разом із каменем: спавняться в обсязі, що покриває всю
+//   підвантажену область трави, стоять на висоті землі під каменем і летять у той бік, куди дме вітер.
+//   Рух частинок робиться кодом напряму, тож його не гасять налаштування систем;
 // - при ударі травинка стає дрібною воксельною сіткою, як стіна у VoxelWorld: камінь вибиває кулю вокселів
 //   (видно дірку), решта травинки стоїть далі, а шматки, що відірвались від землі, падають з фізикою;
 // - вибиті вокселі розлітаються кубиками (Rigidbody + Absorbable): камінь всмоктує їх по E (RockAbsorber.Suck) і росте;
@@ -117,6 +120,58 @@ public class GrassField : MonoBehaviour
     [Tooltip("Наскільки травинки в різних місцях хилиться в різні боки відносно вітру, градусів")]
     [Range(0f, 120f)] public float localDirectionJitter = 45f;
 
+    [Header("Частинки вітру")]
+    [Tooltip("Перша система частинок (постійний вітер: смужки, пилинки). Сила вітру міняє, скільки їх випускається")]
+    public ParticleSystem windParticlesA;
+    [Tooltip("Друга система частинок (листя, пил, пелюстки). З'являється лише в сильні пориви")]
+    public ParticleSystem windParticlesB;
+    [Tooltip("Вимкни, щоб частинки вітру не випускались")]
+    public bool particlesEnabled = true;
+    [Tooltip("Спавнити частинки в обсязі навколо каменя (вони їздять разом із ним, де б він не був). Вимкнено: стара поведінка, система стоїть проти вітру від каменя")]
+    public bool fxSpawnAroundRock = true;
+    [Tooltip("Зона спавну покриває видиму область трави (за viewChunks), а не фіксовані клітинки")]
+    public bool fxCoverView = true;
+    [Tooltip("Яка частка радіуса видимості трави покривається частинками (1 = вся)")]
+    [Range(0.2f, 1f)] public float fxViewCoverage = 0.7f;
+    [Tooltip("Ширина й довжина зони спавну навколо каменя, у клітинках сітки (якщо Spawn Around Rock і не Cover View)")]
+    public float fxSpawnAreaCells = 14f;
+    [Tooltip("Тримати однакову щільність частинок при збільшенні зони (частота росте разом з площею)")]
+    public bool fxKeepDensity = true;
+    [Tooltip("Для якої ширини зони (клітинок) налаштована базова частота випуску в системах")]
+    public float fxRefAreaCells = 14f;
+    [Tooltip("Товщина зони спавну по висоті, у клітинках сітки (якщо Spawn Around Rock)")]
+    public float fxSpawnThicknessCells = 3f;
+    [Tooltip("Висота частинок рахується від землі під каменем, а не від самого каменя")]
+    public bool fxFollowGround = true;
+    [Tooltip("На скільки клітинок сітки проти вітру від каменя стоять системи (лише якщо Spawn Around Rock вимкнено)")]
+    public float fxUpwindCells = 8f;
+    [Tooltip("Висота системи A над каменем (або землею), у клітинках сітки")]
+    public float fxHeightCellsA = 1.5f;
+    [Tooltip("Висота системи B над каменем (або землею), у клітинках сітки")]
+    public float fxHeightCellsB = 4f;
+    [Tooltip("Кількість частинок змінюється разом із силою вітру (інакше вони йдуть із базовою частотою)")]
+    public bool fxScaleEmission = true;
+    [Tooltip("Яка частка базової частоти випуску лишається в штиль (система A)")]
+    [Range(0f, 1f)] public float fxMinEmission = 0.15f;
+    [Tooltip("Сила вітру (0..1), з якої система B починає випускати частинки. Нижче вона мовчить")]
+    [Range(0f, 1f)] public float fxBMinStrength = 0.45f;
+    [Tooltip("Вже випущені частинки теж повертаються за вітром, а не летять у бік, у який були випущені")]
+    public bool fxSteer = true;
+    [Tooltip("Як швидко частинки повертають у бік вітру (більше = різкіше). Не діє при Move Direct")]
+    public float fxSteerRate = 3f;
+    [Tooltip("Кожна частинка береться вітер у своїй точці (як трава), а не один загальний")]
+    public bool fxLocalWind = true;
+    [Tooltip("Швидкість частинок береться від сили вітру. Вимкнено: лишається швидкість із самої системи (Start Speed)")]
+    public bool fxOverrideSpeed = true;
+    [Tooltip("Швидкість частинок у штиль, клітинок за секунду (якщо Override Speed або Move Direct)")]
+    public float fxSpeedMinCells = 4f;
+    [Tooltip("Швидкість частинок при найсильнішому вітрі, клітинок за секунду (якщо Override Speed або Move Direct)")]
+    public float fxSpeedMaxCells = 16f;
+    [Tooltip("Рухати частинки напряму кодом (позиція += вітер * dt). Працює, навіть якщо швидкість у системі гаситься налаштуваннями")]
+    public bool fxMoveDirect = true;
+    [Tooltip("Розмір частинки в клітинках сітки (0 = не чіпати Start Size системи). Для великої трави став 0.1-0.3")]
+    public float fxSizeCells = 0f;
+
     [Header("Ламання")]
     [Tooltip("Камінь ламає траву, якої торкається")]
     public bool breakable = true;
@@ -221,6 +276,14 @@ public class GrassField : MonoBehaviour
         public List<Batch> batches = new List<Batch>();   // цілі травинки: інстансинг
     }
 
+    // Стан однієї системи частинок вітру
+    class FxState
+    {
+        public ParticleSystem ps;
+        public float baseRate;
+        public ParticleSystem.Particle[] buf;
+    }
+
     const int MaxBatch = 1023;
 
     readonly Dictionary<Vector2Int, Chunk> chunks = new Dictionary<Vector2Int, Chunk>();
@@ -245,6 +308,12 @@ public class GrassField : MonoBehaviour
     float globalStrength = 0.4f;   // загальна сила 0..1
     Vector2 gustOffset;            // зсув поля поривів (вони біжать за вітром)
     float noiseO;                  // зсув шуму від seed (великий, щоб не було дзеркала на від'ємних координатах)
+
+    // частинки вітру
+    readonly FxState fxA = new FxState();
+    readonly FxState fxB = new FxState();
+    float fxBaseY;                 // згладжена висота землі під каменем
+    bool fxBaseYInit;
 
     Rigidbody[] debrisPool;
     int debrisIndex, spawnedThisFrame, piecesThisFrame;
@@ -282,7 +351,7 @@ public class GrassField : MonoBehaviour
 #endif
     }
 
-    // Нові поля вітру теж не підтягуються в уже збережену сцену. Цей пункт виставляє стандартний вітер.
+    // Нові поля вітру теж не підтягуються в уже збережену сцену. Цей пункт виставляє стандартний вітер і частинки.
     [ContextMenu("Скинути вітер")]
     void ResetWind()
     {
@@ -301,6 +370,30 @@ public class GrassField : MonoBehaviour
         turbulenceSpeed = 1.6f;
         turbulence = 0.35f;
         localDirectionJitter = 45f;
+
+        particlesEnabled = true;
+        fxSpawnAroundRock = true;
+        fxCoverView = true;
+        fxViewCoverage = 0.7f;
+        fxSpawnAreaCells = 14f;
+        fxKeepDensity = true;
+        fxRefAreaCells = 14f;
+        fxSpawnThicknessCells = 3f;
+        fxFollowGround = true;
+        fxUpwindCells = 8f;
+        fxHeightCellsA = 1.5f;
+        fxHeightCellsB = 4f;
+        fxScaleEmission = true;
+        fxMinEmission = 0.15f;
+        fxBMinStrength = 0.45f;
+        fxSteer = true;
+        fxSteerRate = 3f;
+        fxLocalWind = true;
+        fxOverrideSpeed = true;
+        fxSpeedMinCells = 4f;
+        fxSpeedMaxCells = 16f;
+        fxMoveDirect = true;
+        fxSizeCells = 0f;
 #if UNITY_EDITOR
         UnityEditor.EditorUtility.SetDirty(this);
 #endif
@@ -323,7 +416,11 @@ public class GrassField : MonoBehaviour
         noiseO = 10000f + seed * 17.3f;
         windT = 0f;
         gustOffset = Vector2.zero;
+        fxBaseYInit = false;
         UpdateWind(0f);
+
+        InitFx(fxA, windParticlesA);
+        InitFx(fxB, windParticlesB);
 
         PrepareMaterials();
 
@@ -517,11 +614,9 @@ public class GrassField : MonoBehaviour
         gustOffset += new Vector2(d.x, d.z) * speed * dt;
     }
 
-    // Нахил травинки від вітру в її точці (навколо основи). Поки вітер вимкнено, нахилу немає.
-    Quaternion WindTilt(Vector3 p)
+    // Вітер у точці: нахил (градуси), напрям (радіани від +Z) і місцева сила 0..1
+    void WindAt(Vector3 p, out float tilt, out float ang, out float strength)
     {
-        if (!windEnabled || vs <= 0f) return Quaternion.identity;
-
         float o = noiseO;
         float gs = Mathf.Max(0.5f, gustSizeCells) * vs;
         float ts = Mathf.Max(0.2f, turbulenceSizeCells) * vs;
@@ -533,11 +628,19 @@ public class GrassField : MonoBehaviour
         // місцеве відхилення напряму: у різних місцях трава хилиться в різні боки
         float local = (Mathf.PerlinNoise(p.x / (gs * 0.8f) + windT * 0.15f + o * 0.43f, p.z / (gs * 0.8f) + o * 0.59f) - 0.5f) * 2f;
 
-        float strength = Mathf.Lerp(0.15f, 1f, gust) * globalStrength;
+        strength = Mathf.Lerp(0.15f, 1f, gust) * globalStrength;
         strength = Mathf.Clamp01(strength + (turb - 0.5f) * 2f * turbulence * 0.4f);
 
-        float tilt = Mathf.Lerp(calmTilt, maxTilt, strength);
-        float ang = (windAngle + local * localDirectionJitter + (turb - 0.5f) * turbulence * 40f) * Mathf.Deg2Rad;
+        tilt = Mathf.Lerp(calmTilt, maxTilt, strength);
+        ang = (windAngle + local * localDirectionJitter + (turb - 0.5f) * turbulence * 40f) * Mathf.Deg2Rad;
+    }
+
+    // Нахил травинки від вітру в її точці (навколо основи). Поки вітер вимкнено, нахилу немає.
+    Quaternion WindTilt(Vector3 p)
+    {
+        if (!windEnabled || vs <= 0f) return Quaternion.identity;
+
+        WindAt(p, out float tilt, out float ang, out _);
         float dx = Mathf.Sin(ang), dz = Mathf.Cos(ang);
 
         // вісь = up x dir: додатний кут нахиляє травинку в бік dir
@@ -559,6 +662,167 @@ public class GrassField : MonoBehaviour
             Blade b = batch.blades[i];
             batch.matrices[i] = Matrix4x4.TRS(b.pos, BladeRot(b), scale);
         }
+    }
+
+    // ---------- частинки вітру ----------
+
+    void InitFx(FxState s, ParticleSystem ps)
+    {
+        if (ps == null) { s.ps = null; s.buf = null; return; }
+
+        var main = ps.main;
+        // у світових координатах частинки не їдуть разом із системою, а летять за вітром
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+        main.startSpeed = 0f;   // рухом керує вітер, а не форма випуску
+        if (fxSizeCells > 0f && vs > 0f) main.startSize = fxSizeCells * vs;
+
+        // модулі, які гасять або змінюють швидкість і заважають вітру
+        var lim = ps.limitVelocityOverLifetime; lim.enabled = false;
+        var vol = ps.velocityOverLifetime;      vol.enabled = false;
+        var frc = ps.forceOverLifetime;         frc.enabled = false;
+        var inh = ps.inheritVelocity;           inh.enabled = false;
+        var ext = ps.externalForces;            ext.enabled = false;
+
+        // базову частоту читаємо лише раз (при Rebuild вона вже була б помножена)
+        if (s.ps != ps) s.baseRate = ps.emission.rateOverTimeMultiplier;
+        s.ps = ps;
+
+        int need = Mathf.Max(1, main.maxParticles);
+        if (s.buf == null || s.buf.Length < need) s.buf = new ParticleSystem.Particle[need];
+
+        if (!ps.isPlaying) ps.Play();
+    }
+
+    // Ставить систему на камінь (на висоті землі під ним), дивиться за вітром, регулює частоту випуску
+    void UpdateFx(FxState s, float heightCells, float emissionK)
+    {
+        ParticleSystem ps = s.ps;
+        if (ps == null) return;
+
+        bool on = windEnabled && particlesEnabled;
+        var em = ps.emission;
+        em.enabled = on;
+        if (!on) return;
+
+        Vector3 dir = WindDirection;
+        Vector3 focus = StreamFocus();   // поточний камінь (після переходу сцен шукається заново)
+        Vector3 pos;
+
+        // ширина зони: або вся видима область трави, або фіксована кількість клітинок
+        float areaCells = fxCoverView
+            ? 2f * viewChunks * chunkCells * fxViewCoverage
+            : fxSpawnAreaCells;
+
+        if (fxSpawnAroundRock)
+        {
+            // система над землею під каменем, а частинки випускаються з прямокутного обсягу навколо нього,
+            // тож вони з'являються скрізь, де зараз камінь, і летять за вітром
+            pos = new Vector3(focus.x, fxBaseY, focus.z) + Vector3.up * (heightCells * vs);
+
+            var sh = ps.shape;
+            sh.enabled = true;
+            sh.shapeType = ParticleSystemShapeType.Box;
+            sh.position = Vector3.zero;
+            sh.rotation = Vector3.zero;
+            float w = Mathf.Max(1f, areaCells) * vs;
+            float h = Mathf.Max(0.2f, fxSpawnThicknessCells) * vs;
+            sh.scale = new Vector3(w, h, w);
+        }
+        else
+        {
+            pos = focus - dir * (fxUpwindCells * vs) + Vector3.up * (heightCells * vs);
+        }
+
+        ps.transform.SetPositionAndRotation(pos, Quaternion.LookRotation(dir, Vector3.up));
+
+        float rate = s.baseRate * Mathf.Clamp01(emissionK);
+        if (fxSpawnAroundRock && fxKeepDensity)
+        {
+            float ratio = areaCells / Mathf.Max(1f, fxRefAreaCells);
+            rate *= ratio * ratio;
+        }
+        // не більше, ніж вміщує maxParticles за час життя
+        float life = Mathf.Max(0.1f, ps.main.startLifetime.constantMax);
+        rate = Mathf.Min(rate, ps.main.maxParticles / life);
+        em.rateOverTimeMultiplier = rate;
+        if (!ps.isPlaying) ps.Play();
+    }
+
+    void UpdateWindFx()
+    {
+        // висота землі під каменем (згладжена, щоб частинки не стрибали на нерівностях)
+        Vector3 f = StreamFocus();
+        float targetY = f.y;
+        if (fxFollowGround && TryGetGround(f.x, f.z, out float gy)) targetY = gy;
+        fxBaseY = fxBaseYInit ? Mathf.Lerp(fxBaseY, targetY, 1f - Mathf.Exp(-4f * Time.deltaTime)) : targetY;
+        fxBaseYInit = true;
+
+        float k = globalStrength;
+
+        // A: постійний вітер, у штиль лишається fxMinEmission від частоти
+        float kA = fxScaleEmission ? Mathf.Lerp(fxMinEmission, 1f, k) : 1f;
+        // B: лише сильні пориви (нижче fxBMinStrength мовчить)
+        float kB = fxScaleEmission ? Mathf.InverseLerp(fxBMinStrength, 1f, k) : 1f;
+
+        UpdateFx(fxA, fxHeightCellsA, kA);
+        UpdateFx(fxB, fxHeightCellsB, kB);
+    }
+
+    // Рухає кожну живу частинку за вітром (горизонтально, вертикаль не чіпаємо)
+    void SteerFx(FxState s, float dt)
+    {
+        ParticleSystem ps = s.ps;
+        if (ps == null || s.buf == null) return;
+
+        int max = ps.main.maxParticles;
+        if (s.buf.Length < max) s.buf = new ParticleSystem.Particle[max];
+
+        int n = ps.GetParticles(s.buf);
+        if (n == 0) return;
+
+        float k = 1f - Mathf.Exp(-Mathf.Max(0f, fxSteerRate) * dt);
+        float globalAng = windAngle * Mathf.Deg2Rad;
+
+        for (int i = 0; i < n; i++)
+        {
+            ParticleSystem.Particle p = s.buf[i];
+            float ang, str;
+            if (fxLocalWind) WindAt(p.position, out _, out ang, out str);
+            else { ang = globalAng; str = globalStrength; }
+
+            Vector3 v = p.velocity;
+            float h = Mathf.Sqrt(v.x * v.x + v.z * v.z);
+            bool useWindSpeed = fxOverrideSpeed || fxMoveDirect || h < 0.05f;
+            float speed = useWindSpeed ? Mathf.Lerp(fxSpeedMinCells, fxSpeedMaxCells, str) * vs : h;
+
+            float tx = Mathf.Sin(ang) * speed;
+            float tz = Mathf.Cos(ang) * speed;
+
+            if (fxMoveDirect)
+            {
+                // зсуваємо позицію самі, а горизонтальну швидкість обнуляємо, щоб не було подвійного руху
+                p.position += new Vector3(tx, 0f, tz) * dt;
+                v.x = 0f;
+                v.z = 0f;
+            }
+            else
+            {
+                v.x = Mathf.Lerp(v.x, tx, k);
+                v.z = Mathf.Lerp(v.z, tz, k);
+            }
+
+            p.velocity = v;
+            s.buf[i] = p;
+        }
+        ps.SetParticles(s.buf, n);
+    }
+
+    void LateUpdate()
+    {
+        if (!built || !windEnabled || !particlesEnabled || !fxSteer) return;
+        float dt = Time.deltaTime;
+        SteerFx(fxA, dt);
+        SteerFx(fxB, dt);
     }
 
     // ---------- нескінченне підвантаження ----------
@@ -1169,8 +1433,9 @@ public class GrassField : MonoBehaviour
         spawnedThisFrame = 0;
         piecesThisFrame = 0;
 
-        // вітер оновлюємо першим: і ламання, і малювання цього кадру бачать той самий нахил
+        // вітер оновлюємо першим: і ламання, і малювання, і частинки цього кадру бачать той самий напрям
         if (windEnabled) UpdateWind(Time.deltaTime);
+        UpdateWindFx();
 
         UpdateStreaming();
         if (breakable) BreakAroundRock();
