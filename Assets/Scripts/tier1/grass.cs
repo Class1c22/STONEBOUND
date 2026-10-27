@@ -9,6 +9,8 @@ using UnityEngine.Rendering;
 //   чанки позаду вивантажуються. Той самий seed = та сама трава в тому самому місці;
 // - трава росте лужайками (карта щільності на шумі), між ними рідка трава й проплішини;
 // - ціла травинка = стовпчик із кубів, малюється GPU-інстансингом без кастомного шейдера (матеріали URP/Lit);
+// - ВІТЕР: травинки нахиляються навколо основи в бік вітру. Напрям блукає, сила йде хвилями й шквалами,
+//   пориви біжать полем, а кожна травинка ще трохи тремтить по-своєму (усе на шумі Перліна, без шейдера);
 // - при ударі травинка стає дрібною воксельною сіткою, як стіна у VoxelWorld: камінь вибиває кулю вокселів
 //   (видно дірку), решта травинки стоїть далі, а шматки, що відірвались від землі, падають з фізикою;
 // - вибиті вокселі розлітаються кубиками (Rigidbody + Absorbable): камінь всмоктує їх по E (RockAbsorber.Suck) і росте;
@@ -83,6 +85,38 @@ public class GrassField : MonoBehaviour
     public Color tipColor = new Color(0.55f, 0.82f, 0.25f);
     public bool receiveShadows = true;
 
+    [Header("Вітер")]
+    [Tooltip("Вітер хилить травинки. Вимкни, щоб вони стояли рівно")]
+    public bool windEnabled = true;
+    [Tooltip("Швидкість часу вітру (1 = звичайно, більше = все швидше змінюється)")]
+    public float windTimeScale = 1f;
+    [Tooltip("Максимальний нахил травинки при найсильнішому пориві, градусів")]
+    [Range(0f, 80f)] public float maxTilt = 30f;
+    [Tooltip("Нахил у штиль, градусів (щоб трава ніколи не стояла мертво рівно)")]
+    [Range(0f, 20f)] public float calmTilt = 3f;
+    [Tooltip("Головний напрям вітру, градусів від осі +Z (навколо нього він блукає)")]
+    public float windAngleBase = 0f;
+    [Tooltip("Наскільки далеко напрям вітру відхиляється від головного, градусів. 180 = дме з будь-якого боку")]
+    [Range(0f, 180f)] public float directionWander = 110f;
+    [Tooltip("Як швидко змінюється напрям вітру (більше = частіше змінює)")]
+    public float directionChangeSpeed = 0.12f;
+    [Tooltip("Як швидко змінюється загальна сила вітру (більше = частіші шквали й штилі)")]
+    public float strengthChangeSpeed = 0.25f;
+    [Tooltip("Додаткова різкість шквалів: 0 = рівний вітер, 1 = різкі удари")]
+    [Range(0f, 1f)] public float squallAmount = 0.6f;
+    [Tooltip("Розмір пориву в клітинках сітки: більше = великі хвилі, менше = дрібні")]
+    public float gustSizeCells = 7f;
+    [Tooltip("Швидкість, з якою пориви біжать полем (клітинок за секунду)")]
+    public float gustSpeedCells = 5f;
+    [Tooltip("Розмір дрібного тремтіння в клітинках: травинки поруч хитаються по-різному")]
+    public float turbulenceSizeCells = 1.5f;
+    [Tooltip("Швидкість тремтіння")]
+    public float turbulenceSpeed = 1.6f;
+    [Tooltip("Сила тремтіння: 0 = травинки поруч хитаються однаково, 1 = дуже рвано")]
+    [Range(0f, 1f)] public float turbulence = 0.35f;
+    [Tooltip("Наскільки травинки в різних місцях хилиться в різні боки відносно вітру, градусів")]
+    [Range(0f, 120f)] public float localDirectionJitter = 45f;
+
     [Header("Ламання")]
     [Tooltip("Камінь ламає траву, якої торкається")]
     public bool breakable = true;
@@ -146,6 +180,11 @@ public class GrassField : MonoBehaviour
     public event System.Action<int> BladesBroken;
     public int TotalBroken { get; private set; }
 
+    // Поточний вітер для інших скриптів (наприклад, щоб гнути декор у той самий бік)
+    public float WindAngleDegrees => windAngle;
+    public float WindStrength01 => windEnabled ? globalStrength : 0f;
+    public Vector3 WindDirection => new Vector3(Mathf.Sin(windAngle * Mathf.Deg2Rad), 0f, Mathf.Cos(windAngle * Mathf.Deg2Rad));
+
     // Одна травинка. Поки не вдарена, cells == null і вона малюється інстансингом.
     // Після удару cells = воксельна сітка (1 = є воксель), mesh = її власний меш.
     class Blade
@@ -168,6 +207,7 @@ public class GrassField : MonoBehaviour
     {
         public Mesh mesh;
         public Matrix4x4[] matrices;
+        public Blade[] blades;      // травинки цього пакета (щоб щокадру перерахувати нахил від вітру)
         public int count;
     }
 
@@ -191,13 +231,20 @@ public class GrassField : MonoBehaviour
 
     int[] variantHeights;          // висота кожного варіанта травинки у вокселях
     readonly Dictionary<int, Mesh> meshCache = new Dictionary<int, Mesh>();   // цілі травинки за висотою
-    readonly Dictionary<int, List<Matrix4x4>> groupTemp = new Dictionary<int, List<Matrix4x4>>();
+    readonly Dictionary<int, List<Blade>> groupTemp = new Dictionary<int, List<Blade>>();
     Material[] materials;
     float vs;                      // розмір великого вокселя трави
     float sv, svy;                 // розмір малого вокселя сітки (по ширині й по висоті)
     int gridW, sub;                // клітинок по ширині; малих вокселів у одному великому по висоті
     float findTimer;
     Plane[] planes = new Plane[6];
+
+    // стан вітру
+    float windT;                   // накопичений час вітру
+    float windAngle;               // поточний загальний напрям, градусів від +Z
+    float globalStrength = 0.4f;   // загальна сила 0..1
+    Vector2 gustOffset;            // зсув поля поривів (вони біжать за вітром)
+    float noiseO;                  // зсув шуму від seed (великий, щоб не було дзеркала на від'ємних координатах)
 
     Rigidbody[] debrisPool;
     int debrisIndex, spawnedThisFrame, piecesThisFrame;
@@ -235,6 +282,30 @@ public class GrassField : MonoBehaviour
 #endif
     }
 
+    // Нові поля вітру теж не підтягуються в уже збережену сцену. Цей пункт виставляє стандартний вітер.
+    [ContextMenu("Скинути вітер")]
+    void ResetWind()
+    {
+        windEnabled = true;
+        windTimeScale = 1f;
+        maxTilt = 30f;
+        calmTilt = 3f;
+        windAngleBase = 0f;
+        directionWander = 110f;
+        directionChangeSpeed = 0.12f;
+        strengthChangeSpeed = 0.25f;
+        squallAmount = 0.6f;
+        gustSizeCells = 7f;
+        gustSpeedCells = 5f;
+        turbulenceSizeCells = 1.5f;
+        turbulenceSpeed = 1.6f;
+        turbulence = 0.35f;
+        localDirectionJitter = 45f;
+#if UNITY_EDITOR
+        UnityEditor.EditorUtility.SetDirty(this);
+#endif
+    }
+
     [ContextMenu("Rebuild")]
     public void Setup()
     {
@@ -248,6 +319,11 @@ public class GrassField : MonoBehaviour
         sv = thickness * vs / gridW;
         sub = Mathf.Max(1, Mathf.RoundToInt(vs / sv));
         svy = vs / sub;
+
+        noiseO = 10000f + seed * 17.3f;
+        windT = 0f;
+        gustOffset = Vector2.zero;
+        UpdateWind(0f);
 
         PrepareMaterials();
 
@@ -405,6 +481,83 @@ public class GrassField : MonoBehaviour
                 materials[i] = m;
             }
             materials[i].enableInstancing = true;
+        }
+    }
+
+    // ---------- вітер ----------
+
+    // Перлін 0..1 -> різкіший 0..1 (середина шуму розтягується, щоб були і штилі, і сильні пориви)
+    static float Contrast(float n)
+    {
+        return Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.25f, 0.75f, n));
+    }
+
+    // Оновлює глобальний вітер: напрям, загальну силу й зсув поля поривів. Викликається раз за кадр.
+    void UpdateWind(float deltaTime)
+    {
+        windT += deltaTime * Mathf.Max(0f, windTimeScale);
+        float dt = deltaTime * Mathf.Max(0f, windTimeScale);
+        float o = noiseO;
+
+        // напрям: повільне блукання + швидші смикання
+        float slow = (Mathf.PerlinNoise(o + windT * directionChangeSpeed, o * 0.31f) - 0.5f) * 2f;
+        float fast = (Mathf.PerlinNoise(o * 0.7f + windT * directionChangeSpeed * 5f, o * 0.13f + 9.1f) - 0.5f) * 2f;
+        windAngle = windAngleBase + slow * directionWander * 1.6f + fast * directionWander * 0.3f;
+
+        // сила: хвилі штилю й вітру + рідкісні різкі шквали
+        float baseN = Contrast(Mathf.PerlinNoise(o * 0.53f + windT * strengthChangeSpeed, o * 0.77f + 3.3f));
+        float flutter = Mathf.PerlinNoise(o * 0.41f + windT * strengthChangeSpeed * 3f, o * 0.19f + 7.7f);
+        float squall = Contrast(Mathf.PerlinNoise(o * 0.67f + windT * strengthChangeSpeed * 2.3f, o * 0.29f + 5.5f));
+        squall = squall * squall * squall;
+        globalStrength = Mathf.Clamp01(Mathf.Lerp(0.2f, 0.85f, baseN) * Mathf.Lerp(0.8f, 1f, flutter) + squall * squallAmount * 0.6f);
+
+        // пориви біжать за вітром: зсуваємо поле шуму вздовж напрямку
+        Vector3 d = WindDirection;
+        float speed = gustSpeedCells * vs * (0.4f + globalStrength);
+        gustOffset += new Vector2(d.x, d.z) * speed * dt;
+    }
+
+    // Нахил травинки від вітру в її точці (навколо основи). Поки вітер вимкнено, нахилу немає.
+    Quaternion WindTilt(Vector3 p)
+    {
+        if (!windEnabled || vs <= 0f) return Quaternion.identity;
+
+        float o = noiseO;
+        float gs = Mathf.Max(0.5f, gustSizeCells) * vs;
+        float ts = Mathf.Max(0.2f, turbulenceSizeCells) * vs;
+
+        // порив: хвиля, що біжить полем
+        float gust = Contrast(Mathf.PerlinNoise((p.x - gustOffset.x) / gs + o * 0.17f, (p.z - gustOffset.y) / gs + o * 0.23f));
+        // дрібне тремтіння: у кожному місці своє
+        float turb = Mathf.PerlinNoise(p.x / ts + windT * turbulenceSpeed + o * 0.11f, p.z / ts - windT * turbulenceSpeed * 0.7f + o * 0.37f);
+        // місцеве відхилення напряму: у різних місцях трава хилиться в різні боки
+        float local = (Mathf.PerlinNoise(p.x / (gs * 0.8f) + windT * 0.15f + o * 0.43f, p.z / (gs * 0.8f) + o * 0.59f) - 0.5f) * 2f;
+
+        float strength = Mathf.Lerp(0.15f, 1f, gust) * globalStrength;
+        strength = Mathf.Clamp01(strength + (turb - 0.5f) * 2f * turbulence * 0.4f);
+
+        float tilt = Mathf.Lerp(calmTilt, maxTilt, strength);
+        float ang = (windAngle + local * localDirectionJitter + (turb - 0.5f) * turbulence * 40f) * Mathf.Deg2Rad;
+        float dx = Mathf.Sin(ang), dz = Mathf.Cos(ang);
+
+        // вісь = up x dir: додатний кут нахиляє травинку в бік dir
+        return Quaternion.AngleAxis(tilt, new Vector3(dz, 0f, -dx));
+    }
+
+    // Повний поворот травинки: спершу її власний yaw, потім нахил від вітру
+    Quaternion BladeRot(Blade b)
+    {
+        return WindTilt(b.pos) * Quaternion.Euler(0f, b.yaw, 0f);
+    }
+
+    // Перераховує матриці цілих травинок пакета з поточним вітром
+    void UpdateBatchMatrices(Batch batch)
+    {
+        Vector3 scale = Vector3.one * vs;
+        for (int i = 0; i < batch.count; i++)
+        {
+            Blade b = batch.blades[i];
+            batch.matrices[i] = Matrix4x4.TRS(b.pos, BladeRot(b), scale);
         }
     }
 
@@ -596,10 +749,15 @@ public class GrassField : MonoBehaviour
         if (chunk.blades.Count == 0) return chunk;   // порожній чанк теж запам'ятовуємо, щоб не перераховувати
 
         float cw = chunkCells * vs;
+
+        // нахил від вітру зсуває верхівки вбік: розширюємо межі чанка, щоб травинки не зникали з кадру
+        float lean = maxVoxels * vs * Mathf.Sin(Mathf.Min(89f, Mathf.Max(maxTilt, calmTilt)) * Mathf.Deg2Rad);
+        float pad = windEnabled ? lean : 0f;
+
         chunk.empty = false;
         chunk.bounds = new Bounds(
             new Vector3((cx + 0.5f) * cw, (minY + maxY) * 0.5f, (cz + 0.5f) * cw),
-            new Vector3(cw + vs, maxY - minY + vs, cw + vs));
+            new Vector3(cw + vs + 2f * pad, maxY - minY + vs, cw + vs + 2f * pad));
         return chunk;
     }
 
@@ -642,7 +800,7 @@ public class GrassField : MonoBehaviour
         if (b.cells == null) InitCells(b);
 
         int L = b.H * sub;
-        Quaternion rot = Quaternion.Euler(0f, b.yaw, 0f);
+        Quaternion rot = BladeRot(b);   // з нахилом від вітру: дірка там, де травинка зараз реально стоїть
         Vector3 lc = Quaternion.Inverse(rot) * (c - b.pos);
         float r2 = r * r;
 
@@ -805,11 +963,23 @@ public class GrassField : MonoBehaviour
         return BreakSphere(c, r, damage, vel);
     }
 
+    // Найближча до точки c точка відрізка a-b
+    static Vector3 ClosestOnSegment(Vector3 a, Vector3 b, Vector3 c)
+    {
+        Vector3 ab = b - a;
+        float len2 = ab.sqrMagnitude;
+        if (len2 < 1e-8f) return a;
+        float t = Mathf.Clamp01(Vector3.Dot(c - a, ab) / len2);
+        return a + ab * t;
+    }
+
     // Спільне ядро: вибиває кулю вокселів у всіх травинках, яких торкається сфера (c, r)
     int BreakSphere(Vector3 c, float r, float damage, Vector3 vel)
     {
         float r2 = r * r;
         float half = thickness * vs * 0.5f;
+        float reach = r + half * 1.5f;
+        float reach2 = reach * reach;
 
         destroyedCells.Clear();
         int broken = 0;
@@ -822,13 +992,10 @@ public class GrassField : MonoBehaviour
             {
                 Blade b = list[i];
 
-                // швидка перевірка: найближча точка вихідного стовпчика до центру сфери
-                float top = b.pos.y + b.H * vs;
-                Vector3 q = new Vector3(
-                    Mathf.Clamp(c.x, b.pos.x - half, b.pos.x + half),
-                    Mathf.Clamp(c.y, b.pos.y, top),
-                    Mathf.Clamp(c.z, b.pos.z - half, b.pos.z + half));
-                if ((c - q).sqrMagnitude > r2) continue;
+                // швидка перевірка: найближча точка осі травинки (з нахилом від вітру) до центру сфери
+                Vector3 top = b.pos + BladeRot(b) * Vector3.up * (b.H * vs);
+                Vector3 q = ClosestOnSegment(b.pos, top, c);
+                if ((c - q).sqrMagnitude > reach2) continue;
 
                 if (!Carve(b, chunk, c, r, vel)) continue;
                 broken++;
@@ -1002,6 +1169,9 @@ public class GrassField : MonoBehaviour
         spawnedThisFrame = 0;
         piecesThisFrame = 0;
 
+        // вітер оновлюємо першим: і ламання, і малювання цього кадру бачать той самий нахил
+        if (windEnabled) UpdateWind(Time.deltaTime);
+
         UpdateStreaming();
         if (breakable) BreakAroundRock();
 
@@ -1015,10 +1185,11 @@ public class GrassField : MonoBehaviour
             if (!GeometryUtility.TestPlanesAABB(planes, chunk.bounds)) continue;
             if (chunk.dirty) RebuildBatches(chunk);
 
-            // цілі травинки: інстансинг
+            // цілі травинки: інстансинг (з вітром матриці перераховуються щокадру, лише для чанків у кадрі)
             foreach (var b in chunk.batches)
             {
                 if (b.count == 0) continue;
+                if (windEnabled) UpdateBatchMatrices(b);
                 for (int s = 0; s < b.mesh.subMeshCount; s++)
                 {
                     if (b.mesh.GetIndexCount(s) == 0) continue;
@@ -1033,11 +1204,11 @@ public class GrassField : MonoBehaviour
                 }
             }
 
-            // вдарені травинки: кожна зі своїм мешем (з дірками)
+            // вдарені травинки: кожна зі своїм мешем (з дірками), теж хитаються від вітру
             foreach (var bl in chunk.damaged)
             {
                 if (bl.mesh == null) continue;
-                var m = Matrix4x4.TRS(bl.pos, Quaternion.Euler(0f, bl.yaw, 0f), Vector3.one);
+                var m = Matrix4x4.TRS(bl.pos, BladeRot(bl), Vector3.one);
                 for (int s = 0; s < bl.mesh.subMeshCount; s++)
                 {
                     if (bl.mesh.GetIndexCount(s) == 0) continue;
@@ -1066,10 +1237,10 @@ public class GrassField : MonoBehaviour
             if (b.cells != null) continue;
             if (!groupTemp.TryGetValue(b.H, out var l))
             {
-                l = new List<Matrix4x4>();
+                l = new List<Blade>();
                 groupTemp[b.H] = l;
             }
-            l.Add(Matrix4x4.TRS(b.pos, Quaternion.Euler(0f, b.yaw, 0f), Vector3.one * vs));
+            l.Add(b);
         }
 
         foreach (var kv in groupTemp)
@@ -1081,8 +1252,11 @@ public class GrassField : MonoBehaviour
             {
                 int n = Mathf.Min(MaxBatch, list.Count - s);
                 var arr = new Matrix4x4[n];
-                list.CopyTo(s, arr, 0, n);
-                chunk.batches.Add(new Batch { mesh = mesh, matrices = arr, count = n });
+                var bl = new Blade[n];
+                list.CopyTo(s, bl, 0, n);
+                var batch = new Batch { mesh = mesh, matrices = arr, blades = bl, count = n };
+                UpdateBatchMatrices(batch);   // одразу з поточним нахилом (без вітру це просто yaw)
+                chunk.batches.Add(batch);
             }
         }
     }
