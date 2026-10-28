@@ -9,8 +9,9 @@ using UnityEngine.Rendering;
 //   чанки позаду вивантажуються. Той самий seed = та сама трава в тому самому місці;
 // - трава росте лужайками (карта щільності на шумі), між ними рідка трава й проплішини;
 // - ціла травинка = стовпчик із кубів, малюється GPU-інстансингом без кастомного шейдера (матеріали URP/Lit);
-// - ВІТЕР: травинки нахиляються навколо основи в бік вітру. Напрям блукає, сила йде хвилями й шквалами,
-//   пориви біжать полем, а кожна травинка ще трохи тремтить по-своєму (усе на шумі Перліна, без шейдера);
+// - ВІТЕР: напрям і загальна сила беруться з глобального WindSystem (один вітер на всіх рівнях і для каменя).
+//   Травинки нахиляються навколо основи в бік вітру, пориви біжать полем, а кожна травинка ще трохи тремтить
+//   по-своєму (усе на шумі Перліна, без шейдера). Вимкнеш Use Global Wind: старий локальний вітер цього поля;
 // - ЧАСТИНКИ ВІТРУ: дві системи частинок їздять разом із каменем: спавняться в обсязі, що покриває всю
 //   підвантажену область трави, стоять на висоті землі під каменем і летять у той бік, куди дме вітер.
 //   Рух частинок робиться кодом напряму, тож його не гасять налаштування систем;
@@ -91,21 +92,23 @@ public class GrassField : MonoBehaviour
     [Header("Вітер")]
     [Tooltip("Вітер хилить травинки. Вимкни, щоб вони стояли рівно")]
     public bool windEnabled = true;
+    [Tooltip("Брати напрям і силу вітру з глобального WindSystem (однаковий на всіх рівнях і для каменя). Вимкнено: старий локальний вітер цього поля")]
+    public bool useGlobalWind = true;
     [Tooltip("Швидкість часу вітру (1 = звичайно, більше = все швидше змінюється)")]
     public float windTimeScale = 1f;
     [Tooltip("Максимальний нахил травинки при найсильнішому пориві, градусів")]
     [Range(0f, 80f)] public float maxTilt = 30f;
     [Tooltip("Нахил у штиль, градусів (щоб трава ніколи не стояла мертво рівно)")]
     [Range(0f, 20f)] public float calmTilt = 3f;
-    [Tooltip("Головний напрям вітру, градусів від осі +Z (навколо нього він блукає)")]
+    [Tooltip("Головний напрям вітру, градусів від осі +Z (навколо нього він блукає). Лише для локального вітру")]
     public float windAngleBase = 0f;
-    [Tooltip("Наскільки далеко напрям вітру відхиляється від головного, градусів. 180 = дме з будь-якого боку")]
+    [Tooltip("Наскільки далеко напрям вітру відхиляється від головного, градусів. Лише для локального вітру")]
     [Range(0f, 180f)] public float directionWander = 110f;
-    [Tooltip("Як швидко змінюється напрям вітру (більше = частіше змінює)")]
+    [Tooltip("Як швидко змінюється напрям вітру (більше = частіше змінює). Лише для локального вітру")]
     public float directionChangeSpeed = 0.12f;
-    [Tooltip("Як швидко змінюється загальна сила вітру (більше = частіші шквали й штилі)")]
+    [Tooltip("Як швидко змінюється загальна сила вітру. Лише для локального вітру")]
     public float strengthChangeSpeed = 0.25f;
-    [Tooltip("Додаткова різкість шквалів: 0 = рівний вітер, 1 = різкі удари")]
+    [Tooltip("Додаткова різкість шквалів: 0 = рівний вітер, 1 = різкі удари. Лише для локального вітру")]
     [Range(0f, 1f)] public float squallAmount = 0.6f;
     [Tooltip("Розмір пориву в клітинках сітки: більше = великі хвилі, менше = дрібні")]
     public float gustSizeCells = 7f;
@@ -356,6 +359,7 @@ public class GrassField : MonoBehaviour
     void ResetWind()
     {
         windEnabled = true;
+        useGlobalWind = true;
         windTimeScale = 1f;
         maxTilt = 30f;
         calmTilt = 3f;
@@ -590,23 +594,35 @@ public class GrassField : MonoBehaviour
     }
 
     // Оновлює глобальний вітер: напрям, загальну силу й зсув поля поривів. Викликається раз за кадр.
+    // Напрям і сила беруться з WindSystem (один вітер на всі рівні й для каменя) або, якщо
+    // Use Global Wind вимкнено, рахуються локально, як раніше. Пориви, нахил і тремтіння завжди рахуються тут.
     void UpdateWind(float deltaTime)
     {
-        windT += deltaTime * Mathf.Max(0f, windTimeScale);
         float dt = deltaTime * Mathf.Max(0f, windTimeScale);
-        float o = noiseO;
+        windT += dt;
 
-        // напрям: повільне блукання + швидші смикання
-        float slow = (Mathf.PerlinNoise(o + windT * directionChangeSpeed, o * 0.31f) - 0.5f) * 2f;
-        float fast = (Mathf.PerlinNoise(o * 0.7f + windT * directionChangeSpeed * 5f, o * 0.13f + 9.1f) - 0.5f) * 2f;
-        windAngle = windAngleBase + slow * directionWander * 1.6f + fast * directionWander * 0.3f;
+        WindSystem ws = useGlobalWind ? WindSystem.Instance : null;
+        if (ws != null)
+        {
+            windAngle = ws.AngleDegrees;
+            globalStrength = ws.Strength01;
+        }
+        else
+        {
+            float o = noiseO;
 
-        // сила: хвилі штилю й вітру + рідкісні різкі шквали
-        float baseN = Contrast(Mathf.PerlinNoise(o * 0.53f + windT * strengthChangeSpeed, o * 0.77f + 3.3f));
-        float flutter = Mathf.PerlinNoise(o * 0.41f + windT * strengthChangeSpeed * 3f, o * 0.19f + 7.7f);
-        float squall = Contrast(Mathf.PerlinNoise(o * 0.67f + windT * strengthChangeSpeed * 2.3f, o * 0.29f + 5.5f));
-        squall = squall * squall * squall;
-        globalStrength = Mathf.Clamp01(Mathf.Lerp(0.2f, 0.85f, baseN) * Mathf.Lerp(0.8f, 1f, flutter) + squall * squallAmount * 0.6f);
+            // напрям: повільне блукання + швидші смикання
+            float slow = (Mathf.PerlinNoise(o + windT * directionChangeSpeed, o * 0.31f) - 0.5f) * 2f;
+            float fast = (Mathf.PerlinNoise(o * 0.7f + windT * directionChangeSpeed * 5f, o * 0.13f + 9.1f) - 0.5f) * 2f;
+            windAngle = windAngleBase + slow * directionWander * 1.6f + fast * directionWander * 0.3f;
+
+            // сила: хвилі штилю й вітру + рідкісні різкі шквали
+            float baseN = Contrast(Mathf.PerlinNoise(o * 0.53f + windT * strengthChangeSpeed, o * 0.77f + 3.3f));
+            float flutter = Mathf.PerlinNoise(o * 0.41f + windT * strengthChangeSpeed * 3f, o * 0.19f + 7.7f);
+            float squall = Contrast(Mathf.PerlinNoise(o * 0.67f + windT * strengthChangeSpeed * 2.3f, o * 0.29f + 5.5f));
+            squall = squall * squall * squall;
+            globalStrength = Mathf.Clamp01(Mathf.Lerp(0.2f, 0.85f, baseN) * Mathf.Lerp(0.8f, 1f, flutter) + squall * squallAmount * 0.6f);
+        }
 
         // пориви біжать за вітром: зсуваємо поле шуму вздовж напрямку
         Vector3 d = WindDirection;

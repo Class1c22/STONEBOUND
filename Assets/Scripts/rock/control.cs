@@ -24,6 +24,16 @@ public class RockController : MonoBehaviour
     public float jumpSpeed = 7f;
     public float groundCheckExtra = 0.15f;
 
+    [Header("Вітер")]
+    [Tooltip("Вітер впливає на камінь (береться з глобального WindSystem)")]
+    public bool windAffectsRock = true;
+    [Tooltip("Постійний поштовх вітру при найсильнішому пориві (прискорення, м/с²)")]
+    public float windPush = 6f;
+    [Tooltip("Наскільки вітер у спину/в лице змінює розгін і ліміт швидкості (0.35 = ±35% при найсильнішому вітрі)")]
+    [Range(0f, 0.8f)] public float windSpeedEffect = 0.35f;
+    [Tooltip("Чим більший камінь, тим слабше його зносить: сила ділиться на (розмір ^ це число)")]
+    public float windSizeFalloff = 0.7f;
+
     Rigidbody rb;
     SphereCollider col;
     RockAbsorber absorber;   // необов'язково: стадія збільшує швидкість і силу
@@ -76,12 +86,27 @@ public class RockController : MonoBehaviour
         float forceMul = absorber != null ? absorber.ForceMultiplier : 1f;
         float speedMul = absorber != null ? absorber.SpeedMultiplier : 1f;
 
-        float accel = moveAcceleration * forceMul * (sprint ? sprintAccelerationMultiplier : 1f);
-        float limit = maxSpeed * speedMul * (sprint ? sprintMaxSpeedMultiplier : 1f);
-
         Vector3 horizontalVelocity = rb.linearVelocity;
         horizontalVelocity.y = 0f;
         float hSpeed = horizontalVelocity.magnitude;
+
+        // вітер: у спину прискорює й піднімає ліміт, у лице гальмує, а ще постійно зносить убік.
+        // Напрям береться з вводу, а без вводу з поточної швидкості (тоді вітер не змінює ліміт, лише зносить)
+        float windFactor = 1f;
+        Vector3 windPushVec = Vector3.zero;
+        WindSystem wind = windAffectsRock ? WindSystem.Instance : null;
+        if (wind != null)
+        {
+            float ratio = absorber != null ? Mathf.Max(1f, absorber.SizeRatio) : 1f;
+            float windScale = 1f / Mathf.Pow(ratio, windSizeFalloff);
+
+            Vector3 moveDir = dir.sqrMagnitude > 0.01f ? dir : (hSpeed > 0.5f ? horizontalVelocity / hSpeed : Vector3.zero);
+            windFactor = Mathf.Max(0.3f, 1f + wind.Alignment(moveDir) * windSpeedEffect * windScale);
+            windPushVec = wind.Direction * (wind.Strength01 * windPush * windScale);
+        }
+
+        float accel = moveAcceleration * forceMul * windFactor * (sprint ? sprintAccelerationMultiplier : 1f);
+        float limit = maxSpeed * speedMul * windFactor * (sprint ? sprintMaxSpeedMultiplier : 1f);
 
         Vector3 force = dir * accel;
 
@@ -95,7 +120,7 @@ public class RockController : MonoBehaviour
             rb.AddForce(-vDir * (hSpeed - limit) * overspeedDrag, ForceMode.Acceleration);
         }
 
-        rb.AddForce(force, ForceMode.Acceleration);
+        rb.AddForce(force + windPushVec, ForceMode.Acceleration);
 
         // на землі плавно повертаємо напрямок руху до напрямку вводу (швидкість зберігається)
         if (dir.sqrMagnitude > 0.01f && hSpeed > 1f && IsGrounded())
