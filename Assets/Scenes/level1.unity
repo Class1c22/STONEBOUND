@@ -11948,6 +11948,7 @@ MonoBehaviour:
   tipColor: {r: 0.55, g: 0.8, b: 0.25, a: 1}
   receiveShadows: 1
   windEnabled: 1
+  useGlobalWind: 1
   windTimeScale: 1
   maxTilt: 30
   calmTilt: 3
@@ -12013,6 +12014,58 @@ MonoBehaviour:
   maxDebrisPerFrame: 400
   absorbVolumeFactor: 1
   debris: 1
+--- !u!1 &1684398695
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1684398696}
+  - component: {fileID: 1684398697}
+  m_Layer: 0
+  m_Name: WindSystem
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1684398696
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1684398695}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: -9.15435, y: -11.01, z: 69.37479}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1838282995}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1684398697
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1684398695}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fb14d95ca0825244da045ceb0034f83e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::WindSystem
+  windOn: 1
+  seed: 1
+  timeScale: 1
+  angleBase: 0
+  directionWander: 110
+  directionChangeSpeed: 0.12
+  strengthChangeSpeed: 0.25
+  squallAmount: 0.6
 --- !u!1 &1827139849
 GameObject:
   m_ObjectHideFlags: 0
@@ -12187,6 +12240,7 @@ Transform:
   - {fileID: 843798774}
   - {fileID: 416857264}
   - {fileID: 1634029174}
+  - {fileID: 1684398696}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1001 &1911872437
@@ -12396,6 +12450,10 @@ MonoBehaviour:
   overspeedDrag: 1.5
   jumpSpeed: 5
   groundCheckExtra: 0.15
+  windAffectsRock: 1
+  windPush: 6
+  windSpeedEffect: 0.35
+  windSizeFalloff: 0.7
 --- !u!135 &2032603334
 SphereCollider:
   m_ObjectHideFlags: 0

@@ -12,7 +12,11 @@ using UnityEngine.SceneManagement;
 //  * Травинка не ставиться на дорогу (за тією ж сіткою, що й у генератора), а також у клітинку,
 //    де на землі вже стоїть воксель (будинок, паркан, ставок, клумба, дерево тощо).
 //  * Усе малюється GPU-інстансингом (Graphics.RenderMeshInstanced), без колайдерів і Rigidbody.
-//  * Нахил рахується тільки для травинок поруч із каменем і тих, що ще розпрямляються.
+//  * Нахил від каменя рахується тільки для травинок поруч із ним і тих, що ще розпрямляються.
+//  * ВІТЕР: напрям і силу бере з глобального WindSystem (той самий вітер, що на 1 рівні й для каменя).
+//    Травинки хиляться за вітром навколо основи, пориви біжать по землі, а ще є дрібне тремтіння.
+//    Притиснута каменем травинка вітру не слухає (чим сильніше притиснута, тим менше гойдається).
+//    Вітер перераховується лише для травинок у кадрі й з кроком Wind Step, тож це дешево.
 //
 // Як підключити: повісь на порожній GameObject у сцені 2. Tier2CityGenerator і VoxelWorld знайдуться самі.
 // Підлога (FloorGenerator) має бути на висоті groundY (за замовчуванням 0), як і в генератора.
@@ -60,6 +64,25 @@ public class Tier2Grass : MonoBehaviour
     [Tooltip("Швидкість (м/с), з якої слід від каменя максимальний")]
     public float fullWakeSpeed = 8f;
 
+    [Header("Вітер (береться з глобального WindSystem)")]
+    public bool windEnabled = true;
+    [Tooltip("Нахил при найсильнішому вітрі, градуси")]
+    [Range(0f, 80f)] public float maxTilt = 28f;
+    [Tooltip("Нахил у штиль, градуси")]
+    [Range(0f, 20f)] public float calmTilt = 3f;
+    [Tooltip("Розмір поривів, метри")]
+    public float gustSizeMeters = 10f;
+    [Tooltip("Швидкість, з якою пориви біжать полем, м/с")]
+    public float gustSpeedMeters = 4f;
+    [Tooltip("Розмір дрібного тремтіння, метри")]
+    public float turbulenceSizeMeters = 1.5f;
+    public float turbulenceSpeed = 1.6f;
+    [Range(0f, 1f)] public float turbulence = 0.35f;
+    [Tooltip("На скільки градусів місцевий напрям може відхилятись від загального")]
+    [Range(0f, 120f)] public float localDirectionJitter = 45f;
+    [Tooltip("Як часто перераховувати вітер (секунди). Менше = плавніше, але дорожче")]
+    [Range(0.01f, 0.2f)] public float windStep = 0.033f;
+
     [Header("Вигляд")]
     [Range(1, 6)] public int colorBands = 3;
     public Color baseColor = new Color(0.16f, 0.42f, 0.12f);
@@ -90,6 +113,7 @@ public class Tier2Grass : MonoBehaviour
         public Vector2 centerXZ;
         public int bentCount;
         public int lastFrame = -1;   // у якому кадрі чанк уже оброблено
+        public int windStamp = -1;   // з якою версією вітру пораховані матриці
     }
 
     readonly Dictionary<Vector2Int, Chunk> chunks = new Dictionary<Vector2Int, Chunk>();
@@ -106,6 +130,17 @@ public class Tier2Grass : MonoBehaviour
     float scanTimer;
     bool ready;
     readonly Plane[] planes = new Plane[6];
+
+    // стан вітру (оновлюється раз на windStep)
+    float windAngleRad;        // загальний напрям, радіани від +Z
+    float windStrength;        // 0..1
+    float windT;               // накопичений час
+    float windAccum;           // час від останнього перерахунку
+    float windTimer;
+    Vector2 gustOffset;        // зсув поля поривів (вони біжать за вітром)
+    float noiseO;              // великий зсув шуму від seed
+    int windVersion;           // збільшується при кожному перерахунку, чанки звіряють із ним свої матриці
+    bool lastWindEnabled = true;
 
     // ---------- життєвий цикл ----------
 
@@ -129,9 +164,11 @@ public class Tier2Grass : MonoBehaviour
         blockV = city.BlockVoxels;
         roadV = city.RoadVoxels;
         n = Mathf.Max(1, chunksPerBlockSide);
+        noiseO = 10000f + seed * 17.3f;
         PrepareMaterials();
         bladeMesh = BuildBladeMesh();
         for (int i = 0; i < tempBlades.Length; i++) tempBlades[i] = new List<Blade>(1024);
+        UpdateWindState(0f);
         ready = true;
         return true;
     }
@@ -150,6 +187,7 @@ public class Tier2Grass : MonoBehaviour
             Stream();
         }
 
+        TickWind(Time.deltaTime);
         SimulateBlades(Time.deltaTime);
         RenderChunks();
     }
@@ -173,6 +211,74 @@ public class Tier2Grass : MonoBehaviour
             rock = found;
             rockBody = rock != null ? rock.GetComponent<Rigidbody>() : null;
         }
+    }
+
+    // ---------- вітер ----------
+
+    static float Contrast(float v)
+    {
+        return Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.25f, 0.75f, v));
+    }
+
+    // Раз на windStep бере напрям і силу з WindSystem та зсуває поле поривів. Збільшує windVersion,
+    // тож усі видимі чанки перерахують свої матриці.
+    void TickWind(float dt)
+    {
+        if (windEnabled != lastWindEnabled)
+        {
+            lastWindEnabled = windEnabled;
+            windVersion++;   // вітер увімкнули чи вимкнули: один раз усе перерахувати
+        }
+        if (!windEnabled) return;
+
+        windAccum += dt;
+        windTimer -= dt;
+        if (windTimer > 0f) return;
+        windTimer = Mathf.Max(0.01f, windStep);
+
+        UpdateWindState(windAccum);
+        windAccum = 0f;
+    }
+
+    void UpdateWindState(float dt)
+    {
+        WindSystem ws = WindSystem.Instance;
+        if (ws != null)
+        {
+            windAngleRad = ws.AngleDegrees * Mathf.Deg2Rad;
+            windStrength = ws.Strength01;
+        }
+
+        windT += dt;
+        Vector3 d = new Vector3(Mathf.Sin(windAngleRad), 0f, Mathf.Cos(windAngleRad));
+        float speed = gustSpeedMeters * (0.4f + windStrength);
+        gustOffset += new Vector2(d.x, d.z) * (speed * dt);
+        windVersion++;
+    }
+
+    // Нахил травинки від вітру в її точці (навколо основи). Один Перлін на пориви, решта на sin, щоб було дешево.
+    Quaternion WindTilt(Vector3 p, float scale)
+    {
+        if (!windEnabled || scale <= 0.001f) return Quaternion.identity;
+
+        float gs = Mathf.Max(0.5f, gustSizeMeters);
+        float ts = Mathf.Max(0.2f, turbulenceSizeMeters);
+
+        // порив: хвиля, що біжить землею
+        float gust = Contrast(Mathf.PerlinNoise((p.x - gustOffset.x) / gs + noiseO * 0.17f, (p.z - gustOffset.y) / gs + noiseO * 0.23f));
+        // дрібне тремтіння: у кожному місці своє
+        float turb = 0.5f + 0.5f * Mathf.Sin(windT * turbulenceSpeed * 2.2f + p.x / ts + p.z / ts * 0.7f);
+        // місцеве відхилення напряму: у різних місцях трава хилиться в різні боки
+        float local = Mathf.Sin(p.x / (gs * 0.8f) + windT * 0.15f) * Mathf.Cos(p.z / (gs * 0.8f) + noiseO * 0.001f);
+
+        float strength = Mathf.Lerp(0.15f, 1f, gust) * windStrength;
+        strength = Mathf.Clamp01(strength + (turb - 0.5f) * 2f * turbulence * 0.4f);
+
+        float tilt = Mathf.Lerp(calmTilt, maxTilt, strength) * scale;
+        float ang = windAngleRad + (local * localDirectionJitter + (turb - 0.5f) * turbulence * 40f) * Mathf.Deg2Rad;
+
+        // вісь = up x dir: додатний кут нахиляє травинку в бік dir
+        return Quaternion.AngleAxis(tilt, new Vector3(Mathf.Cos(ang), 0f, -Mathf.Sin(ang)));
     }
 
     // ---------- матеріали й мешу ----------
@@ -387,7 +493,7 @@ public class Tier2Grass : MonoBehaviour
             });
         }
 
-        var chunk = new Chunk { bands = new Band[bands] };
+        var chunk = new Chunk { bands = new Band[bands], windStamp = windVersion };
         for (int i = 0; i < bands; i++)
         {
             var list = tempBlades[i];
@@ -407,6 +513,7 @@ public class Tier2Grass : MonoBehaviour
 
     // ---------- нахил ----------
 
+    // Поворот = нахил від вітру * нахил від каменя * власний yaw. Притиснута травинка вітру не слухає.
     Matrix4x4 MakeMatrix(in Blade b)
     {
         Quaternion rot = Quaternion.Euler(0f, b.yaw, 0f);
@@ -417,6 +524,7 @@ public class Tier2Grass : MonoBehaviour
             // вісь нахилу перпендикулярна напрямку (lx, lz): так травинка хилиться саме туди
             rot = Quaternion.AngleAxis(angle, new Vector3(b.lz, 0f, -b.lx)) * rot;
         }
+        rot = WindTilt(b.pos, 1f - t) * rot;
         return Matrix4x4.TRS(b.pos, rot, new Vector3(b.w, b.h * (1f - 0.12f * t), b.w));
     }
 
@@ -556,6 +664,18 @@ public class Tier2Grass : MonoBehaviour
         c.bentCount = bent;
     }
 
+    // Перераховує матриці всіх травинок чанка з поточним вітром (лише для чанків у кадрі)
+    void RefreshWind(Chunk c)
+    {
+        for (int bi = 0; bi < c.bands.Length; bi++)
+        {
+            Band band = c.bands[bi];
+            for (int i = 0; i < band.count; i++)
+                band.m[i] = MakeMatrix(band.b[i]);
+        }
+        c.windStamp = windVersion;
+    }
+
     // ---------- малювання ----------
 
     void RenderChunks()
@@ -567,6 +687,8 @@ public class Tier2Grass : MonoBehaviour
         foreach (var c in chunks.Values)
         {
             if (!GeometryUtility.TestPlanesAABB(planes, c.bounds)) continue;
+            if (windEnabled && c.windStamp != windVersion) RefreshWind(c);
+
             for (int bi = 0; bi < c.bands.Length; bi++)
             {
                 Band band = c.bands[bi];
