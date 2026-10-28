@@ -70,6 +70,8 @@ public class Tier2Grass : MonoBehaviour
     [Range(0f, 80f)] public float maxTilt = 28f;
     [Tooltip("Нахил у штиль, градуси")]
     [Range(0f, 20f)] public float calmTilt = 3f;
+    [Tooltip("Загальний множник гойдання: 1 = як було, 2 = удвічі сильніше. Нове поле, тож діє одразу, без скидання сцени")]
+    [Range(0.5f, 6f)] public float swayMultiplier = 2.5f;
     [Tooltip("Розмір поривів, метри")]
     public float gustSizeMeters = 10f;
     [Tooltip("Швидкість, з якою пориви біжать полем, м/с")]
@@ -274,7 +276,7 @@ public class Tier2Grass : MonoBehaviour
         float strength = Mathf.Lerp(0.15f, 1f, gust) * windStrength;
         strength = Mathf.Clamp01(strength + (turb - 0.5f) * 2f * turbulence * 0.4f);
 
-        float tilt = Mathf.Lerp(calmTilt, maxTilt, strength) * scale;
+        float tilt = Mathf.Min(85f, Mathf.Lerp(calmTilt, maxTilt, strength) * swayMultiplier) * scale;
         float ang = windAngleRad + (local * localDirectionJitter + (turb - 0.5f) * turbulence * 40f) * Mathf.Deg2Rad;
 
         // вісь = up x dir: додатний кут нахиляє травинку в бік dir
