@@ -152,6 +152,8 @@ public class WorldDecorator : MonoBehaviour
     public int minCubesPerHit = 2;
     public int maxCubesPerHit = 40;
     [Range(0.05f, 1f)] public float cubeFraction = 0.25f;
+    [Tooltip("Множник кількості кубиків від квіток (1 = як від каменів, 0 = взагалі без кубиків)")]
+    [Range(0f, 1f)] public float flowerCubeFactor = 0.25f;
     public float maxCubeGrow = 2.5f;
     public float absorbVolumeFactor = 1f;
 
@@ -565,6 +567,7 @@ public class WorldDecorator : MonoBehaviour
         public Vector3 pos;
         public byte id;
         public float size;
+        public bool flower;   // вокесель від квітки: дає менше кубиків
     }
 
     DecorModel[] models = new DecorModel[0];   // спершу камені (stoneCount штук), далі квіти
@@ -1258,7 +1261,7 @@ public class WorldDecorator : MonoBehaviour
     {
         float u = 1f / p.gh;
         Vector3 lp = new Vector3((x + 0.5f - p.gw * 0.5f) * u, (y + 0.5f) * u, (z + 0.5f - p.gd * 0.5f) * u);
-        destroyed.Add(new Dest { pos = p.transform.TransformPoint(lp), id = id, size = u * p.scale });
+        destroyed.Add(new Dest { pos = p.transform.TransformPoint(lp), id = id, size = u * p.scale, flower = p.flower });
     }
 
     // Лишає найбільшу зв'язну частину шматка, решта розсипається на кубики
@@ -1408,7 +1411,8 @@ public class WorldDecorator : MonoBehaviour
         DecorModel dm = models[inst.model];
         int s = Mathf.Clamp(breakSubdivision, 1, 4);
         int gw = dm.W * s, gh = dm.H * s, gd = dm.D * s;
-        if (inst.cells == null || inst.cells.Length != gw * gh * gd) InitCells(inst, dm, s);
+        bool fresh = inst.cells == null || inst.cells.Length != gw * gh * gd;
+        if (fresh) InitCells(inst, dm, s);
 
         float u = 1f / gh;                       // розмір малого вокселя в одиницях моделі (висота = 1)
         float offX = gw * 0.5f * u, offZ = gd * 0.5f * u;
@@ -1445,7 +1449,13 @@ public class WorldDecorator : MonoBehaviour
             removed++;
             AddDest(inst, rot, x, y, z, id, gw, gh, gd);
         }
-        if (removed == 0) return false;
+
+        if (removed == 0)
+        {
+            // нічого не зачепили: лишаємо модель цілою, інакше вона б зникла (немає меша побитої версії)
+            if (fresh) { inst.cells = null; inst.count = 1; }
+            return false;
+        }
 
         // шматки, не з'єднані із землею (нижній шар), відламуються
         if (inst.count > 0) DetachFloating(inst, rot, gw, gh, gd, rockVel, c);
@@ -1462,7 +1472,7 @@ public class WorldDecorator : MonoBehaviour
     {
         float u = 1f / gh;
         Vector3 p = new Vector3((x + 0.5f - gw * 0.5f) * u, (y + 0.5f) * u, (z + 0.5f - gd * 0.5f) * u);
-        destroyed.Add(new Dest { pos = inst.pos + rot * (p * inst.scale), id = id, size = u * inst.scale });
+        destroyed.Add(new Dest { pos = inst.pos + rot * (p * inst.scale), id = id, size = u * inst.scale, flower = inst.flower });
     }
 
     // Зв'язні групи вокселів (6 сусідів). Група без вокселів нижнього шару відірвана від землі.
@@ -1621,6 +1631,7 @@ public class WorldDecorator : MonoBehaviour
         // шматок знає свої вокселі: його можна розбити (удар об землю, камінь), він б'є траву
         var body = go.AddComponent<DecorPieceBody>();
         body.owner = this;
+        body.flower = inst.flower;
         body.cells = mask;
         body.gw = gw; body.gh = gh; body.gd = gd;
         body.scale = inst.scale;
@@ -2100,19 +2111,32 @@ public class WorldDecorator : MonoBehaviour
         return Mathf.Max(0.02f, RockR * debrisSizeInRockRadii);
     }
 
-    // Кубики з вибитих вокселів: слабкий удар = мало, сильний = більше, але не більше maxCubesPerHit
-    // origin = центр каменя (avoidRock = true) або точка удару шматка (avoidRock = false)
+    // Кубики з вибитих вокселів: слабкий удар = мало, сильний = більше, але не більше maxCubesPerHit.
+    // Вокселі квіток рахуються з вагою flowerCubeFactor, тож квітки дають менше кубиків.
+    // rockCenter = центр каменя (avoidRock = true) або точка удару шматка (avoidRock = false)
     void SpawnCubes(float damage, Vector3 rockCenter, Vector3 rockVel, bool avoidRock)
     {
         int n = destroyed.Count;
         if (n == 0 || modelMat == null) return;
 
-        int count = Mathf.CeilToInt(n * cubeFraction * (0.5f + damage));
-        count = Mathf.Clamp(count, Mathf.Max(1, minCubesPerHit), Mathf.Max(1, maxCubesPerHit));
+        // зважена кількість вокселів і об'єм: квітки враховуються з множником flowerCubeFactor
+        float weight = 0f, volume = 0f;
+        bool anyNonFlower = false;
+        for (int i = 0; i < n; i++)
+        {
+            float f = destroyed[i].flower ? flowerCubeFactor : 1f;
+            if (!destroyed[i].flower) anyNonFlower = true;
+            weight += f;
+            volume += f * destroyed[i].size * destroyed[i].size * destroyed[i].size;
+        }
+        if (weight <= 0f) return;   // flowerCubeFactor = 0 і зачепило лише квіти: кубиків нема
+
+        // мінімум кубиків не нав'язуємо, якщо зачепило лише квіти
+        int minC = anyNonFlower ? Mathf.Max(1, minCubesPerHit) : 1;
+        int count = Mathf.CeilToInt(weight * cubeFraction * (0.5f + damage));
+        count = Mathf.Clamp(count, minC, Mathf.Max(minC, maxCubesPerHit));
 
         // менше кубиків = кожен більший (об'єм зберігається)
-        float volume = 0f;
-        for (int i = 0; i < n; i++) volume += destroyed[i].size * destroyed[i].size * destroyed[i].size;
         float baseEdge = DebrisEdge();
         float edge = Mathf.Clamp(Mathf.Pow(volume / count, 1f / 3f), baseEdge * 0.7f, baseEdge * Mathf.Max(1f, maxCubeGrow));
 
@@ -2189,6 +2213,7 @@ public class DecorPieceBody : MonoBehaviour
     [System.NonSerialized] public BoxCollider box;
     [System.NonSerialized] public MeshRenderer rend;
     [System.NonSerialized] public bool dead;
+    [System.NonSerialized] public bool flower;   // шматок відірвано від квітки: дає менше кубиків
 
     void OnCollisionEnter(Collision col)
     {
