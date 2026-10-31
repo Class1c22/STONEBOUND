@@ -9,6 +9,7 @@ using UnityEngine.Rendering;
 //  2) твої моделі з MagicaVoxel (3 камені + 3 квітки) розміром з траву. Ставляться процедурно на галявинах,
 //     трава під ними прибирається, малюються GPU-інстансингом, а камінь їх ламає так само, як траву:
 //     вибиває кулю вокселів, відламані шматки падають, уламки-кубики він всмоктує по E.
+//     КВІТИ хитаються від вітру (напрям і сила з GrassField, у кожної свої пориви й тремтіння).
 // Повісь на порожній GameObject, у world перетягни VoxelWorld (rock і grass знайдуться самі).
 // Низ світу вокселів = y = 0 (там, де підлога FloorGenerator).
 // Розміри дрібного декору задаються в радіусах стартового каменя, тому генерація працює на будь-якому масштабі.
@@ -19,7 +20,7 @@ public class WorldDecorator : MonoBehaviour
     public VoxelWorld world;
     [Tooltip("Якщо порожньо, шукається сам (після переходу між сценами теж)")]
     public RockAbsorber rock;
-    [Tooltip("Трава: з неї береться карта лужаек і розмір моделей. Якщо порожньо, шукається сама")]
+    [Tooltip("Трава: з неї береться карта лужаек, розмір моделей і вітер. Якщо порожньо, шукається сама")]
     public GrassField grass;
 
     [Header("Лужайки")]
@@ -62,6 +63,16 @@ public class WorldDecorator : MonoBehaviour
     public TextAsset[] stoneModels;
     [Tooltip("3 квітки. Файл .vox перейменуй у .vox.bytes і перетягни сюди")]
     public TextAsset[] flowerModels;
+
+    [Header("Вітер для квітів")]
+    [Tooltip("Квіти хитаються від вітру (напрям і сила беруться з GrassField, у кожної квітки свої пориви)")]
+    public bool flowersSway = true;
+    [Tooltip("Наскільки сильно квіти хилить вітер відносно трави (1 = як трава, 0.5 = удвічі слабше, 1.5 = сильніше)")]
+    [Range(0f, 2f)] public float flowerSwayAmount = 1f;
+    [Tooltip("Розмір поривів для квітів у клітинках сітки трави")]
+    public float flowerGustSizeCells = 7f;
+    [Tooltip("Швидкість дрібного тремтіння квітів")]
+    public float flowerFlutterSpeed = 1.6f;
 
     [Header("Гіганти: об'єкти 2 рівня на фоні (щоб було видно, що ти на рівні 1)")]
     [Tooltip("Будувати гігантів кодом: 3 будинки, дерево, ялина, 2 машини, водонапірна вежа. Файли .vox не потрібні")]
@@ -530,10 +541,11 @@ public class WorldDecorator : MonoBehaviour
     class ModelInst
     {
         public int model;
+        public bool flower;           // квітка: хитається від вітру
         public Vector3 pos;
-        public Quaternion rot;
+        public Quaternion rot;        // власний поворот (yaw), без вітру
         public float scale;           // висота моделі в метрах
-        public Matrix4x4 matrix;
+        public Matrix4x4 matrix;      // для не-квітів: готова матриця; для квітів перераховується щокадру
         public Bounds bounds;
         public byte[] cells;          // null = ціла; інакше дрібна сітка (W*s, H*s, D*s) після удару
         public int count;
@@ -543,7 +555,7 @@ public class WorldDecorator : MonoBehaviour
     class ModelCell
     {
         public List<ModelInst> insts = new List<ModelInst>();
-        public List<Matrix4x4>[] intact;   // матриці цілих екземплярів за моделлю
+        public List<Matrix4x4>[] intact;   // матриці цілих нерухомих екземплярів (камені) за моделлю
         public bool dirty = true;
         public Bounds bounds;
     }
@@ -583,6 +595,41 @@ public class WorldDecorator : MonoBehaviour
     Rigidbody[] debrisPool;
     int debrisIndex, piecesThisHit;
     Transform debrisRoot;
+
+    // ---------- вітер для квітів ----------
+
+    // Нахил квітки від вітру в її точці (навколо основи). Напрям і загальна сила з GrassField,
+    // пориви й тремтіння місцеві, на шумі Перліна (у кожної квітки свої).
+    Quaternion FlowerTilt(Vector3 p)
+    {
+        if (!flowersSway || grass == null || !grass.windEnabled || modelVs <= 0f) return Quaternion.identity;
+
+        float vs = modelVs;
+        float t = Time.time * Mathf.Max(0f, grass.windTimeScale);
+        float gs = Mathf.Max(0.5f, flowerGustSizeCells) * vs;
+        float ts = 1.5f * vs;
+        float o = seed * 7.13f + 20000f;
+
+        // порив біжить полем у бік вітру
+        Vector3 d = grass.WindDirection;
+        float sp = 5f * vs * (0.4f + grass.WindStrength01);
+        float gx = p.x - d.x * sp * t * 0.2f, gz = p.z - d.z * sp * t * 0.2f;
+        float gust = Mathf.PerlinNoise(gx / gs + o * 0.17f, gz / gs + o * 0.23f);
+        float turb = Mathf.PerlinNoise(p.x / ts + t * flowerFlutterSpeed + o * 0.11f, p.z / ts - t * flowerFlutterSpeed * 0.7f + o * 0.37f);
+
+        float strength = Mathf.Clamp01(grass.WindStrength01 * Mathf.Lerp(0.5f, 1.25f, gust) + (turb - 0.5f) * 0.3f);
+        float tilt = Mathf.Lerp(grass.calmTilt, grass.maxTilt, strength) * flowerSwayAmount;
+        float ang = (grass.WindAngleDegrees + (turb - 0.5f) * 40f) * Mathf.Deg2Rad;
+
+        // вісь = up x dir: додатний кут нахиляє квітку в бік вітру
+        return Quaternion.AngleAxis(tilt, new Vector3(Mathf.Cos(ang), 0f, -Mathf.Sin(ang)));
+    }
+
+    // Поточний поворот екземпляра: власний yaw + нахил від вітру (лише для квітів)
+    Quaternion InstRot(ModelInst inst)
+    {
+        return inst.flower ? FlowerTilt(inst.pos) * inst.rot : inst.rot;
+    }
 
     [ContextMenu("Перебудувати моделі")]
     void RebuildModels()
@@ -937,16 +984,19 @@ public class WorldDecorator : MonoBehaviour
             float pStone = stoneCount > 0 ? stoneChance : 0f;
 
             int mi;
+            bool isFlower;
             Vector2 heightRange;
             if (rKind < pFlower)
             {
                 mi = stoneCount + Mathf.Min(flowerCount - 1, (int)(rPick * flowerCount));
                 heightRange = flowerHeightInGrass;
+                isFlower = true;
             }
             else if (rKind < pFlower + pStone)
             {
                 mi = Mathf.Min(stoneCount - 1, (int)(rPick * stoneCount));
                 heightRange = stoneHeightInGrass;
+                isFlower = false;
             }
             else continue;
 
@@ -979,13 +1029,23 @@ public class WorldDecorator : MonoBehaviour
             var inst = new ModelInst
             {
                 model = mi,
+                flower = isFlower,
                 pos = new Vector3(px, gy, pz),
                 rot = Quaternion.Euler(0f, yaw, 0f),
                 scale = h,
                 count = 1
             };
             inst.matrix = Matrix4x4.TRS(inst.pos, inst.rot, Vector3.one * h);
-            inst.bounds = new Bounds(new Vector3(px, gy + h * 0.5f, pz), new Vector3(half * 2.9f, h * 1.1f, half * 2.9f));
+
+            // нахил від вітру зсуває верхівку квітки вбік: розширюємо межі, щоб вона не зникала з кадру
+            float pad = 0f;
+            if (isFlower && flowersSway)
+            {
+                float maxT = Mathf.Min(89f, Mathf.Max(grass.maxTilt, grass.calmTilt) * Mathf.Max(1f, flowerSwayAmount));
+                pad = h * Mathf.Sin(maxT * Mathf.Deg2Rad);
+            }
+            inst.bounds = new Bounds(new Vector3(px, gy + h * 0.5f, pz),
+                new Vector3(half * 2.9f + 2f * pad, h * 1.1f, half * 2.9f + 2f * pad));
             cell.insts.Add(inst);
 
             // Під моделлю трава не росте. Зона = коло, що накриває всю квадратну основу при будь-якому yaw:
@@ -1004,13 +1064,14 @@ public class WorldDecorator : MonoBehaviour
 
     // ---------- малювання ----------
 
+    // Квіти сюди не потрапляють: їхні матриці рахуються щокадру (вітер)
     void RebuildIntact(ModelCell cell)
     {
         cell.dirty = false;
         foreach (var l in cell.intact) if (l != null) l.Clear();
         foreach (var inst in cell.insts)
         {
-            if (inst.cells != null) continue;
+            if (inst.cells != null || inst.flower) continue;
             if (cell.intact[inst.model] == null) cell.intact[inst.model] = new List<Matrix4x4>();
             cell.intact[inst.model].Add(inst.matrix);
         }
@@ -1043,7 +1104,15 @@ public class WorldDecorator : MonoBehaviour
 
             foreach (var inst in cell.insts)
             {
-                if (inst.cells == null || inst.mesh == null) continue;
+                if (inst.cells == null)
+                {
+                    // ціла квітка: матриця з поточним нахилом від вітру
+                    if (inst.flower)
+                        visible[inst.model].Add(Matrix4x4.TRS(inst.pos, InstRot(inst), Vector3.one * inst.scale));
+                    continue;
+                }
+                if (inst.mesh == null) continue;
+
                 var rpd = new RenderParams(modelMat)
                 {
                     shadowCastingMode = shadow,
@@ -1051,7 +1120,10 @@ public class WorldDecorator : MonoBehaviour
                     layer = gameObject.layer,
                     worldBounds = inst.bounds
                 };
-                Graphics.RenderMesh(rpd, inst.mesh, 0, inst.matrix);
+                Matrix4x4 m = inst.flower
+                    ? Matrix4x4.TRS(inst.pos, InstRot(inst), Vector3.one * inst.scale)
+                    : inst.matrix;
+                Graphics.RenderMesh(rpd, inst.mesh, 0, m);
             }
         }
         if (!any) return;
@@ -1340,7 +1412,8 @@ public class WorldDecorator : MonoBehaviour
 
         float u = 1f / gh;                       // розмір малого вокселя в одиницях моделі (висота = 1)
         float offX = gw * 0.5f * u, offZ = gd * 0.5f * u;
-        Vector3 lc = Quaternion.Inverse(inst.rot) * (c - inst.pos) / inst.scale;
+        Quaternion rot = InstRot(inst);          // з нахилом від вітру: дірка там, де квітка зараз реально стоїть
+        Vector3 lc = Quaternion.Inverse(rot) * (c - inst.pos) / inst.scale;
         float rl = r / inst.scale;
         float rl2 = rl * rl, half = u * 0.5f;
 
@@ -1370,12 +1443,12 @@ public class WorldDecorator : MonoBehaviour
             inst.cells[idx] = 0;
             inst.count--;
             removed++;
-            AddDest(inst, x, y, z, id, gw, gh, gd);
+            AddDest(inst, rot, x, y, z, id, gw, gh, gd);
         }
         if (removed == 0) return false;
 
         // шматки, не з'єднані із землею (нижній шар), відламуються
-        if (inst.count > 0) DetachFloating(inst, gw, gh, gd, rockVel, c);
+        if (inst.count > 0) DetachFloating(inst, rot, gw, gh, gd, rockVel, c);
 
         if (inst.count > 0)
         {
@@ -1385,15 +1458,15 @@ public class WorldDecorator : MonoBehaviour
         return true;
     }
 
-    void AddDest(ModelInst inst, int x, int y, int z, byte id, int gw, int gh, int gd)
+    void AddDest(ModelInst inst, Quaternion rot, int x, int y, int z, byte id, int gw, int gh, int gd)
     {
         float u = 1f / gh;
         Vector3 p = new Vector3((x + 0.5f - gw * 0.5f) * u, (y + 0.5f) * u, (z + 0.5f - gd * 0.5f) * u);
-        destroyed.Add(new Dest { pos = inst.pos + inst.rot * (p * inst.scale), id = id, size = u * inst.scale });
+        destroyed.Add(new Dest { pos = inst.pos + rot * (p * inst.scale), id = id, size = u * inst.scale });
     }
 
     // Зв'язні групи вокселів (6 сусідів). Група без вокселів нижнього шару відірвана від землі.
-    void DetachFloating(ModelInst inst, int gw, int gh, int gd, Vector3 rockVel, Vector3 rockCenter)
+    void DetachFloating(ModelInst inst, Quaternion rot, int gw, int gh, int gd, Vector3 rockVel, Vector3 rockCenter)
     {
         byte[] cells = inst.cells;
         int layer = gw * gh;
@@ -1432,7 +1505,7 @@ public class WorldDecorator : MonoBehaviour
             if (fallingPieces && compIdx.Count >= minPieceCells && piecesThisHit < maxPiecesPerHit)
             {
                 piecesThisHit++;
-                SpawnPiece(inst, gw, gh, gd, rockCenter, rockVel);
+                SpawnPiece(inst, rot, gw, gh, gd, rockCenter, rockVel);
             }
             else
             {
@@ -1445,7 +1518,7 @@ public class WorldDecorator : MonoBehaviour
                     int rem = idx - z * layer;
                     int y = rem / gw;
                     int x = rem - y * gw;
-                    AddDest(inst, x, y, z, cells[idx], gw, gh, gd);
+                    AddDest(inst, rot, x, y, z, cells[idx], gw, gh, gd);
                 }
             }
 
@@ -1492,7 +1565,7 @@ public class WorldDecorator : MonoBehaviour
     }
 
     // Падаючий шматок моделі: compIdx містить його вокселі
-    void SpawnPiece(ModelInst inst, int gw, int gh, int gd, Vector3 rockCenter, Vector3 rockVel)
+    void SpawnPiece(ModelInst inst, Quaternion rot, int gw, int gh, int gd, Vector3 rockCenter, Vector3 rockVel)
     {
         if (modelMat == null) return;
         EnsureRoot();
@@ -1512,7 +1585,7 @@ public class WorldDecorator : MonoBehaviour
 
         var go = new GameObject("DecorPiece");
         go.transform.SetParent(debrisRoot, false);
-        go.transform.SetPositionAndRotation(inst.pos, inst.rot);
+        go.transform.SetPositionAndRotation(inst.pos, rot);
         go.transform.localScale = Vector3.one * inst.scale;
 
         go.AddComponent<MeshFilter>().sharedMesh = mesh;
