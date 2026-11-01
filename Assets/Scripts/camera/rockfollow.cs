@@ -11,9 +11,34 @@ public class FollowCamera : MonoBehaviour
     [Tooltip("Камера ніколи не опускається нижче цієї висоти (світова координата Y)")]
     public float minCameraHeight = 0.3f;
 
+    [Header("Тряска камери")]
+    public bool shakeEnabled = true;
+    [Tooltip("Швидкість, з якої починається тряска")]
+    public float shakeStartSpeed = 12f;
+    [Tooltip("Швидкість, при якій тряска максимальна")]
+    public float shakeMaxSpeed = 40f;
+    [Tooltip("Сила тряски (0..1) просто від того, що камінь у повітрі")]
+    [Range(0f, 1f)] public float airShake = 0.25f;
+    [Tooltip("Запас відстані під кулею, у межах якої камінь ще вважається на землі")]
+    public float groundCheckExtra = 0.3f;
+    public LayerMask groundMask = ~0;
+    [Tooltip("Максимальне зміщення камери при тряски (метри)")]
+    public float maxShakeOffset = 0.25f;
+    [Tooltip("Максимальний нахил камери при тряски (градуси)")]
+    public float maxShakeRoll = 2.5f;
+    public float shakeFrequency = 25f;
+    [Tooltip("Як швидко тряска наростає й затухає")]
+    public float shakeSmoothing = 8f;
+
     float yaw;
     float pitch = 25f;
     SphereCollider targetCollider;
+
+    Vector3 prevFocus;
+    bool hasPrevFocus;
+    float smoothedSpeed;
+    float shakeIntensity;
+    readonly RaycastHit[] groundHits = new RaycastHit[8];
 
     void Start()
     {
@@ -29,6 +54,9 @@ public class FollowCamera : MonoBehaviour
     {
         target = t;
         targetCollider = t != null ? t.GetComponent<SphereCollider>() : null;
+        hasPrevFocus = false;
+        smoothedSpeed = 0f;
+        shakeIntensity = 0f;
     }
 
     // справжній центр кулі (інтерпольований), а не pivot моделі
@@ -37,6 +65,48 @@ public class FollowCamera : MonoBehaviour
         return targetCollider != null
             ? target.TransformPoint(targetCollider.center)
             : target.position;
+    }
+
+    float GetTargetRadius()
+    {
+        if (targetCollider == null) return 0.5f;
+        Vector3 s = target.lossyScale;
+        float maxScale = Mathf.Max(Mathf.Abs(s.x), Mathf.Max(Mathf.Abs(s.y), Mathf.Abs(s.z)));
+        return targetCollider.radius * maxScale;
+    }
+
+    bool IsAirborne(Vector3 focus)
+    {
+        float radius = GetTargetRadius();
+        float rayLength = radius + groundCheckExtra;
+        int count = Physics.RaycastNonAlloc(focus, Vector3.down, groundHits, rayLength, groundMask, QueryTriggerInteraction.Ignore);
+        for (int i = 0; i < count; i++)
+        {
+            Transform hit = groundHits[i].transform;
+            if (hit == target || hit.IsChildOf(target)) continue;
+            return false;
+        }
+        return true;
+    }
+
+    void UpdateShake(Vector3 focus)
+    {
+        float dt = Time.deltaTime;
+        if (dt <= 0f) return;
+
+        float speed = 0f;
+        if (hasPrevFocus)
+            speed = (focus - prevFocus).magnitude / dt;
+        prevFocus = focus;
+        hasPrevFocus = true;
+
+        smoothedSpeed = Mathf.Lerp(smoothedSpeed, speed, 1f - Mathf.Exp(-15f * dt));
+
+        float speedShake = Mathf.InverseLerp(shakeStartSpeed, shakeMaxSpeed, smoothedSpeed);
+        float flightShake = IsAirborne(focus) ? airShake : 0f;
+        float targetIntensity = shakeEnabled ? Mathf.Max(speedShake, flightShake) : 0f;
+
+        shakeIntensity = Mathf.Lerp(shakeIntensity, targetIntensity, 1f - Mathf.Exp(-shakeSmoothing * dt));
     }
 
     void Update()
@@ -69,14 +139,31 @@ public class FollowCamera : MonoBehaviour
         if (target == null) return;
 
         Vector3 focus = GetFocusPoint();
+        UpdateShake(focus);
 
         // нахил, нижче якого камера опустилась би під землю; камінь при цьому лишається по центру
         float groundPitch = Mathf.Asin(Mathf.Clamp((minCameraHeight - focus.y) / distance, -1f, 1f)) * Mathf.Rad2Deg;
         float usedPitch = Mathf.Max(pitch, groundPitch);
         Quaternion rot = Quaternion.Euler(usedPitch, yaw, 0f);
 
+        Vector3 position = focus - rot * Vector3.forward * distance;
+
+        if (shakeIntensity > 0.001f)
+        {
+            float t = Time.time * shakeFrequency;
+            float nx = Mathf.PerlinNoise(t, 0.1f) * 2f - 1f;
+            float ny = Mathf.PerlinNoise(0.3f, t) * 2f - 1f;
+            float nr = Mathf.PerlinNoise(t, 7.7f) * 2f - 1f;
+
+            Vector3 localOffset = new Vector3(nx, ny, 0f) * (maxShakeOffset * shakeIntensity);
+            position += rot * localOffset;
+            position.y = Mathf.Max(position.y, minCameraHeight);
+
+            rot *= Quaternion.Euler(0f, 0f, nr * maxShakeRoll * shakeIntensity);
+        }
+
         // камера завжди дивиться точно в центр каменя
         transform.rotation = rot;
-        transform.position = focus - rot * Vector3.forward * distance;
+        transform.position = position;
     }
 }
