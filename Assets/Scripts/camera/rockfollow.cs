@@ -11,17 +11,12 @@ public class FollowCamera : MonoBehaviour
     [Tooltip("Камера ніколи не опускається нижче цієї висоти (світова координата Y)")]
     public float minCameraHeight = 0.3f;
 
-    [Header("Тряска камери")]
+    [Header("Тряска камери (тільки на великій швидкості)")]
     public bool shakeEnabled = true;
     [Tooltip("Швидкість, з якої починається тряска")]
-    public float shakeStartSpeed = 12f;
+    public float shakeStartSpeed = 20f;
     [Tooltip("Швидкість, при якій тряска максимальна")]
-    public float shakeMaxSpeed = 40f;
-    [Tooltip("Сила тряски (0..1) просто від того, що камінь у повітрі")]
-    [Range(0f, 1f)] public float airShake = 0.25f;
-    [Tooltip("Запас відстані під кулею, у межах якої камінь ще вважається на землі")]
-    public float groundCheckExtra = 0.3f;
-    public LayerMask groundMask = ~0;
+    public float shakeMaxSpeed = 45f;
     [Tooltip("Максимальне зміщення камери при тряски (метри)")]
     public float maxShakeOffset = 0.25f;
     [Tooltip("Максимальний нахил камери при тряски (градуси)")]
@@ -38,7 +33,6 @@ public class FollowCamera : MonoBehaviour
     bool hasPrevFocus;
     float smoothedSpeed;
     float shakeIntensity;
-    readonly RaycastHit[] groundHits = new RaycastHit[8];
 
     void Start()
     {
@@ -67,28 +61,6 @@ public class FollowCamera : MonoBehaviour
             : target.position;
     }
 
-    float GetTargetRadius()
-    {
-        if (targetCollider == null) return 0.5f;
-        Vector3 s = target.lossyScale;
-        float maxScale = Mathf.Max(Mathf.Abs(s.x), Mathf.Max(Mathf.Abs(s.y), Mathf.Abs(s.z)));
-        return targetCollider.radius * maxScale;
-    }
-
-    bool IsAirborne(Vector3 focus)
-    {
-        float radius = GetTargetRadius();
-        float rayLength = radius + groundCheckExtra;
-        int count = Physics.RaycastNonAlloc(focus, Vector3.down, groundHits, rayLength, groundMask, QueryTriggerInteraction.Ignore);
-        for (int i = 0; i < count; i++)
-        {
-            Transform hit = groundHits[i].transform;
-            if (hit == target || hit.IsChildOf(target)) continue;
-            return false;
-        }
-        return true;
-    }
-
     void UpdateShake(Vector3 focus)
     {
         float dt = Time.deltaTime;
@@ -102,9 +74,9 @@ public class FollowCamera : MonoBehaviour
 
         smoothedSpeed = Mathf.Lerp(smoothedSpeed, speed, 1f - Mathf.Exp(-15f * dt));
 
-        float speedShake = Mathf.InverseLerp(shakeStartSpeed, shakeMaxSpeed, smoothedSpeed);
-        float flightShake = IsAirborne(focus) ? airShake : 0f;
-        float targetIntensity = shakeEnabled ? Mathf.Max(speedShake, flightShake) : 0f;
+        float targetIntensity = shakeEnabled
+            ? Mathf.InverseLerp(shakeStartSpeed, shakeMaxSpeed, smoothedSpeed)
+            : 0f;
 
         shakeIntensity = Mathf.Lerp(shakeIntensity, targetIntensity, 1f - Mathf.Exp(-shakeSmoothing * dt));
     }
