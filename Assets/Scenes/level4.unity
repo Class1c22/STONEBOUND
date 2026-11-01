@@ -336,41 +336,111 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CountryGenerator
   world: {fileID: 843798773}
   seed: 4004
+  randomSeedEachRun: 0
   spawnRadius: 150
   spawnRadiusInRockRadii: 80
   startClearInRockRadii: 3
   voxelsPerFrame: 6000
-  mapRadius: 450
   tileSize: 48
-  countryCount: 5
-  startCountry: 0
-  countryRadius: 140
-  channelWidth: 50
-  coastJitter: 24
-  noiseScale: 0.015
-  minSeedDistance: 250
+  islandSpacing: 900
+  islandChance: 0.7
+  islandRadiusMin: 150
+  islandRadiusMax: 380
+  coastJitterFrac: 0.22
+  noiseFreq: 0.008
   coastMargin: 5
   beachWidth: 2
-  wallThickness: 16
-  wallCell: 4
-  wallHeight: 300
+  maxLoadedIslands: 10
+  lakeScale: 0.012
+  lakeThreshold: 0.66
+  lakeCoastMargin: 90
+  lakeCenterClear: 70
+  pondScale: 0.045
+  pondThreshold: 0.74
+  landHeight: 0.01
   roadHeight: 0.03
-  citiesPerCountry: 4
+  flatCollider: 1
+  voxelsPerTown: 60000
+  voxelsPerVillage: 9000
+  capitalMinIslandRadius: 220
   cityRadiusMin: 22
   cityRadiusMax: 32
   capitalRadius: 40
   citySpacing: 85
   roadWidth: 2
   crossStreetSpacing: 26
+  villageRadiusMin: 9
+  villageRadiusMax: 14
+  villageSpacing: 40
+  windmillChance: 0.15
   houseWidthMin: 3
   houseWidthMax: 5
   houseDepthMin: 3
   houseDepthMax: 4
   houseWallHeight: 2
+  houseGap: 1
   houseChance: 0.9
+  tallHouseChance: 0.25
   thatchChance: 0.3
   chimneyChance: 0.5
   plotSize: 48
+  treeDensity: 0.9
+  fenceChance: 0.6
+  gardenDensity: 0.8
+  roadsideSpacing: 28
+  roadsideHouseChance: 0.6
+  roadsideTreeSpacing: 5
+  vs: 0
+  T: 0
+  sp: 0
+  rock: {fileID: 0}
+  haveStart: 0
+  rockV: {x: 0, y: 0}
+  startV: {x: 0, y: 0}
+  spawnV: {x: 0, y: 0}
+  startClearV: 0
+  idle: 0
+  idlePos: {x: 0, y: 0}
+  tF: 0
+  tOx: 0
+  tOz: 0
+  tW: 0
+  tD: 0
+  wallSet: []
+  thatchSet: []
+  shutterSet: []
+  gravelSet: []
+  dirtSet: []
+  sandSet: []
+  wheatSet: []
+  pineSet: []
+  flowerColors: []
+  grassSet: []
+  flagSet: []
+  cGlass: 0
+  cDoor: 0
+  cFloor: 0
+  cBrick: 0
+  cCap: 0
+  cPost: 0
+  cBarkA: 0
+  cBarkB: 0
+  cSoil: 0
+  cSoilDark: 0
+  cStem: 0
+  cSun: 0
+  cSunCenter: 0
+  cStraw: 0
+  cStraw2: 0
+  cStone: 0
+  cStone2: 0
+  cCrop: 0
+  cCabbage: 0
+  cPumpkin: 0
+  cWater: 0
+  cGroundA: 0
+  cGroundB: 0
+  cGroundDirt: 0
 --- !u!1 &832575517
 GameObject:
   m_ObjectHideFlags: 0
@@ -601,113 +671,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &1775355352
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1775355353}
-  - component: {fileID: 1775355354}
-  m_Layer: 0
-  m_Name: VoxelTestBuilder
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &1775355353
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1775355352}
-  serializedVersion: 2
-  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: -42.59999, y: 0, z: -6.5591893}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 1838282995}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &1775355354
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1775355352}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 12e7db3bff6187c499104e0e637344d8, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::VoxelTestBuilder
-  world: {fileID: 843798773}
-  voxFile: {fileID: 0}
-  voxOrigin: {x: 0, y: 0, z: 80}
---- !u!1 &1782221769
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1782221770}
-  - component: {fileID: 1782221771}
-  m_Layer: 0
-  m_Name: MountainMapGenerator
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &1782221770
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1782221769}
-  serializedVersion: 2
-  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: -18.91645, y: 0, z: -8.53037}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 1838282995}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &1782221771
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1782221769}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: b90265da90cacfa468e7af7a015f82ce, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::MountainMapGenerator
-  size: 1200
-  thickness: 20
-  tileSize: 8
-  textureResolution: 32
-  colorA: {r: 0.3, g: 0.48, b: 0.18, a: 1}
-  colorB: {r: 0.36, g: 0.55, b: 0.22, a: 1}
-  dirtAmount: 0.12
-  dirtColor: {r: 0.4, g: 0.3, b: 0.2, a: 1}
-  seed: 12345
-  receiveShadows: 1
-  friction: 0.6
-  bounciness: 0
-  rock: {fileID: 0}
-  world: {fileID: 843798773}
-  oldGround: {fileID: 1365930387}
-  oldMountains: {fileID: 0}
 --- !u!1 &1838282994
 GameObject:
   m_ObjectHideFlags: 0
@@ -737,13 +700,73 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
+  - {fileID: 2040653210}
   - {fileID: 595406077}
   - {fileID: 843798774}
-  - {fileID: 1775355353}
   - {fileID: 416857264}
-  - {fileID: 1782221770}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &2040653209
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 2040653210}
+  - component: {fileID: 2040653211}
+  m_Layer: 0
+  m_Name: SeaGroundGenerator
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &2040653210
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2040653209}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 336.32288, y: 0, z: -26.18281}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1838282995}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &2040653211
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2040653209}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c68bbbd895cf42b4897ec6f33a378c93, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::SeaGroundGenerator
+  size: 1200
+  thickness: 20
+  tileSize: 8
+  matchVoxelSize: 1
+  textureResolution: 32
+  colorA: {r: 0.235, g: 0.51, b: 0.78, a: 1}
+  colorB: {r: 0.215, g: 0.47, b: 0.74, a: 1}
+  sparkleAmount: 0.12
+  sparkleColor: {r: 0.51, g: 0.745, b: 0.92, a: 1}
+  seed: 11
+  receiveShadows: 1
+  friction: 0.6
+  bounciness: 0
+  rock: {fileID: 0}
+  world: {fileID: 843798773}
+  oldGround: {fileID: 0}
+  oldMountains: {fileID: 0}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

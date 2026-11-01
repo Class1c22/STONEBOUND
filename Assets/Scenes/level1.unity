@@ -5483,6 +5483,13 @@ MonoBehaviour:
   minPitch: -10
   maxPitch: 70
   minCameraHeight: 0.3
+  shakeEnabled: 1
+  shakeStartSpeed: 20
+  shakeMaxSpeed: 45
+  maxShakeOffset: 0.25
+  maxShakeRoll: 2.5
+  shakeFrequency: 25
+  shakeSmoothing: 8
 --- !u!114 &330585549
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -11824,6 +11831,10 @@ MonoBehaviour:
   - {fileID: 4900000, guid: 040c7afd871fa9b4a9fb82f73b1cd80c, type: 3}
   - {fileID: 4900000, guid: acd2f177c81613548b668cf488c75023, type: 3}
   - {fileID: 4900000, guid: 5361e3abdf4a0cf48adfed5ea55d5fd6, type: 3}
+  flowersSway: 1
+  flowerSwayAmount: 1
+  flowerGustSizeCells: 7
+  flowerFlutterSpeed: 1.6
   proceduralGiants: 1
   giantModels: []
   giantHeightInGrass: {x: 8, y: 16}
@@ -11867,6 +11878,7 @@ MonoBehaviour:
   minCubesPerHit: 2
   maxCubesPerHit: 40
   cubeFraction: 0.25
+  flowerCubeFactor: 0.25
   maxCubeGrow: 2.5
   absorbVolumeFactor: 1
 --- !u!1 &1634029173
@@ -12541,7 +12553,7 @@ MonoBehaviour:
     speedMultiplier: 1.2
     forceMultiplier: 2
     destroyRadiusMultiplier: 1
-    absorbCostMultiplier: 25
+    absorbCostMultiplier: 1
   - name: "\u0412\u0430\u043B\u0443\u043D"
     radiusRatio: 1.5
     speedMultiplier: 1.1
@@ -12553,13 +12565,13 @@ MonoBehaviour:
     speedMultiplier: 0.9
     forceMultiplier: 1.3
     destroyRadiusMultiplier: 1
-    absorbCostMultiplier: 2
+    absorbCostMultiplier: 1
   - name: "\u0421\u043A\u0435\u043B\u044F"
     radiusRatio: 3.2
     speedMultiplier: 1.3
     forceMultiplier: 1.5
     destroyRadiusMultiplier: 1.75
-    absorbCostMultiplier: 2.75
+    absorbCostMultiplier: 1
   - name: "\u0413\u043E\u0440\u0430"
     radiusRatio: 4.5
     speedMultiplier: 1.4

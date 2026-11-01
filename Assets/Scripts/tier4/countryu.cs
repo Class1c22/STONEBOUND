@@ -4,33 +4,37 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 
-// Генератор великого континенту для 4 рівня. Країна (або кілька) оточена морем. У кожній країні столиця
-// із замком, міста, багато крихітних сіл, дороги між поселеннями, поля, сади, луки, великі ліси й озера.
-// Навколо моря й озер пляжі. Камінь на старті ставиться на сушу поруч із столицею.
-// Повісь на порожній GameObject, VoxelWorld і камінь знайдуться самі. Підлога має бути на y = 0
-// (FloorGenerator), VoxelWorld на (0,0,0) з масштабом 1.
-//
-// Усі розміри тут у ВОКСЕЛЯХ, тому все масштабується разом із world.voxelSize.
-// Щоб усе стало дрібнішим, зменш voxelSize у VoxelWorld і збільш mapRadius / countryRadius.
-//
-// ВАЖЛИВО: публічні поля серіалізуються в Inspector. Якщо компонент уже висів на об'єкті,
-// у ньому лишаються СТАРІ числа. Натисни ⋮ біля компонента -> Reset, щоб підхопити нові значення за замовчуванням.
+// Нескінченний процедурний архіпелаг для 4 рівня. Землею є МОРЕ (SeaGroundGenerator), а острови
+// генеруються самі, скільки б камінь не пливув. Кожен острів має свій берег, озера й ставки, пляж,
+// столицю із замком або місто, десятки сіл (колодязь чи вітряк у центрі), дороги з хуторами й деревами,
+// двори, городи, поля з парканами, луки, ліси з підліском і валунами.
+// Частина островів сучасні королівства: хмарочоси, асфальт, ліхтарі.
 //
 // Як це працює:
-//  * Карта скінченна: квадрат від -Map Radius до +Map Radius вокселів. Береги звивисті (два шари шуму).
-//  * Озера це ділянки шуму всередині суші, подалі від моря й столиці.
-//  * Море, озера, пляж, дороги й вулиці плоскі. Вода дуже низька (Water Height), щоб камінь не втоплювався.
-//    Плоский меш має тонкий колайдер (Flat Collider), тож камінь їде по поверхні води, а не під нею.
-//  * За бажанням (Block Water) вздовж берега стоять невидимі стіни, і камінь не може в'їхати у воду.
+//  * Світ поділений на великі клітини (Island Spacing). У кожній клітині з імовірністю Island Chance
+//    є один острів, який повністю вміщується в клітину, тож острови не перетинаються.
+//    Усе виводиться із Seed: ту саму карту дає те саме значення, а Random Seed Each Run дає нову.
+//  * Острів плануватиметься (суша, озера, міста, дороги) тоді, коли камінь наближається до нього.
+//    Далекі острови вивантажуються з пам'яті (Max Loaded Islands) і при поверненні плануються так само.
+//  * Суша це плоскі квадри трохи над морем (колір трави, пляж, дороги), озера це просто діри в суші,
+//    крізь які видно море. Усе інше справжні вокселі, і камінь ламає їх.
 //  * Плитки будуються лише поблизу каменя, найближчі першими, по кадрах (Voxels Per Frame).
-//  * Камінь на старті переноситься на сушу (PlaceRockOnLand). Навколо нього нічого не ставиться, крім доріг.
-//  * Те саме значення Seed завжди дає ту саму карту.
+//  * Камінь на старті переноситься на суцільну сушу острова біля початку координат.
+//
+// Підлога (море) має бути на y = 0 (SeaGroundGenerator), VoxelWorld на (0,0,0) з масштабом 1.
+// Усі розміри тут у ВОКСЕЛЯХ, тому все масштабується разом із world.voxelSize.
+// ЩОБ УСЕ БУЛО ДРІБНІШИМ: зменш voxelSize у VoxelWorld і збільш Island Spacing та радіуси островів.
+//
+// ВАЖЛИВО: публічні поля серіалізуються в Inspector. Натисни ⋮ біля компонента -> Reset,
+// щоб підхопити нові значення за замовчуванням.
 public class CountryGenerator : MonoBehaviour
 {
     [Header("Зв'язки")]
     [Tooltip("Якщо порожньо, береться VoxelWorld зі сцени")]
     public VoxelWorld world;
     public int seed = 4004;
+    [Tooltip("Нова випадкова карта при кожному запуску")]
+    public bool randomSeedEachRun = false;
 
     [Header("Стрімінг")]
     [Tooltip("Як далеко від каменя будується карта (метри)")]
@@ -40,85 +44,99 @@ public class CountryGenerator : MonoBehaviour
     [Tooltip("Навколо стартової позиції каменя нічого не ставиться (в радіусах каменя). Дороги лишаються")]
     public float startClearInRockRadii = 3f;
     [Tooltip("Скільки вокселів ставити за кадр")]
-    public int voxelsPerFrame = 6000;
-
-    [Header("Карта (у вокселях)")]
-    [Tooltip("Півсторона всієї карти. Має бути більшою за радіус країни з запасом на море навколо")]
-    public int mapRadius = 1200;
+    public int voxelsPerFrame = 12000;
     [Tooltip("Сторона плитки, яка будується за раз")]
     public int tileSize = 48;
 
-    [Header("Країни")]
-    public int countryCount = 1;
-    [Tooltip("З якої країни стартує камінь")]
-    public int startCountry = 0;
-    public float countryRadius = 1000f;
-    [Tooltip("Ширина протоки між країнами")]
-    public float channelWidth = 50f;
-    [Tooltip("Наскільки звивистий берег")]
-    public float coastJitter = 80f;
-    public float noiseScale = 0.006f;
-    [Tooltip("Мінімальна відстань між центрами країн")]
-    public float minSeedDistance = 250f;
+    [Header("Острови (у вокселях)")]
+    [Tooltip("Відстань між центрами острівних клітин. Більше = більше моря між островами")]
+    public int islandSpacing = 900;
+    [Tooltip("Імовірність острова в клітині. Острів у клітині (0,0) є завжди: з нього стартує камінь")]
+    [Range(0f, 1f)] public float islandChance = 0.7f;
+    public int islandRadiusMin = 150;
+    public int islandRadiusMax = 380;
+    [Tooltip("Звивистість берега як частка радіуса")]
+    [Range(0.05f, 0.4f)] public float coastJitterFrac = 0.22f;
+    [Tooltip("Частота шуму берега (менше = плавніші затоки)")]
+    public float noiseFreq = 0.008f;
     [Tooltip("Скільки вокселів від берега нічого не ставиться")]
     public int coastMargin = 5;
     public int beachWidth = 3;
+    [Tooltip("Скільки островів тримається в пам'яті. Далекі вивантажуються")]
+    public int maxLoadedIslands = 10;
 
-    [Header("Озера")]
+    [Header("Озера й ставки")]
     public float lakeScale = 0.012f;
     [Tooltip("Більше = менше озер")]
     [Range(0.5f, 0.9f)] public float lakeThreshold = 0.66f;
-    [Tooltip("Мінімум вокселів від берега моря до озера")]
+    [Tooltip("Мінімум вокселів від берега до озера (на малих островах зменшується сам)")]
     public int lakeCoastMargin = 90;
-    [Tooltip("Навколо столиці озер немає")]
+    [Tooltip("Навколо центра острова озер і ставків немає")]
     public int lakeCenterClear = 70;
+    public float pondScale = 0.045f;
+    [Tooltip("Більше = менше ставків. 1 = ставків немає")]
+    [Range(0.5f, 1f)] public float pondThreshold = 0.74f;
 
-    [Header("Вода й стіни")]
-    [Tooltip("Висота плоского моря, озер і пляжу над підлогою (метри). Менше = камінь менше втоплюється. Дуже мале значення може мерехтіти на відстані")]
-    public float waterHeight = 0.004f;
-    [Tooltip("Висота плоских доріг над підлогою (метри)")]
+    [Header("Суша (висота над морем, метри)")]
+    [Tooltip("Висота плоскої трави над морем. Море на y = 0")]
+    public float landHeight = 0.01f;
+    [Tooltip("Висота плоских доріг над морем")]
     public float roadHeight = 0.03f;
-    [Tooltip("Тонкий колайдер на плоскому меші: камінь їде по поверхні води й доріг, а не по підлозі під нею")]
+    [Tooltip("Тонкий колайдер на плоскій суші: камінь їде по ній, а не по морю під нею")]
     public bool flatCollider = true;
-    [Tooltip("Якщо увімкнено, вздовж берега моря й озер стоять невидимі стіни (камінь не їде у воду)")]
-    public bool blockWater = false;
-    [Tooltip("Товщина невидимої стіни біля берега. Більше = камінь точно не проскочить")]
-    public int wallThickness = 16;
-    [Tooltip("Розмір клітинки, з яких зливаються колайдери стіни. Менше = точніше, але більше колайдерів")]
-    public int wallCell = 4;
-    [Tooltip("Висота стін (метри)")]
-    public float wallHeight = 300f;
 
     [Header("Міста (у вокселях)")]
-    public int citiesPerCountry = 12;
+    [Tooltip("Одне місто на стільки вокселів площі острова")]
+    public int voxelsPerTown = 60000;
+    [Tooltip("Одне село на стільки вокселів площі острова")]
+    public int voxelsPerVillage = 9000;
+    [Tooltip("Острів із таким радіусом і більше отримує столицю із замком")]
+    public int capitalMinIslandRadius = 220;
     public int cityRadiusMin = 22;
     public int cityRadiusMax = 32;
     public int capitalRadius = 40;
-    [Tooltip("Мінімальна відстань між центрами міст однієї країни")]
-    public int citySpacing = 85;
+    [Tooltip("Мінімальна відстань між центрами міст одного острова")]
+    public int citySpacing = 80;
     public int roadWidth = 2;
     [Tooltip("Як часто вулиці перетинаються поперек")]
     public int crossStreetSpacing = 26;
 
     [Header("Села")]
-    public int villagesPerCountry = 40;
     public int villageRadiusMin = 9;
     public int villageRadiusMax = 14;
-    public int villageSpacing = 45;
+    public int villageSpacing = 40;
+    [Tooltip("Шанс, що в центрі села вітряк (інакше колодязь)")]
+    [Range(0f, 1f)] public float windmillChance = 0.15f;
 
-    [Header("Хатки (у вокселях, супер маленькі)")]
+    [Header("Хатки (у вокселях)")]
     public int houseWidthMin = 3;
     public int houseWidthMax = 4;
     public int houseDepthMin = 3;
     public int houseDepthMax = 3;
     public int houseWallHeight = 2;
-    [Range(0f, 1f)] public float houseChance = 0.9f;
+    [Tooltip("Проміжок між хатками в ряду (вокселі)")]
+    public int houseGap = 1;
+    [Range(0f, 1f)] public float houseChance = 0.95f;
+    [Range(0f, 1f)] public float tallHouseChance = 0.25f;
     [Range(0f, 1f)] public float thatchChance = 0.3f;
     [Range(0f, 1f)] public float chimneyChance = 0.5f;
 
     [Header("Околиці (у вокселях)")]
-    [Tooltip("Розмір ділянки поля/лісу")]
-    public int plotSize = 48;
+    [Tooltip("Розмір ділянки поля/лісу. Менше = різноманітніше")]
+    public int plotSize = 32;
+    [Tooltip("Густота дерев у лісах і садах")]
+    [Range(0f, 1f)] public float treeDensity = 0.9f;
+    [Tooltip("Шанс паркану навколо поля чи городу")]
+    [Range(0f, 1f)] public float fenceChance = 0.6f;
+    [Tooltip("Скільки зелені (кущі, дерева, квіти) у дворах міст і сіл")]
+    [Range(0f, 1f)] public float gardenDensity = 0.8f;
+
+    [Header("Дороги")]
+    [Tooltip("Як часто вздовж доріг шанс поставити хутір (вокселі)")]
+    public int roadsideSpacing = 28;
+    [Range(0f, 1f)] public float roadsideHouseChance = 0.6f;
+    [Tooltip("Крок дерев уздовж узбіч")]
+    public int roadsideTreeSpacing = 5;
 
     // ---------- внутрішній стан ----------
 
@@ -135,31 +153,44 @@ public class CountryGenerator : MonoBehaviour
         public bool village;
     }
 
-    class Country
+    class Island
     {
-        public int id;
-        public Vector2Int center;
-        public List<City> cities = new List<City>();
+        public Vector2Int region;
+        public bool exists, isSpawn;
+        public bool modern;                 // сучасне королівство
+        public int cx, cz, R;
+        public int ox, oz, S;               // габаритний квадрат у вокселях
+        public float nox, noz, lox, loz, pox, poz, bx, bz;
+        public int colorIdx;                // колір дахів і прапора
+        public bool jobsAdded;
+
+        // дані планування (null, поки острів не заплановано або вивантажено)
+        public bool[] land;
+        public bool[] occ;
+        public byte[] road;                 // 0 = нічого, 1 = вулиця, 2 = дорога між містами
+        public ushort[] dist;               // для суші: відстань до води
+        public List<City> cities;
     }
 
     readonly List<VoxelOp> ops = new List<VoxelOp>();
-    readonly List<Country> countries = new List<Country>();
-
-    sbyte[] country;        // -1 = море або озеро, інакше номер країни
-    bool[] isLake;          // true = озеро (теж вода)
-    byte[] roadKind;        // 0 = нічого, 1 = вулиця, 2 = дорога між містами
-    bool[] occ;             // зайнято будівлями
-    ushort[] landDist;      // відстань до берега: для суші до води, для води до суші
+    readonly Dictionary<Vector2Int, Island> regions = new Dictionary<Vector2Int, Island>();
+    readonly List<Island> loaded = new List<Island>();
+    readonly List<Island> tmpNear = new List<Island>();
     readonly Dictionary<Vector2Int, List<System.Action>> jobs = new Dictionary<Vector2Int, List<System.Action>>();
-    readonly List<Vector2Int> pending = new List<Vector2Int>();
+    readonly HashSet<Vector2Int> built = new HashSet<Vector2Int>();
+
+    Island cur;        // острів, який планується просто зараз
+    Island lastIsl;    // кеш останнього знайденого острова
 
     float vs;
-    int M, N, T, tilesPerSide;
+    int T, sp;
 
     RockAbsorber rock;
     bool haveStart;
     Vector2 rockV, startV, spawnV;
     float startClearV;
+    bool idle;
+    Vector2 idlePos;
 
     // поточне перетворення для малювання будівель: facing 0..3, початок, розміри
     int tF, tOx, tOz, tW, tD;
@@ -171,12 +202,13 @@ public class CountryGenerator : MonoBehaviour
     readonly List<int> mTris = new List<int>();
 
     // кольори (індекси палітри VoxelWorld)
-    byte[] wallSet, thatchSet, shutterSet, gravelSet, dirtSet, sandSet, wheatSet, pineSet, flowerColors;
+    byte[] wallSet, thatchSet, shutterSet, gravelSet, dirtSet, sandSet, wheatSet, pineSet, flowerColors, grassSet;
     byte[][] roofSets, leafSets;
     byte[] flagSet;
     byte cGlass, cDoor, cFloor, cBrick, cCap, cPost, cBarkA, cBarkB;
-    byte cWater, cWaterLight, cSoil, cSoilDark, cStem, cSun, cSunCenter, cStraw, cStraw2;
-    byte cStone, cStone2;
+    byte cSoil, cSoilDark, cStem, cSun, cSunCenter, cStraw, cStraw2;
+    byte cStone, cStone2, cCrop, cCabbage, cPumpkin, cWater;
+    byte cGroundA, cGroundB, cGroundDirt;
 
     // ---------- публічне для інших скриптів ----------
 
@@ -185,12 +217,13 @@ public class CountryGenerator : MonoBehaviour
     {
         get
         {
-            if (world == null || vs <= 0f || countries.Count == 0) return transform.position;
+            if (world == null || vs <= 0f) return transform.position;
             return world.transform.TransformPoint(new Vector3(spawnV.x * vs, 0f, spawnV.y * vs));
         }
     }
     public int TileVoxels => T;
-    public int MapRadiusVoxels => M;
+    // Світ нескінченний; число залишено для сумісності зі старими скриптами
+    public int MapRadiusVoxels => 1000000;
 
     // ---------- старт ----------
 
@@ -204,15 +237,24 @@ public class CountryGenerator : MonoBehaviour
             return;
         }
 
-        vs = world.voxelSize;
-        M = Mathf.Max(200, mapRadius);
-        N = 2 * M;
-        T = Mathf.Max(16, tileSize);
-        tilesPerSide = Mathf.CeilToInt(N / (float)T);
+        if (randomSeedEachRun) seed = Random.Range(1, 1000000);
 
-        InitColors();
-        Plan();
-        if (blockWater) BuildWalls();
+        vs = world.voxelSize;
+        T = Mathf.Max(16, tileSize);
+        sp = Mathf.Max(400, islandSpacing);
+
+        try { InitColors(); }
+        catch (System.Exception e)
+        {
+            Debug.LogException(e, this);
+            Debug.LogError("[CountryGenerator] Помилка кольорів: можливо, палітра VoxelWorld переповнена.", this);
+            enabled = false;
+            return;
+        }
+
+        // стартовий острів планується одразу, щоб знати, куди ставити камінь
+        Ensure(GetRegion(0, 0));
+
         StartCoroutine(Worker());
     }
 
@@ -230,7 +272,7 @@ public class CountryGenerator : MonoBehaviour
         dirtSet = new[] { C(128, 100, 70), C(120, 94, 66) };
         sandSet = new[] { C(232, 214, 160), C(222, 202, 148) };
 
-        // кожна країна має свій колір дахів і прапора
+        // кожен острів має свій колір дахів і прапора
         roofSets = new[]
         {
             new[] { C(168, 62, 50), C(152, 54, 44), C(180, 74, 58) },
@@ -258,9 +300,9 @@ public class CountryGenerator : MonoBehaviour
             new[] { C(190, 70, 70), C(86, 150, 62), C(70, 130, 56) },   // яблуня з плодами
         };
         pineSet = new[] { C(35, 95, 60), C(42, 110, 66), C(30, 82, 52) };
+        grassSet = new[] { C(88, 160, 66), C(72, 140, 56), C(104, 176, 78) };
 
         cWater = C(60, 130, 200);
-        cWaterLight = C(130, 190, 235);
 
         cSoil = C(100, 72, 48);
         cSoilDark = C(86, 62, 40);
@@ -271,22 +313,121 @@ public class CountryGenerator : MonoBehaviour
         cStraw2 = C(196, 160, 60);
         wheatSet = new[] { C(214, 178, 70), C(200, 160, 56), C(224, 190, 84) };
         flowerColors = new[] { C(240, 240, 235), C(250, 210, 60), C(220, 70, 80), C(150, 110, 200), C(90, 150, 230) };
+        cCrop = C(90, 170, 70);
+        cCabbage = C(130, 196, 108);
+        cPumpkin = C(232, 130, 40);
 
         cStone = C(150, 150, 146);
         cStone2 = C(124, 124, 120);
+
+        // плоска трава на островах
+        cGroundA = C(77, 122, 46);
+        cGroundB = C(92, 140, 56);
+        cGroundDirt = C(102, 77, 51);
+
+        InitModernColors();
     }
 
     // ---------- допоміжне ----------
 
-    int I(int x, int z) { return (x + M) + N * (z + M); }
-    bool InMap(int x, int z) { return x >= -M && x < M && z >= -M && z < M; }
+    static int FloorDiv(int a, int b)
+    {
+        int q = a / b;
+        if ((a % b != 0) && ((a < 0) != (b < 0))) q--;
+        return q;
+    }
+
+    // Острівна клітина (rx, rz): існує чи ні, радіус, центр, шумові зсуви. Усе з Seed
+    Island GetRegion(int rx, int rz)
+    {
+        var key = new Vector2Int(rx, rz);
+        if (regions.TryGetValue(key, out var s)) return s;
+
+        s = new Island { region = key };
+        var rng = new System.Random(Hash(seed ^ 0x1B3, rx * 7919 + 13, rz * 104729 + 7));
+        bool isSpawn = rx == 0 && rz == 0;
+        s.isSpawn = isSpawn;
+        s.exists = isSpawn || rng.NextDouble() < islandChance;
+
+        if (s.exists)
+        {
+            int half = sp / 2;
+            float cap = (half - 16f) / (1f + coastJitterFrac);
+            float rmax = Mathf.Min(islandRadiusMax, cap);
+            float rmin = Mathf.Min(islandRadiusMin, rmax);
+            s.R = isSpawn ? Mathf.RoundToInt(rmax) : Mathf.RoundToInt(Mathf.Lerp(rmin, rmax, (float)rng.NextDouble()));
+            float ext = s.R * (1f + coastJitterFrac) + 6f;
+            float jit = isSpawn ? 0f : Mathf.Max(0f, half - ext - 4f);
+            s.cx = rx * sp + Mathf.RoundToInt(((float)rng.NextDouble() * 2f - 1f) * jit);
+            s.cz = rz * sp + Mathf.RoundToInt(((float)rng.NextDouble() * 2f - 1f) * jit);
+            int h = Mathf.CeilToInt(ext);
+            s.S = 2 * h;
+            s.ox = s.cx - h;
+            s.oz = s.cz - h;
+            s.nox = 100f + (float)rng.NextDouble() * 1000f;
+            s.noz = 100f + (float)rng.NextDouble() * 1000f;
+            s.lox = 100f + (float)rng.NextDouble() * 1000f;
+            s.loz = 100f + (float)rng.NextDouble() * 1000f;
+            s.pox = 100f + (float)rng.NextDouble() * 1000f;
+            s.poz = 100f + (float)rng.NextDouble() * 1000f;
+            s.bx = 100f + (float)rng.NextDouble() * 1000f;
+            s.bz = 100f + (float)rng.NextDouble() * 1000f;
+            s.colorIdx = rng.Next(0, 6);
+            s.modern = modernOk && !isSpawn && rng.NextDouble() < modernChance;
+        }
+        regions[key] = s;
+        return s;
+    }
+
+    // Острів, у габаритах якого лежить воксель (null, якщо там відкрите море)
+    Island IslandAt(int x, int z)
+    {
+        Island l = lastIsl;
+        if (l != null && x >= l.ox && x < l.ox + l.S && z >= l.oz && z < l.oz + l.S)
+        {
+            if (l.land == null) Ensure(l);
+            return l;
+        }
+        int half = sp / 2;
+        Island s = GetRegion(FloorDiv(x + half, sp), FloorDiv(z + half, sp));
+        if (!s.exists) return null;
+        if (x < s.ox || x >= s.ox + s.S || z < s.oz || z >= s.oz + s.S) return null;
+        lastIsl = s;
+        if (s.land == null) Ensure(s);
+        return s;
+    }
+
+    void Ensure(Island s)
+    {
+        if (s.land != null) return;
+        Island prev = cur;
+        try
+        {
+            PlanIsland(s);
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogException(e, this);
+            cur = prev;
+            if (s.modern)
+            {
+                // запасний варіант: той самий острів, але середньовічний
+                s.modern = false;
+                s.land = null;
+                ops.Clear();
+                try { PlanIsland(s); }
+                catch (System.Exception e2) { Debug.LogException(e2, this); cur = prev; }
+            }
+        }
+    }
 
     bool Free(int x, int z)
     {
-        if (!InMap(x, z)) return false;
-        int i = I(x, z);
-        if (country[i] < 0 || roadKind[i] != 0 || occ[i]) return false;
-        if (landDist[i] < coastMargin) return false;
+        Island s = IslandAt(x, z);
+        if (s == null) return false;
+        int i = (x - s.ox) + s.S * (z - s.oz);
+        if (!s.land[i] || s.road[i] != 0 || s.occ[i]) return false;
+        if (s.dist[i] < coastMargin) return false;
 
         // біля старту каменя нічого не ставимо (дороги лишаються)
         if (haveStart)
@@ -310,28 +451,41 @@ public class CountryGenerator : MonoBehaviour
         return true;
     }
 
+    // ---- допоміжне лише для планування (працює з cur) ----
+
+    bool InCur(int x, int z)
+    {
+        return x >= cur.ox && x < cur.ox + cur.S && z >= cur.oz && z < cur.oz + cur.S;
+    }
+
+    int Lc(int x, int z)
+    {
+        return (x - cur.ox) + cur.S * (z - cur.oz);
+    }
+
     void MarkOcc(RectInt r)
     {
         for (int z = r.y; z < r.yMax; z++)
         for (int x = r.x; x < r.xMax; x++)
-            if (InMap(x, z)) occ[I(x, z)] = true;
+            if (InCur(x, z)) cur.occ[Lc(x, z)] = true;
     }
 
     void MarkRoad(int x, int z, int kind)
     {
-        if (!InMap(x, z)) return;
-        int i = I(x, z);
-        if (country[i] < 0 || roadKind[i] != 0) return;
-        roadKind[i] = (byte)kind;
+        if (!InCur(x, z)) return;
+        int i = Lc(x, z);
+        if (!cur.land[i] || cur.road[i] != 0) return;
+        cur.road[i] = (byte)kind;
     }
 
     Vector2Int TileOf(int x, int z)
     {
-        return new Vector2Int(Mathf.Clamp(x + M, 0, N - 1) / T, Mathf.Clamp(z + M, 0, N - 1) / T);
+        return new Vector2Int(FloorDiv(x, T), FloorDiv(z, T));
     }
 
     void AddJob(int x, int z, System.Action a)
     {
+        if (cur != null && cur.jobsAdded) return;   // повторне планування не дублює роботи
         Vector2Int tile = TileOf(x, z);
         if (!jobs.TryGetValue(tile, out var list))
         {
@@ -346,203 +500,192 @@ public class CountryGenerator : MonoBehaviour
         return set[(h & 0x7fffffff) % set.Length];
     }
 
-    // ---------- план карти ----------
+    // ---------- планування острова ----------
 
-    void Plan()
+    void PlanIsland(Island s)
     {
-        var rng = new System.Random(Hash(seed, 4, 4));
+        Island prev = cur;
+        cur = s;
 
-        country = new sbyte[N * N];
-        isLake = new bool[N * N];
-        roadKind = new byte[N * N];
-        occ = new bool[N * N];
-        for (int i = 0; i < country.Length; i++) country[i] = -1;
+        int S = s.S;
+        s.land = new bool[S * S];
+        s.occ = new bool[S * S];
+        s.road = new byte[S * S];
+        s.dist = null;
+        s.cities = new List<City>();
 
-        // 1. центри країн
-        var seedPos = new List<Vector2>();
-        float limit = Mathf.Max(0f, M - countryRadius - wallThickness - 10f);
-        float minD = minSeedDistance;
-        for (int tries = 0; seedPos.Count < countryCount && tries < 5000; tries++)
+        var rng = new System.Random(Hash(seed ^ 0x4C1, s.region.x * 7919 + 1, s.region.y * 104729 + 2));
+
+        // 1. суша: звивистий берег, озера, ставки
+        float R = s.R;
+        float jitter = R * coastJitterFrac;
+        float cc = Mathf.Min(lakeCenterClear, R * 0.3f);
+        float cm = Mathf.Min(lakeCoastMargin, R * 0.3f);
+        float pm = Mathf.Min(40f, R * 0.2f);
+        float maxD = R + jitter + 1f;
+        for (int lz = 0; lz < S; lz++)
+        for (int lx = 0; lx < S; lx++)
         {
-            if (tries > 0 && tries % 600 == 0) minD *= 0.85f;
-            Vector2 p = new Vector2(((float)rng.NextDouble() * 2f - 1f) * limit,
-                                    ((float)rng.NextDouble() * 2f - 1f) * limit);
-            bool ok = true;
-            for (int s = 0; s < seedPos.Count; s++)
-                if (Vector2.Distance(p, seedPos[s]) < minD) { ok = false; break; }
-            if (ok) seedPos.Add(p);
-        }
-        int K = seedPos.Count;
+            float dx = s.ox + lx - s.cx, dz = s.oz + lz - s.cz;
+            float d = Mathf.Sqrt(dx * dx + dz * dz);
+            if (d > maxD) continue;
 
-        // 2. суша: найближчий центр, відрізана смуга-протока між сусідніми країнами, звивистий берег, озера
-        float nox = (float)rng.NextDouble() * 1000f;
-        float noz = (float)rng.NextDouble() * 1000f;
-        float lox = (float)rng.NextDouble() * 1000f;
-        float loz = (float)rng.NextDouble() * 1000f;
-        for (int z = -M; z < M; z++)
-        for (int x = -M; x < M; x++)
-        {
-            float d1 = float.MaxValue, d2 = float.MaxValue;
-            int i1 = -1;
-            for (int s = 0; s < K; s++)
-            {
-                float dx = x - seedPos[s].x, dz = z - seedPos[s].y;
-                float d = Mathf.Sqrt(dx * dx + dz * dz);
-                if (d < d1) { d2 = d1; d1 = d; i1 = s; }
-                else if (d < d2) d2 = d;
-            }
-
-            // два шари шуму: великі затоки + дрібна звивистість берега
-            float n1 = Mathf.PerlinNoise((x + M) * noiseScale + nox, (z + M) * noiseScale + noz) * 2f - 1f;
-            float n2 = Mathf.PerlinNoise((x + M) * noiseScale * 3.1f + noz, (z + M) * noiseScale * 3.1f + nox) * 2f - 1f;
+            float n1 = Mathf.PerlinNoise(dx * noiseFreq + s.nox, dz * noiseFreq + s.noz) * 2f - 1f;
+            float n2 = Mathf.PerlinNoise(dx * noiseFreq * 3.1f + s.noz, dz * noiseFreq * 3.1f + s.nox) * 2f - 1f;
             float n = n1 * 0.7f + n2 * 0.3f;
+            bool land = d + n * jitter < R;
 
-            bool land = d1 + n * coastJitter < countryRadius
-                     && (d2 - d1) + n * coastJitter * 0.5f > channelWidth;
-
-            bool lake = false;
-            if (land && d1 > lakeCenterClear && countryRadius - d1 > lakeCoastMargin)
+            if (land && d > cc)
             {
-                float ln = Mathf.PerlinNoise((x + M) * lakeScale + lox, (z + M) * lakeScale + loz);
-                if (ln > lakeThreshold) { land = false; lake = true; }
+                if (R - d > cm && Mathf.PerlinNoise(dx * lakeScale + s.lox, dz * lakeScale + s.loz) > lakeThreshold)
+                    land = false;
+                else if (R - d > pm && Mathf.PerlinNoise(dx * pondScale + s.pox, dz * pondScale + s.poz) > pondThreshold)
+                    land = false;
             }
-
-            country[I(x, z)] = land ? (sbyte)i1 : (sbyte)-1;
-            isLake[I(x, z)] = lake;
+            s.land[lx + S * lz] = land;
         }
 
-        // 3. лишаємо тільки ту частину країни, що з'єднана з її центром
-        for (int s = 0; s < K; s++)
+        // 2. лишаємо тільки ту частину острова, що з'єднана з центром
+        KeepCenterComponent(s);
+        ComputeLandDist(s);
+        if (s.isSpawn) ComputeSpawn(s);
+
+        // 3. міста й села
+        float area = Mathf.PI * R * R;
+        int towns = Mathf.Max(0, Mathf.RoundToInt(area / Mathf.Max(1000f, voxelsPerTown)));
+        int villages = Mathf.Max(1, Mathf.RoundToInt(area / Mathf.Max(500f, voxelsPerVillage)));
+        bool capital = R >= capitalMinIslandRadius;
+        int firstR = capital ? capitalRadius
+                             : Mathf.Max(12, Mathf.Min(RI(rng, cityRadiusMin, cityRadiusMax), Mathf.RoundToInt(R * 0.25f)));
+        s.cities.Add(new City { cx = s.cx, cz = s.cz, r = firstR, capital = capital, village = false });
+        int townCount = 1 + towns;
+        int total = townCount + villages;
+        for (int tries = 0; tries < 20000 && s.cities.Count < total; tries++)
         {
-            var c = new Country
+            bool village = s.cities.Count >= townCount;
+            float ang = (float)rng.NextDouble() * 6.2832f;
+            float dist = Mathf.Lerp(0.1f, 0.92f, (float)rng.NextDouble()) * R;
+            int px = s.cx + Mathf.RoundToInt(Mathf.Cos(ang) * dist);
+            int pz = s.cz + Mathf.RoundToInt(Mathf.Sin(ang) * dist);
+            int r = village ? RI(rng, villageRadiusMin, villageRadiusMax) : RI(rng, cityRadiusMin, cityRadiusMax);
+            if (!InCur(px, pz)) continue;
+            int i = Lc(px, pz);
+            if (!s.land[i] || s.dist[i] < r + coastMargin + 2) continue;
+
+            int spacing = village ? villageSpacing : citySpacing;
+            bool ok = true;
+            foreach (var e in s.cities)
             {
-                id = s,
-                center = new Vector2Int(Mathf.Clamp(Mathf.RoundToInt(seedPos[s].x), -M, M - 1),
-                                        Mathf.Clamp(Mathf.RoundToInt(seedPos[s].y), -M, M - 1))
-            };
-            countries.Add(c);
-            KeepSeedComponent(c);
-        }
-
-        ComputeLandDist();
-        ComputeSpawn();
-
-        // 4. міста й села
-        foreach (var ct in countries)
-        {
-            ct.cities.Add(new City { cx = ct.center.x, cz = ct.center.y, r = Mathf.Max(20, capitalRadius), capital = true });
-            int townCount = Mathf.Max(1, citiesPerCountry);
-            int total = townCount + Mathf.Max(0, villagesPerCountry);
-            for (int tries = 0; tries < 8000 && ct.cities.Count < total; tries++)
-            {
-                bool village = ct.cities.Count >= townCount;
-                float ang = (float)rng.NextDouble() * 6.2832f;
-                float dist = Mathf.Lerp(0.1f, 0.92f, (float)rng.NextDouble()) * countryRadius;
-                int px = ct.center.x + Mathf.RoundToInt(Mathf.Cos(ang) * dist);
-                int pz = ct.center.y + Mathf.RoundToInt(Mathf.Sin(ang) * dist);
-                int r = village ? RI(rng, villageRadiusMin, villageRadiusMax) : RI(rng, cityRadiusMin, cityRadiusMax);
-                if (!InMap(px, pz)) continue;
-                int i = I(px, pz);
-                if (country[i] != ct.id || landDist[i] < r + coastMargin + 2) continue;
-
-                int spacing = village ? villageSpacing : citySpacing;
-                bool ok = true;
-                foreach (var e in ct.cities)
-                {
-                    float dx = px - e.cx, dz = pz - e.cz;
-                    float need = Mathf.Max(spacing, e.r + r + 8);
-                    if (Mathf.Sqrt(dx * dx + dz * dz) < need) { ok = false; break; }
-                }
-                if (ok) ct.cities.Add(new City { cx = px, cz = pz, r = r, capital = false, village = village });
+                float ddx = px - e.cx, ddz = pz - e.cz;
+                float need = Mathf.Max(spacing, e.r + r + 8);
+                if (Mathf.Sqrt(ddx * ddx + ddz * ddz) < need) { ok = false; break; }
             }
+            if (ok) s.cities.Add(new City { cx = px, cz = pz, r = r, capital = false, village = village });
         }
 
-        // 5. дороги між поселеннями однієї країни
-        foreach (var ct in countries)
+        // 4. дороги між поселеннями, хутори й дерева вздовж узбіч
+        for (int k = 1; k < s.cities.Count; k++)
         {
-            for (int k = 1; k < ct.cities.Count; k++)
+            int best = 0;
+            float bestD = float.MaxValue;
+            for (int j = 0; j < k; j++)
             {
-                int best = 0;
-                float bestD = float.MaxValue;
-                for (int j = 0; j < k; j++)
-                {
-                    float dx = ct.cities[k].cx - ct.cities[j].cx, dz = ct.cities[k].cz - ct.cities[j].cz;
-                    float d = dx * dx + dz * dz;
-                    if (d < bestD) { bestD = d; best = j; }
-                }
-                CarveRoad(new Vector2(ct.cities[best].cx, ct.cities[best].cz),
-                          new Vector2(ct.cities[k].cx, ct.cities[k].cz), rng);
+                float dx = s.cities[k].cx - s.cities[j].cx, dz = s.cities[k].cz - s.cities[j].cz;
+                float d = dx * dx + dz * dz;
+                if (d < bestD) { bestD = d; best = j; }
             }
+            CarveRoad(new Vector2(s.cities[best].cx, s.cities[best].cz),
+                      new Vector2(s.cities[k].cx, s.cities[k].cz), rng, s.colorIdx);
         }
 
-        // 6. вулиці й хатки в містах і селах
-        foreach (var ct in countries)
-            foreach (var cy in ct.cities)
-                PlanCity(ct, cy, rng);
+        // 5. вулиці, хатки й двори
+        foreach (var cy in s.cities)
+            PlanCity(cy, rng);
 
-        // 7. околиці: ліси, луки, ферми (за шумом біомів)
-        float bx = (float)rng.NextDouble() * 1000f;
-        float bz = (float)rng.NextDouble() * 1000f;
-        int P = Mathf.Max(24, plotSize);
-        for (int pz = -M; pz < M; pz += P)
-        for (int px = -M; px < M; px += P)
+        // 6. околиці: ліси, луки, ферми, городи (за шумом біомів)
+        int P = Mathf.Max(16, plotSize);
+        int px0 = FloorDiv(s.ox, P) * P, pz0 = FloorDiv(s.oz, P) * P;
+        for (int pz = pz0; pz < s.oz + S; pz += P)
+        for (int px = px0; px < s.ox + S; px += P)
         {
             RectInt plot = new RectInt(px, pz, P, P);
             int cx = px + P / 2, cz = pz + P / 2;
             if (!AnyLand(plot)) continue;
 
             bool core = false;
-            foreach (var ct in countries)
+            foreach (var cy in s.cities)
             {
-                foreach (var cy in ct.cities)
-                {
-                    float dx = cx - cy.cx, dz = cz - cy.cz;
-                    float lim = cy.r + P * 0.5f;
-                    if (dx * dx + dz * dz < lim * lim) { core = true; break; }
-                }
-                if (core) break;
+                float dx = cx - cy.cx, dz = cz - cy.cz;
+                float lim = cy.r + P * 0.5f;
+                if (dx * dx + dz * dz < lim * lim) { core = true; break; }
             }
             if (core) continue;
 
+            // 0 пшениця, 1 соняшники, 2 лука, 3 сад, 4 ліс, 5 город
             float h = Hash01(px, 31, pz);
-            float bn = Mathf.PerlinNoise(cx * 0.005f + bx, cz * 0.005f + bz);
+            float bn = Mathf.PerlinNoise((cx - s.cx) * 0.005f + s.bx, (cz - s.cz) * 0.005f + s.bz);
             int type;
-            if (bn > 0.58f) type = h < 0.15f ? 3 : 4;                                          // великі ліси
-            else if (bn < 0.32f) type = h < 0.7f ? 2 : (h < 0.85f ? 3 : 4);                    // луки
-            else type = h < 0.35f ? 0 : h < 0.55f ? 1 : h < 0.75f ? 2 : h < 0.9f ? 3 : 4;      // ферми
+            if (bn > 0.58f) type = h < 0.1f ? 3 : 4;                                                       // великі ліси
+            else if (bn < 0.32f) type = h < 0.6f ? 2 : (h < 0.75f ? 3 : (h < 0.88f ? 4 : 5));             // луки
+            else type = h < 0.28f ? 0 : h < 0.43f ? 1 : h < 0.58f ? 5 : h < 0.75f ? 2 : h < 0.9f ? 3 : 4;  // ферми
             AddJob(cx, cz, () => BuildPlot(plot, type));
         }
 
-        // усі плитки в чергу (будуються лише поблизу каменя)
-        for (int tz = 0; tz < tilesPerSide; tz++)
-        for (int tx = 0; tx < tilesPerSide; tx++)
-            pending.Add(new Vector2Int(tx, tz));
+        s.jobsAdded = true;
+        if (!loaded.Contains(s)) loaded.Add(s);
+        cur = prev;
+        EvictFar(s);
     }
 
-    // Місце старту каменя: на суші неподалік від столиці, подалі від берега
-    void ComputeSpawn()
+    // Вивантажує з пам'яті найдальші острови (їхні роботи вже в черзі й не дублюються при поверненні)
+    void EvictFar(Island keep)
     {
-        Country c = countries[Mathf.Clamp(startCountry, 0, countries.Count - 1)];
-        spawnV = new Vector2(c.center.x, c.center.y);
+        int max = Mathf.Max(3, maxLoadedIslands);
+        while (loaded.Count > max)
+        {
+            Island far = null;
+            float fd = -1f;
+            for (int k = 0; k < loaded.Count; k++)
+            {
+                Island o = loaded[k];
+                if (o == keep || tmpNear.Contains(o)) continue;
+                float dx = o.cx - rockV.x, dz = o.cz - rockV.y;
+                float d = dx * dx + dz * dz;
+                if (d > fd) { fd = d; far = o; }
+            }
+            if (far == null) break;
+            far.land = null; far.occ = null; far.road = null; far.dist = null; far.cities = null;
+            loaded.Remove(far);
+        }
+    }
+
+    // Місце старту каменя: на суші неподалік від центра острова, подалі від берега
+    void ComputeSpawn(Island s)
+    {
+        Vector2 sv = new Vector2(s.cx, s.cz);
         int want = Mathf.Max(capitalRadius + 20, 60);
         bool found = false;
         for (int dist = want; dist >= 10 && !found; dist -= 5)
         for (int a = 0; a < 24 && !found; a++)
         {
             float ang = a * (Mathf.PI * 2f / 24f);
-            int px = c.center.x + Mathf.RoundToInt(Mathf.Cos(ang) * dist);
-            int pz = c.center.y + Mathf.RoundToInt(Mathf.Sin(ang) * dist);
-            if (!InMap(px, pz)) continue;
-            int i = I(px, pz);
-            if (country[i] == c.id && landDist[i] > 30)
+            int px = s.cx + Mathf.RoundToInt(Mathf.Cos(ang) * dist);
+            int pz = s.cz + Mathf.RoundToInt(Mathf.Sin(ang) * dist);
+            if (!InCur(px, pz)) continue;
+            int i = Lc(px, pz);
+            if (s.land[i] && s.dist[i] > 30)
             {
-                spawnV = new Vector2(px, pz);
+                sv = new Vector2(px, pz);
                 found = true;
             }
         }
-        haveStart = true;
-        startV = spawnV;
-        startClearV = 14f;
+        spawnV = sv;
+        if (!haveStart)
+        {
+            haveStart = true;
+            startV = sv;
+            startClearV = 14f;
+        }
     }
 
     bool AnyLand(RectInt r)
@@ -551,63 +694,61 @@ public class CountryGenerator : MonoBehaviour
         {
             int x = r.x + (k % 4) * r.width / 4 + r.width / 8;
             int z = r.y + (k / 4) * r.height / 4 + r.height / 8;
-            if (InMap(x, z) && country[I(x, z)] >= 0) return true;
+            if (InCur(x, z) && cur.land[Lc(x, z)]) return true;
         }
         return false;
     }
 
-    void KeepSeedComponent(Country c)
+    void KeepCenterComponent(Island s)
     {
-        int si = I(c.center.x, c.center.y);
-        country[si] = (sbyte)c.id;
-        isLake[si] = false;
+        int S = s.S;
+        int si = (s.cx - s.ox) + S * (s.cz - s.oz);
+        s.land[si] = true;
 
-        bool[] visited = new bool[N * N];
-        int[] queue = new int[N * N];
+        bool[] visited = new bool[S * S];
+        int[] queue = new int[S * S];
         int qh = 0, qt = 0;
         queue[qt++] = si;
         visited[si] = true;
         while (qh < qt)
         {
             int i = queue[qh++];
-            int x = i % N, z = i / N;
+            int x = i % S, z = i / S;
             for (int d = 0; d < 4; d++)
             {
                 int nx = x + (d == 0 ? 1 : d == 1 ? -1 : 0);
                 int nz = z + (d == 2 ? 1 : d == 3 ? -1 : 0);
-                if (nx < 0 || nz < 0 || nx >= N || nz >= N) continue;
-                int j = nx + N * nz;
-                if (visited[j] || country[j] != c.id) continue;
+                if (nx < 0 || nz < 0 || nx >= S || nz >= S) continue;
+                int j = nx + S * nz;
+                if (visited[j] || !s.land[j]) continue;
                 visited[j] = true;
                 queue[qt++] = j;
             }
         }
 
-        for (int i = 0; i < country.Length; i++)
-            if (country[i] == c.id && !visited[i])
-                country[i] = -1;
+        for (int i = 0; i < s.land.Length; i++)
+            if (s.land[i] && !visited[i])
+                s.land[i] = false;
     }
 
-    // Відстань до берега: для суші до найближчої води (море чи озеро), для води до найближчої суші
-    void ComputeLandDist()
+    // Відстань від суші до найближчої води (море, озеро, ставок)
+    void ComputeLandDist(Island s)
     {
-        landDist = new ushort[N * N];
-        int[] queue = new int[N * N];
+        int S = s.S;
+        s.dist = new ushort[S * S];
+        int[] queue = new int[S * S];
         int qh = 0, qt = 0;
 
-        for (int z = 0; z < N; z++)
-        for (int x = 0; x < N; x++)
+        for (int z = 0; z < S; z++)
+        for (int x = 0; x < S; x++)
         {
-            int i = x + N * z;
-            bool land = country[i] >= 0;
-            bool boundary = false;
-            if (x > 0 && (country[i - 1] >= 0) != land) boundary = true;
-            else if (x < N - 1 && (country[i + 1] >= 0) != land) boundary = true;
-            else if (z > 0 && (country[i - N] >= 0) != land) boundary = true;
-            else if (z < N - 1 && (country[i + N] >= 0) != land) boundary = true;
+            int i = x + S * z;
+            if (!s.land[i]) continue;
+            bool boundary = x == 0 || z == 0 || x == S - 1 || z == S - 1
+                         || !s.land[i - 1] || !s.land[i + 1] || !s.land[i - S] || !s.land[i + S];
             if (boundary)
             {
-                landDist[i] = 1;
+                s.dist[i] = 1;
                 queue[qt++] = i;
             }
         }
@@ -615,27 +756,26 @@ public class CountryGenerator : MonoBehaviour
         while (qh < qt)
         {
             int i = queue[qh++];
-            int x = i % N, z = i / N;
-            bool land = country[i] >= 0;
-            ushort nd = (ushort)Mathf.Min(65534, landDist[i] + 1);
+            int x = i % S, z = i / S;
+            ushort nd = (ushort)Mathf.Min(65534, s.dist[i] + 1);
             for (int d = 0; d < 4; d++)
             {
                 int nx = x + (d == 0 ? 1 : d == 1 ? -1 : 0);
                 int nz = z + (d == 2 ? 1 : d == 3 ? -1 : 0);
-                if (nx < 0 || nz < 0 || nx >= N || nz >= N) continue;
-                int j = nx + N * nz;
-                if (landDist[j] != 0 || (country[j] >= 0) != land) continue;
-                landDist[j] = nd;
+                if (nx < 0 || nz < 0 || nx >= S || nz >= S) continue;
+                int j = nx + S * nz;
+                if (!s.land[j] || s.dist[j] != 0) continue;
+                s.dist[j] = nd;
                 queue[qt++] = j;
             }
         }
 
-        for (int i = 0; i < landDist.Length; i++)
-            if (landDist[i] == 0) landDist[i] = 65535;
+        for (int i = 0; i < s.dist.Length; i++)
+            if (s.land[i] && s.dist[i] == 0) s.dist[i] = 65535;
     }
 
-    // Дорога з вигином між двома поселеннями (лише по суші)
-    void CarveRoad(Vector2 a, Vector2 b, System.Random rng)
+    // Дорога з вигином між двома поселеннями (лише по суші). Уздовж неї стають хутори й дерева
+    void CarveRoad(Vector2 a, Vector2 b, System.Random rng, int cid)
     {
         float len = Vector2.Distance(a, b);
         if (len < 1f) return;
@@ -645,23 +785,84 @@ public class CountryGenerator : MonoBehaviour
         float ph = (float)rng.NextDouble() * 6.28f;
         float amp = Mathf.Min(12f, len * 0.08f);
         int rw = Mathf.Max(1, roadWidth);
+        var pts = new List<Vector2Int>(steps + 1);
         for (int s = 0; s <= steps; s++)
         {
             float t = s / (float)steps;
             float off = amp * Mathf.Sin(t * 6.2832f + ph) * Mathf.Sin(t * Mathf.PI);
             Vector2 p = a + dir * s + perp * off;
             int px = Mathf.RoundToInt(p.x), pz = Mathf.RoundToInt(p.y);
+            pts.Add(new Vector2Int(px, pz));
             for (int dz = 0; dz < rw; dz++)
             for (int dx = 0; dx < rw; dx++)
                 MarkRoad(px + dx - rw / 2, pz + dz - rw / 2, 2);
         }
+
+        // хутори вздовж дороги
+        int rs = Mathf.Max(10, roadsideSpacing);
+        for (int s = rs / 2; s < pts.Count; s += rs)
+        {
+            if (rng.NextDouble() > roadsideHouseChance) continue;
+            int sd = rng.Next(0, 2) == 0 ? -1 : 1;
+            PlaceRoadsideHouse(pts[s], dir, sd, rw, rng, cid);
+        }
+
+        // дерева вздовж узбіч
+        int ts = Mathf.Max(3, roadsideTreeSpacing);
+        for (int s = 0; s < pts.Count; s += ts)
+        for (int sd = -1; sd <= 1; sd += 2)
+        {
+            if (rng.NextDouble() > 0.55) continue;
+            float dist = rw / 2 + 2 + rng.Next(0, 2);
+            int tx = pts[s].x + Mathf.RoundToInt(perp.x * sd * dist);
+            int tz = pts[s].y + Mathf.RoundToInt(perp.y * sd * dist);
+            AddJob(tx, tz, () => BuildRoadsideTree(tx, tz));
+        }
     }
 
-    // Вулиці міста й рядки хаток уздовж них. Столиця отримує замок, місто вежу, село нічого
-    void PlanCity(Country ct, City cy, System.Random rng)
+    void PlaceRoadsideHouse(Vector2Int p, Vector2 dir, int sd, int rw, System.Random rng, int cid)
     {
+        if (cur.modern) return;   // на сучасних островах немає солом'яних хуторів
+
+        int w = RI(rng, houseWidthMin, houseWidthMax);
+        int d = RI(rng, houseDepthMin, houseDepthMax);
+        bool alongX = Mathf.Abs(dir.x) >= Mathf.Abs(dir.y);
+        int ox, oz, f;
+        RectInt foot;
+        if (alongX)
+        {
+            ox = p.x - w / 2;
+            if (sd > 0) { oz = p.y + rw + 2; f = 0; }
+            else { oz = p.y - rw - 2 - d; f = 2; }
+            foot = new RectInt(ox - 1, oz - 1, w + 2, d + 2);
+        }
+        else
+        {
+            oz = p.y - w / 2;
+            if (sd > 0) { ox = p.x + rw + 2; f = 1; }
+            else { ox = p.x - rw - 2 - d; f = 3; }
+            foot = new RectInt(ox - 1, oz - 1, d + 2, w + 2);
+        }
+        if (!RectClear(foot)) return;
+        MarkOcc(foot);
+        AddJob(foot.x + foot.width / 2, foot.y + foot.height / 2, () => BuildHouse(f, ox, oz, w, d, cid));
+    }
+
+    void BuildRoadsideTree(int tx, int tz)
+    {
+        if (!TreeClear(tx, tz, 1)) return;
+        var rng = new System.Random(Hash(seed ^ 0x55, tx, tz));
+        BuildTinyTree(tx, tz, 1, rng, rng.NextDouble() < 0.3, leafSets[rng.Next(2)]);
+    }
+
+    // Вулиці міста й рядки хаток уздовж них. Столиця отримує замок, місто вежу, село колодязь чи вітряк
+    void PlanCity(City cy, System.Random rng)
+    {
+        if (cur.modern) { PlanModernCity(cy, rng); return; }
+
+        int cid = cur.colorIdx;
         int rw = Mathf.Max(1, roadWidth);
-        int rowSp = rw + 2 * (houseDepthMax + 3);
+        int rowSp = rw + 2 * (houseDepthMax + 2);
         int rr = cy.r;
 
         // центральна споруда
@@ -669,15 +870,29 @@ public class CountryGenerator : MonoBehaviour
         {
             RectInt cr = new RectInt(cy.cx - 12, cy.cz - 12, 24, 24);
             MarkOcc(cr);
-            int ccx = cy.cx, ccz = cy.cz, cid = ct.id;
+            int ccx = cy.cx, ccz = cy.cz;
             AddJob(ccx, ccz, () => BuildCastle(ccx, ccz, cid));
         }
         else if (!cy.village)
         {
             RectInt tr = new RectInt(cy.cx - 5, cy.cz - 5, 10, 10);
             MarkOcc(tr);
-            int tcx = cy.cx, tcz = cy.cz, tid = ct.id;
-            AddJob(tcx, tcz, () => BuildTower(tcx, tcz, tid));
+            int tcx = cy.cx, tcz = cy.cz;
+            AddJob(tcx, tcz, () => BuildTower(tcx, tcz, cid));
+        }
+        else
+        {
+            int vcx = cy.cx, vcz = cy.cz;
+            if (rng.NextDouble() < windmillChance)
+            {
+                MarkOcc(new RectInt(vcx - 5, vcz - 5, 10, 10));
+                AddJob(vcx, vcz, () => BuildWindmill(vcx, vcz, cid));
+            }
+            else
+            {
+                MarkOcc(new RectInt(vcx - 3, vcz - 3, 6, 6));
+                AddJob(vcx, vcz, () => BuildWell(vcx, vcz, cid));
+            }
         }
 
         int K = rr / rowSp;
@@ -731,16 +946,113 @@ public class CountryGenerator : MonoBehaviour
                     if (rng.NextDouble() < houseChance && RectClear(foot))
                     {
                         MarkOcc(foot);
-                        int hox = ox, hoz = oz, hf = f, hw = w, hd = d, hid = ct.id;
-                        AddJob(ox + w / 2, oz + d / 2, () => BuildHouse(hf, hox, hoz, hw, hd, hid));
+                        int hox = ox, hoz = oz, hf = f, hw = w, hd = d;
+                        AddJob(ox + w / 2, oz + d / 2, () => BuildHouse(hf, hox, hoz, hw, hd, cid));
                     }
-                    x += w + 3 + rng.Next(0, 2);
+                    x += w + Mathf.Max(1, houseGap) + rng.Next(0, 2);
                 }
+            }
+        }
+
+        // двори: кущі, дерева, квіти в проміжках між хатками (перевіряється під час будування)
+        if (gardenDensity > 0f)
+        {
+            const int B = 6;
+            for (int gz = -rr; gz <= rr; gz += B)
+            for (int gx = -rr; gx <= rr; gx += B)
+            {
+                float cdx = gx + B * 0.5f, cdz = gz + B * 0.5f;
+                if (cdx * cdx + cdz * cdz > (rr + 4f) * (rr + 4f)) continue;
+                int bx0 = cy.cx + gx, bz0 = cy.cz + gz;
+                AddJob(bx0 + B / 2, bz0 + B / 2, () => BuildGarden(bx0, bz0, B));
             }
         }
     }
 
     // ---------- плитки й черга ----------
+
+    // Острови, габарити яких перетинають прямокутник [x0,x1) x [z0,z1)
+    void GatherIslands(int x0, int z0, int x1, int z1, bool ensure)
+    {
+        tmpNear.Clear();
+        int half = sp / 2;
+        int rx0 = FloorDiv(x0 + half, sp), rx1 = FloorDiv(x1 - 1 + half, sp);
+        int rz0 = FloorDiv(z0 + half, sp), rz1 = FloorDiv(z1 - 1 + half, sp);
+        for (int rz = rz0; rz <= rz1; rz++)
+        for (int rx = rx0; rx <= rx1; rx++)
+        {
+            Island s = GetRegion(rx, rz);
+            if (!s.exists) continue;
+            if (s.ox >= x1 || s.ox + s.S <= x0 || s.oz >= z1 || s.oz + s.S <= z0) continue;
+            tmpNear.Add(s);
+        }
+        if (ensure)
+            for (int k = 0; k < tmpNear.Count; k++) Ensure(tmpNear[k]);
+    }
+
+    bool TileHasIsland(Vector2Int t)
+    {
+        int x0 = t.x * T, z0 = t.y * T, x1 = x0 + T, z1 = z0 + T;
+        int half = sp / 2;
+        int rx0 = FloorDiv(x0 + half, sp), rx1 = FloorDiv(x1 - 1 + half, sp);
+        int rz0 = FloorDiv(z0 + half, sp), rz1 = FloorDiv(z1 - 1 + half, sp);
+        for (int rz = rz0; rz <= rz1; rz++)
+        for (int rx = rx0; rx <= rx1; rx++)
+        {
+            Island s = GetRegion(rx, rz);
+            if (!s.exists) continue;
+            if (s.ox >= x1 || s.ox + s.S <= x0 || s.oz >= z1 || s.oz + s.S <= z0) continue;
+            return true;
+        }
+        return false;
+    }
+
+    // Планує по одному острову за кадр, поки камінь ще далеко, щоб не було підвисання при підпливанні
+    bool PreplanNearby()
+    {
+        int half = sp / 2;
+        int rx = FloorDiv(Mathf.RoundToInt(rockV.x) + half, sp);
+        int rz = FloorDiv(Mathf.RoundToInt(rockV.y) + half, sp);
+        float R = Mathf.Max(spawnRadius, rock.Radius * spawnRadiusInRockRadii) / vs;
+        float lim = R + T + 250f;
+        for (int dz = -1; dz <= 1; dz++)
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            Island s = GetRegion(rx + dx, rz + dz);
+            if (!s.exists || s.land != null) continue;
+            float ddx = Mathf.Max(0f, Mathf.Max(s.ox - rockV.x, rockV.x - (s.ox + s.S)));
+            float ddz = Mathf.Max(0f, Mathf.Max(s.oz - rockV.y, rockV.y - (s.oz + s.S)));
+            if (ddx * ddx + ddz * ddz > lim * lim) continue;
+            Ensure(s);
+            return true;
+        }
+        return false;
+    }
+
+    // Найближча до каменя ще не збудована плитка, що перетинає острів
+    bool FindNearestTile(float reach, out Vector2Int best)
+    {
+        best = default;
+        float bestD = float.MaxValue;
+        bool found = false;
+        int rt = Mathf.CeilToInt(reach / T) + 1;
+        int cx = FloorDiv(Mathf.RoundToInt(rockV.x), T), cz = FloorDiv(Mathf.RoundToInt(rockV.y), T);
+        float reach2 = reach * reach;
+        for (int dz = -rt; dz <= rt; dz++)
+        for (int dx = -rt; dx <= rt; dx++)
+        {
+            var t = new Vector2Int(cx + dx, cz + dz);
+            float px = (t.x + 0.5f) * T - rockV.x, pz = (t.y + 0.5f) * T - rockV.y;
+            float d = px * px + pz * pz;
+            if (d > reach2 || d >= bestD) continue;
+            if (built.Contains(t)) continue;
+            if (!TileHasIsland(t)) continue;
+            bestD = d;
+            best = t;
+            found = true;
+        }
+        return found;
+    }
 
     IEnumerator Worker()
     {
@@ -755,27 +1067,33 @@ public class CountryGenerator : MonoBehaviour
                 continue;
             }
 
-            float R = Mathf.Max(spawnRadius, rock.Radius * spawnRadiusInRockRadii) / vs;   // у вокселях
-
-            // найближча до каменя ще не збудована плитка
-            int bestIdx = -1;
-            float bestD = float.MaxValue;
-            for (int i = 0; i < pending.Count; i++)
-            {
-                Vector2 c = new Vector2((pending[i].x + 0.5f) * T - M, (pending[i].y + 0.5f) * T - M);
-                float d = (c - rockV).sqrMagnitude;
-                if (d < bestD) { bestD = d; bestIdx = i; }
-            }
-            float reach = R + T;
-            if (bestIdx < 0 || bestD > reach * reach)
+            // нічого будувати: чекаємо, поки камінь зрушить
+            if (idle && (rockV - idlePos).sqrMagnitude < (T * 0.5f) * (T * 0.5f))
             {
                 yield return null;
                 continue;
             }
 
-            Vector2Int tile = pending[bestIdx];
-            pending.RemoveAt(bestIdx);
-            BuildTile(tile);
+            if (PreplanNearby())
+            {
+                idle = false;
+                yield return null;
+                continue;
+            }
+
+            float Rv = Mathf.Max(spawnRadius, rock.Radius * spawnRadiusInRockRadii) / vs;   // у вокселях
+            if (!FindNearestTile(Rv + T, out Vector2Int tile))
+            {
+                idle = true;
+                idlePos = rockV;
+                yield return null;
+                continue;
+            }
+            idle = false;
+
+            built.Add(tile);
+            try { BuildTile(tile); }
+            catch (System.Exception e) { Debug.LogException(e, this); ops.Clear(); }
 
             int idx = 0;
             while (idx < ops.Count)
@@ -814,7 +1132,7 @@ public class CountryGenerator : MonoBehaviour
         {
             rock = found;
 
-            // швидкий камінь не повинен проскакувати крізь стіни
+            // швидкий камінь не повинен проскакувати крізь землю
             Rigidbody rb = rock.GetComponent<Rigidbody>();
             if (rb != null) rb.collisionDetectionMode = CollisionDetectionMode.Continuous;
 
@@ -826,19 +1144,19 @@ public class CountryGenerator : MonoBehaviour
         return true;
     }
 
-    // Переносить камінь на сушу (місце з ComputeSpawn) і ставить його на підлогу
+    // Переносить камінь на сушу стартового острова й ставить його на підлогу
     void PlaceRockOnLand()
     {
         float r = rock.Radius;
         Vector3 target = world.transform.TransformPoint(new Vector3(spawnV.x * vs, 0f, spawnV.y * vs));
-        target.y = r + 0.5f;                       // підлога на y = 0
+        target.y = r + 0.5f;                       // море на y = 0
         rock.transform.position += target - rock.WorldCenter;
 
         Rigidbody rb = rock.GetComponent<Rigidbody>();
         if (rb != null)
         {
             rb.position = rock.transform.position;
-            rb.linearVelocity = Vector3.zero;
+            rb.linearVelocity = Vector3.zero;      // у старих версіях Unity: rb.velocity
             rb.angularVelocity = Vector3.zero;
         }
         Physics.SyncTransforms();
@@ -846,71 +1164,24 @@ public class CountryGenerator : MonoBehaviour
         startV = spawnV;
         startClearV = Mathf.Max(14f, r * startClearInRockRadii / vs);
         haveStart = true;
+        idle = false;
     }
 
     void BuildTile(Vector2Int tile)
     {
+        int x0 = tile.x * T, z0 = tile.y * T;
+        GatherIslands(x0, z0, x0 + T, z0 + T, true);
+
         ops.Clear();
         if (jobs.TryGetValue(tile, out var list))
-            foreach (var job in list) job();
+        {
+            for (int k = 0; k < list.Count; k++) list[k]();
+            jobs.Remove(tile);
+        }
         BuildTileFlat(tile);
     }
 
-    // ---------- невидимі стіни вздовж берега (лише якщо Block Water) ----------
-
-    void BuildWalls()
-    {
-        int cs = Mathf.Max(1, wallCell);
-        int cn = Mathf.CeilToInt(N / (float)cs);
-        bool[] wl = new bool[cn * cn];
-        for (int z = -M; z < M; z++)
-        for (int x = -M; x < M; x++)
-        {
-            int i = I(x, z);
-            if (country[i] >= 0) continue;
-            if (!isLake[i] && landDist[i] > wallThickness) continue;
-            wl[((x + M) / cs) + cn * ((z + M) / cs)] = true;
-        }
-
-        bool[] used = new bool[cn * cn];
-        GameObject root = new GameObject("WaterBarrier");
-        root.transform.SetParent(world.transform, false);
-
-        for (int cz = 0; cz < cn; cz++)
-        for (int cx = 0; cx < cn; cx++)
-        {
-            int idx = cx + cn * cz;
-            if (!wl[idx] || used[idx]) continue;
-
-            int w = 1;
-            while (cx + w < cn && wl[idx + w] && !used[idx + w]) w++;
-            int h = 1;
-            bool grow = true;
-            while (grow && cz + h < cn)
-            {
-                for (int k = 0; k < w; k++)
-                {
-                    int j = cx + k + cn * (cz + h);
-                    if (!wl[j] || used[j]) { grow = false; break; }
-                }
-                if (grow) h++;
-            }
-            for (int dz = 0; dz < h; dz++)
-            for (int dx = 0; dx < w; dx++)
-                used[cx + dx + cn * (cz + dz)] = true;
-
-            float x0 = (cx * cs - M) * vs;
-            float x1 = (Mathf.Min((cx + w) * cs, N) - M) * vs;
-            float z0 = (cz * cs - M) * vs;
-            float z1 = (Mathf.Min((cz + h) * cs, N) - M) * vs;
-
-            BoxCollider bc = root.AddComponent<BoxCollider>();
-            bc.center = new Vector3((x0 + x1) * 0.5f, wallHeight * 0.5f - 5f, (z0 + z1) * 0.5f);
-            bc.size = new Vector3(x1 - x0, wallHeight, z1 - z0);
-        }
-    }
-
-    // ---------- плоске море, озера, пляж, дороги ----------
+    // ---------- плоска суша: трава, пляж, дороги ----------
 
     byte RoadColor(int kind, int x, int z)
     {
@@ -918,40 +1189,52 @@ public class CountryGenerator : MonoBehaviour
         return dirtSet[Hash01(x, 2, z) < 0.5f ? 0 : 1];
     }
 
-    // Один квад на клітинку (колір з палітри VoxelWorld, як у чанків)
+    // Один квад на клітинку суші (колір з палітри VoxelWorld). Озера й море це просто відсутність квадів:
+    // крізь них видно море SeaGroundGenerator
     void BuildTileFlat(Vector2Int tile)
     {
-        int x0 = tile.x * T - M, z0 = tile.y * T - M;
-        int x1 = Mathf.Min(x0 + T, M), z1 = Mathf.Min(z0 + T, M);
+        for (int k = 0; k < tmpNear.Count; k++) Ensure(tmpNear[k]);
+
+        int x0 = tile.x * T, z0 = tile.y * T;
+        int x1 = x0 + T, z1 = z0 + T;
         mVerts.Clear(); mNormals.Clear(); mUvs.Clear(); mTris.Clear();
 
         for (int z = z0; z < z1; z++)
         for (int x = x0; x < x1; x++)
         {
-            int i = I(x, z);
-            byte kind = roadKind[i];
+            Island s = null;
+            for (int k = 0; k < tmpNear.Count; k++)
+            {
+                Island c = tmpNear[k];
+                if (x >= c.ox && x < c.ox + c.S && z >= c.oz && z < c.oz + c.S) { s = c; break; }
+            }
+            if (s == null || s.land == null) continue;
+            int i = (x - s.ox) + s.S * (z - s.oz);
+            if (!s.land[i]) continue;
+
+            byte kind = s.road[i];
             byte id;
             float y;
             if (kind != 0)
             {
-                id = RoadColor(kind, x, z);
+                id = s.modern ? ModernRoadColor(kind, x, z) : RoadColor(kind, x, z);
                 y = roadHeight;
             }
-            else if (country[i] < 0)
-            {
-                id = Hash01(x, 3, z) < 0.12f ? cWaterLight : cWater;
-                y = waterHeight;
-            }
-            else if (landDist[i] <= beachWidth)
+            else if (s.dist[i] <= beachWidth)
             {
                 id = sandSet[Hash01(x, 4, z) < 0.5f ? 0 : 1];
-                y = waterHeight;
+                y = landHeight + 0.002f;
             }
-            else continue;
+            else
+            {
+                float r = Hash01(x, 5, z);
+                id = r < 0.12f ? cGroundDirt : (r < 0.55f ? cGroundA : cGroundB);
+                y = landHeight;
+            }
 
             float fx0 = x * vs, fx1 = fx0 + vs, fz0 = z * vs, fz1 = fz0 + vs;
             Vector2 uv = new Vector2((id + 0.5f) / 256f, 0.5f);
-            int s = mVerts.Count;
+            int sv = mVerts.Count;
             mVerts.Add(new Vector3(fx0, y, fz0));
             mVerts.Add(new Vector3(fx0, y, fz1));
             mVerts.Add(new Vector3(fx1, y, fz1));
@@ -961,8 +1244,8 @@ public class CountryGenerator : MonoBehaviour
                 mNormals.Add(Vector3.up);
                 mUvs.Add(uv);
             }
-            mTris.Add(s); mTris.Add(s + 1); mTris.Add(s + 2);
-            mTris.Add(s); mTris.Add(s + 2); mTris.Add(s + 3);
+            mTris.Add(sv); mTris.Add(sv + 1); mTris.Add(sv + 2);
+            mTris.Add(sv); mTris.Add(sv + 2); mTris.Add(sv + 3);
         }
         if (mVerts.Count == 0) return;
 
@@ -973,14 +1256,14 @@ public class CountryGenerator : MonoBehaviour
         mesh.SetTriangles(mTris, 0);
         mesh.RecalculateBounds();
 
-        var go = new GameObject("Flat " + tile.x + "_" + tile.y);
+        var go = new GameObject("Land " + tile.x + "_" + tile.y);
         go.transform.SetParent(world.transform, false);
         go.AddComponent<MeshFilter>().sharedMesh = mesh;
         var rend = go.AddComponent<MeshRenderer>();
         rend.sharedMaterial = world.RuntimeMaterial;
         rend.shadowCastingMode = ShadowCastingMode.Off;
 
-        // тонкий колайдер: камінь їде по поверхні води й доріг, а не по підлозі під ними
+        // тонкий колайдер: камінь їде по траві й дорогах, а не по морю під ними
         if (flatCollider)
         {
             var mc = go.AddComponent<MeshCollider>();
@@ -1055,7 +1338,7 @@ public class CountryGenerator : MonoBehaviour
     {
         var rng = new System.Random(Hash(seed ^ 0x2468, ox, oz));
         SetT(f, ox, oz, w, d);
-        int wh = Mathf.Max(2, houseWallHeight);
+        int wh = Mathf.Max(2, houseWallHeight) + (rng.NextDouble() < tallHouseChance ? 1 : 0);
         byte[] roofSet = rng.NextDouble() < thatchChance ? thatchSet : roofSets[cIdx % roofSets.Length];
 
         // деталі першими: двері, вікна, комин
@@ -1067,6 +1350,11 @@ public class CountryGenerator : MonoBehaviour
         }
         PH(0, 1, d / 2, cGlass);
         PH(w - 1, 1, d / 2, cGlass);
+        if (wh >= 3)
+        {
+            PH(0, 2, d / 2, cGlass);
+            PH(w - 1, 2, d / 2, cGlass);
+        }
         if (rng.NextDouble() < chimneyChance)
         {
             int top = wh + (d + 2) / 2 + 1;
@@ -1169,24 +1457,133 @@ public class CountryGenerator : MonoBehaviour
         PBox(0, 0, 0, S, 1, S, cFloor);
     }
 
+    // ---------- колодязь у селі ----------
+
+    void BuildWell(int cx, int cz, int cIdx)
+    {
+        SetT(0, cx - 1, cz - 1, 3, 3);
+        byte roof = roofSets[cIdx % roofSets.Length][0];
+
+        // стійки й дашок першими
+        for (int y = 2; y <= 3; y++)
+        {
+            PH(0, y, 1, cPost);
+            PH(2, y, 1, cPost);
+        }
+        PBox(0, 4, 0, 3, 1, 3, roof);
+
+        // зруб із водою всередині
+        for (int lz = 0; lz < 3; lz++)
+        for (int lx = 0; lx < 3; lx++)
+        {
+            if (lx == 1 && lz == 1) { PH(1, 0, 1, cWater); continue; }
+            PH(lx, 0, lz, cStone);
+            PH(lx, 1, lz, cStone2);
+        }
+    }
+
+    // ---------- вітряк у селі ----------
+
+    void BuildWindmill(int cx, int cz, int cIdx)
+    {
+        SetT(0, cx - 2, cz - 2, 5, 5);
+        byte roof = roofSets[cIdx % roofSets.Length][1];
+
+        // лопаті на передній стороні (першими)
+        PH(2, 6, -1, cDoor);
+        for (int k = -4; k <= 4; k++)
+        {
+            if (k == 0) continue;
+            PH(2 + k, 6, -1, cPost);
+            PH(2, 6 + k, -1, cPost);
+        }
+        for (int k = -3; k <= 3; k++)
+        {
+            if (k == 0) continue;
+            PH(2 + k, 6 + k, -1, cPost);
+            PH(2 + k, 6 - k, -1, cPost);
+        }
+
+        PH(2, 1, 0, cDoor);
+        PH(2, 2, 0, cDoor);
+        PH(0, 3, 2, cGlass);
+        PH(4, 3, 2, cGlass);
+
+        for (int y = 0; y < 4; y++)
+        for (int lz = 0; lz < 5; lz++)
+        for (int lx = 0; lx < 5; lx++)
+        {
+            if (lx != 0 && lx != 4 && lz != 0 && lz != 4) continue;
+            PH(lx, y, lz, Pick(wallSet, Hash(lx, y, lz)));
+        }
+        for (int y = 4; y < 6; y++)
+        for (int lz = 1; lz < 4; lz++)
+        for (int lx = 1; lx < 4; lx++)
+        {
+            if (lx != 1 && lx != 3 && lz != 1 && lz != 3) continue;
+            PH(lx, y, lz, Pick(wallSet, Hash(lx, y, lz)));
+        }
+
+        LocalToWorld(2, 2, out int wx, out int wz);
+        Disc(wx, wz, 2.3f, 6, 7, roof);
+        Disc(wx, wz, 1.3f, 7, 8, roof);
+        PBox(0, 0, 0, 5, 1, 5, cFloor);
+    }
+
+    // ---------- двір: кущі, дерева, квіти, камінці ----------
+
+    void BuildGarden(int x0, int z0, int s)
+    {
+        var rng = new System.Random(Hash(seed ^ 0x999, x0, z0));
+        int attempts = Mathf.CeilToInt(5f * gardenDensity);
+        for (int a = 0; a < attempts; a++)
+        {
+            int x = x0 + rng.Next(0, s), z = z0 + rng.Next(0, s);
+            double roll = rng.NextDouble();
+            if (roll < 0.40) BuildBush(x, z, rng, leafSets[rng.Next(2)]);
+            else if (roll < 0.65)
+            {
+                if (TreeClear(x, z, 1)) BuildTinyTree(x, z, 1, rng, false, leafSets[rng.Next(3)]);
+            }
+            else if (roll < 0.90)
+            {
+                if (Free(x, z)) Add(x, 0, z, Pick(flowerColors, Hash(x, 51, z)));
+            }
+            else
+            {
+                if (Free(x, z)) Add(x, 0, z, cStone);
+            }
+        }
+    }
+
     // ---------- ділянки між поселеннями ----------
 
-    // type: 0 пшениця, 1 соняшники, 2 лука, 3 сад, 4 гай/ліс
+    // type: 0 пшениця, 1 соняшники, 2 лука, 3 сад, 4 ліс, 5 город
     void BuildPlot(RectInt plot, int type)
     {
         var rng = new System.Random(Hash(seed ^ 0x777, plot.x, plot.y));
-        int x0 = Mathf.Max(plot.x + 1, -M), x1 = Mathf.Min(plot.xMax - 1, M);
-        int z0 = Mathf.Max(plot.y + 1, -M), z1 = Mathf.Min(plot.yMax - 1, M);
+        int x0 = plot.x + 1, x1 = plot.xMax - 1;
+        int z0 = plot.y + 1, z1 = plot.yMax - 1;
         if (x1 <= x0 || z1 <= z0) return;
+
+        // паркан навколо полів і городів (першим, щоб не затерли посіви)
+        if ((type <= 1 || type == 5) && rng.NextDouble() < fenceChance)
+            BuildFence(x0, z0, x1, z1);
 
         switch (type)
         {
             case 0:
+                // вітряк посеред поля
+                if (rng.NextDouble() < windmillChance * 0.5)
+                {
+                    int wx = (x0 + x1) / 2, wz = (z0 + z1) / 2;
+                    if (TreeClear(wx, wz, 3)) BuildWindmill(wx, wz, Mathf.Abs(Hash(plot.x, 3, plot.y)));
+                }
                 for (int z = z0; z < z1; z++)
                 for (int x = x0; x < x1; x++)
                 {
                     if (!Free(x, z)) continue;
-                    byte row = wheatSet[((z / 2) & 1) == 0 ? 0 : 1];
+                    byte row = wheatSet[(FloorDiv(z, 2) & 1) == 0 ? 0 : 1];
                     Add(x, 0, z, row);
                     if (Hash01(x, 11, z) < 0.7f)
                         Add(x, 1, z, Pick(wheatSet, Hash(x, 12, z)));
@@ -1207,7 +1604,7 @@ public class CountryGenerator : MonoBehaviour
                 {
                     if (!Free(x, z)) continue;
                     Add(x, 0, z, ((x + z) & 1) == 0 ? cSoil : cSoilDark);
-                    if (x % 3 != 0 || z % 3 != 0) continue;
+                    if (FloorDiv(x, 3) * 3 != x || FloorDiv(z, 3) * 3 != z) continue;
                     for (int y = 1; y <= 2; y++) Add(x, y, z, cStem);
                     Add(x, 3, z, cSunCenter);
                     Add(x + 1, 3, z, cSun); Add(x - 1, 3, z, cSun);
@@ -1220,13 +1617,23 @@ public class CountryGenerator : MonoBehaviour
                 for (int x = x0; x < x1; x++)
                 {
                     if (!Free(x, z)) continue;
-                    if (Hash01(x, 21, z) < 0.045f) Add(x, 0, z, Pick(flowerColors, Hash(x, 22, z)));
+                    float r = Hash01(x, 21, z);
+                    if (r < 0.07f) Add(x, 0, z, Pick(flowerColors, Hash(x, 22, z)));
+                    else if (r < 0.24f)
+                    {
+                        Add(x, 0, z, Pick(grassSet, Hash(x, 24, z)));
+                        if (Hash01(x, 23, z) < 0.3f) Add(x, 1, z, Pick(grassSet, Hash(x, 25, z)));
+                    }
                 }
+                for (int n = rng.Next(0, 5); n > 0; n--)
+                    BuildBush(rng.Next(x0, x1), rng.Next(z0, z1), rng, leafSets[rng.Next(2)]);
+                for (int n = rng.Next(0, 3); n > 0; n--)
+                    BuildBoulder(rng.Next(x0 + 2, Mathf.Max(x0 + 3, x1 - 2)), rng.Next(z0 + 2, Mathf.Max(z0 + 3, z1 - 2)), rng.Next(1, 3), rng);
                 break;
 
             case 3:
-                for (int z = z0 + 2; z < z1 - 1; z += 6)
-                for (int x = x0 + 2; x < x1 - 1; x += 6)
+                for (int z = z0 + 2; z < z1 - 1; z += 5)
+                for (int x = x0 + 2; x < x1 - 1; x += 5)
                 {
                     int tx = x + rng.Next(-1, 2), tz = z + rng.Next(-1, 2);
                     if (!TreeClear(tx, tz, 1)) continue;
@@ -1234,17 +1641,88 @@ public class CountryGenerator : MonoBehaviour
                 }
                 break;
 
+            case 5:
+                for (int z = z0; z < z1; z++)
+                for (int x = x0; x < x1; x++)
+                {
+                    if (!Free(x, z)) continue;
+                    bool rowSoil = (FloorDiv(z, 2) & 1) == 0;
+                    Add(x, 0, z, rowSoil ? cSoil : cSoilDark);
+                    if (rowSoil || Hash01(x, 41, z) > 0.55f) continue;
+                    float r = Hash01(x, 42, z);
+                    Add(x, 1, z, r < 0.4f ? cCrop : (r < 0.7f ? cCabbage : cPumpkin));
+                }
+                break;
+
             default:
                 for (int z = z0 + 1; z < z1 - 1; z += 3)
                 for (int x = x0 + 1; x < x1 - 1; x += 3)
                 {
-                    if (rng.NextDouble() > 0.8) continue;
+                    if (rng.NextDouble() > treeDensity) continue;
                     int tx = x + rng.Next(-1, 2), tz = z + rng.Next(-1, 2);
                     int r = rng.NextDouble() < 0.3 ? 2 : 1;
                     if (!TreeClear(tx, tz, r)) continue;
                     BuildTinyTree(tx, tz, r, rng, rng.NextDouble() < 0.4, leafSets[rng.Next(2)]);
                 }
+                // підлісок і валуни
+                for (int n = rng.Next(3, 10); n > 0; n--)
+                    BuildBush(rng.Next(x0, x1), rng.Next(z0, z1), rng, leafSets[rng.Next(2)]);
+                for (int n = rng.Next(0, 3); n > 0; n--)
+                    BuildBoulder(rng.Next(x0 + 2, Mathf.Max(x0 + 3, x1 - 2)), rng.Next(z0 + 2, Mathf.Max(z0 + 3, z1 - 2)), rng.Next(1, 3), rng);
                 break;
+        }
+    }
+
+    // ---------- паркан ----------
+
+    void BuildFence(int x0, int z0, int x1, int z1)
+    {
+        for (int x = x0; x < x1; x++)
+        {
+            FencePiece(x, z0, x);
+            FencePiece(x, z1 - 1, x);
+        }
+        for (int z = z0 + 1; z < z1 - 1; z++)
+        {
+            FencePiece(x0, z, z);
+            FencePiece(x1 - 1, z, z);
+        }
+    }
+
+    void FencePiece(int x, int z, int k)
+    {
+        if (FloorDiv(k, 17) * 17 == k) return;     // хвіртка
+        if (!Free(x, z)) return;
+        Add(x, 0, z, cPost);
+        if (FloorDiv(k, 3) * 3 == k) Add(x, 1, z, cPost);
+    }
+
+    // ---------- кущі, валуни ----------
+
+    void BuildBush(int x, int z, System.Random rng, byte[] leaves)
+    {
+        if (!Free(x, z)) return;
+        Add(x, 0, z, leaves[0]);
+        if (rng.NextDouble() < 0.7) Add(x, 1, z, leaves[1]);
+        for (int d = 0; d < 4; d++)
+        {
+            int dx = d == 0 ? 1 : d == 1 ? -1 : 0;
+            int dz = d == 2 ? 1 : d == 3 ? -1 : 0;
+            if (rng.NextDouble() < 0.4 && Free(x + dx, z + dz))
+                Add(x + dx, 0, z + dz, leaves[rng.Next(0, 3)]);
+        }
+    }
+
+    void BuildBoulder(int gx, int gz, int r, System.Random rng)
+    {
+        if (!TreeClear(gx, gz, r)) return;
+        for (int dy = 0; dy <= r; dy++)
+        for (int dz = -r; dz <= r; dz++)
+        for (int dx = -r; dx <= r; dx++)
+        {
+            float jitter = Hash01(gx + dx, dy, gz + dz);
+            if (dx * dx + dz * dz + dy * dy * 2f > r * r + 0.5f - jitter * 0.8f) continue;
+            Add(gx + dx, dy, gz + dz, jitter < 0.5f ? cStone : cStone2);
         }
     }
 
@@ -1326,5 +1804,303 @@ public class CountryGenerator : MonoBehaviour
     static float Hash01(int x, int y, int z)
     {
         return (Hash(x, y, z) & 0xFFFF) / 65535f;
+    }
+
+    // =====================================================================================
+    // Сучасні королівства
+    // =====================================================================================
+
+    [Header("Сучасні королівства")]
+    [Tooltip("Імовірність, що острів сучасний (стартовий острів завжди середньовічний)")]
+    [Range(0f, 1f)] public float modernChance = 0.5f;
+    public int modernWidthMin = 5;
+    public int modernWidthMax = 8;
+    public int modernDepthMin = 5;
+    public int modernDepthMax = 7;
+    [Tooltip("Висота центрального хмарочоса столиці (вокселі)")]
+    public int capitalTowerHeight = 36;
+    [Tooltip("Висота центральної вежі звичайного міста")]
+    public int townTowerHeight = 22;
+    [Tooltip("Максимальна висота кварталів у центрі столиці. У місті ~60%, у селі низькі будинки")]
+    public int downtownMaxHeight = 20;
+    [Tooltip("Крок ліхтарів уздовж вулиць")]
+    public int lampSpacing = 9;
+
+    byte[] mWall, mBrick, mGlassSet, mAsphalt;
+    byte mRoof, mLampPole, mLampHead;
+
+    void InitModernColors()
+    {
+        try
+        {
+            mWall = new[] { C(200, 200, 205), wallSet[1], wallSet[2] };
+            mBrick = new[] { cBrick, roofSets[0][1], roofSets[0][2] };
+            mGlassSet = new[] { C(90, 140, 190), cGlass, roofSets[1][0] };
+            mAsphalt = new[] { C(70, 72, 76), C(64, 66, 70), gravelSet[2] };
+            mRoof = C(58, 62, 70);
+            mLampPole = cStone2;
+            mLampHead = C(255, 235, 150);
+            modernOk = true;
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogException(e, this);
+            Debug.LogWarning("[CountryGenerator] Не вдалося додати кольори сучасних міст (палітра VoxelWorld повна?). Сучасні острови вимкнено.", this);
+            modernOk = false;
+        }
+    }
+
+    bool modernOk = true;
+
+    byte ModernRoadColor(int kind, int x, int z)
+    {
+        float r = Hash01(x, 6, z);
+        return mAsphalt[r < 0.15f ? 2 : (r < 0.55f ? 0 : 1)];
+    }
+
+    // ---------- планування сучасного міста ----------
+
+    void PlanModernCity(City cy, System.Random rng)
+    {
+        int cid = cur.colorIdx;
+        int rw = Mathf.Max(1, roadWidth);
+        int rowSp = rw + 2 * (modernDepthMax + 2);
+        int rr = cy.r;
+
+        // центральна споруда
+        if (cy.capital)
+        {
+            MarkOcc(new RectInt(cy.cx - 12, cy.cz - 12, 24, 24));
+            int ccx = cy.cx, ccz = cy.cz;
+            AddJob(ccx, ccz, () => BuildSkyscraper(ccx, ccz, cid, true));
+        }
+        else if (!cy.village)
+        {
+            MarkOcc(new RectInt(cy.cx - 5, cy.cz - 5, 10, 10));
+            int tcx = cy.cx, tcz = cy.cz;
+            AddJob(tcx, tcz, () => BuildSkyscraper(tcx, tcz, cid, false));
+        }
+        else
+        {
+            MarkOcc(new RectInt(cy.cx - 4, cy.cz - 4, 8, 8));
+            int vcx = cy.cx, vcz = cy.cz;
+            AddJob(vcx, vcz, () => BuildFountain(vcx, vcz));
+        }
+
+        int K = rr / rowSp;
+
+        // горизонтальні вулиці + ліхтарі
+        for (int k = -K; k <= K; k++)
+        {
+            int zs = cy.cz + k * rowSp - rw / 2;
+            int dz = zs + rw / 2 - cy.cz;
+            float hl2 = (float)rr * rr - (float)dz * dz;
+            if (hl2 <= 0f) continue;
+            int hl = Mathf.FloorToInt(Mathf.Sqrt(hl2));
+            for (int x = cy.cx - hl; x <= cy.cx + hl; x++)
+            for (int t = 0; t < rw; t++)
+                MarkRoad(x, zs + t, 1);
+
+            int ls = Mathf.Max(5, lampSpacing);
+            for (int x = cy.cx - hl + 4; x <= cy.cx + hl - 4; x += ls)
+            {
+                int lx = x, lz = zs;
+                AddJob(lx, lz, () => BuildLamp(lx, lz));
+            }
+        }
+
+        // поперечні вулиці
+        int cs = Mathf.Max(8, crossStreetSpacing);
+        int J = rr / cs;
+        for (int j = -J; j <= J; j++)
+        {
+            int xs = cy.cx + j * cs - rw / 2;
+            int dx = xs + rw / 2 - cy.cx;
+            float vl2 = (float)rr * rr - (float)dx * dx;
+            if (vl2 <= 0f) continue;
+            int vl = Mathf.FloorToInt(Mathf.Sqrt(vl2));
+            for (int z = cy.cz - vl; z <= cy.cz + vl; z++)
+            for (int t = 0; t < rw; t++)
+                MarkRoad(xs + t, z, 1);
+        }
+
+        // будинки з обох боків кожної вулиці
+        for (int k = -K; k <= K; k++)
+        {
+            int zs = cy.cz + k * rowSp - rw / 2;
+            int dz = zs + rw / 2 - cy.cz;
+            float hl2 = (float)rr * rr - (float)dz * dz;
+            if (hl2 <= 0f) continue;
+            int hl = Mathf.FloorToInt(Mathf.Sqrt(hl2));
+
+            for (int side = -1; side <= 1; side += 2)
+            {
+                int x = cy.cx - hl + rng.Next(0, 3);
+                while (x < cy.cx + hl - modernWidthMin)
+                {
+                    int w = RI(rng, modernWidthMin, modernWidthMax);
+                    int d = RI(rng, modernDepthMin, modernDepthMax);
+                    int ox = x, oz, f;
+                    if (side > 0) { oz = zs + rw + 1; f = 0; }
+                    else { oz = zs - 1 - d; f = 2; }
+
+                    RectInt foot = new RectInt(ox - 1, oz - 1, w + 2, d + 2);
+                    if (rng.NextDouble() < houseChance && RectClear(foot))
+                    {
+                        MarkOcc(foot);
+
+                        // висота: вища ближче до центру
+                        float ddx = ox + w * 0.5f - cy.cx, ddz = oz + d * 0.5f - cy.cz;
+                        float t01 = Mathf.Clamp01(Mathf.Sqrt(ddx * ddx + ddz * ddz) / Mathf.Max(1, rr));
+                        int h;
+                        if (cy.village) h = RI(rng, 3, 4);
+                        else
+                        {
+                            float maxH = cy.capital ? downtownMaxHeight : downtownMaxHeight * 0.6f;
+                            h = Mathf.Max(4, Mathf.RoundToInt(maxH * Mathf.Pow(1f - t01, 1.2f)) + rng.Next(0, 4));
+                        }
+
+                        int hox = ox, hoz = oz, hf = f, hw = w, hd = d, hh = h;
+                        AddJob(ox + w / 2, oz + d / 2, () => BuildModernBuilding(hf, hox, hoz, hw, hd, hh, cid));
+                    }
+                    x += w + Mathf.Max(1, houseGap) + rng.Next(0, 2);
+                }
+            }
+        }
+
+        // зелень: дерева, кущі, квіти між будинками
+        if (gardenDensity > 0f)
+        {
+            const int B = 6;
+            for (int gz = -rr; gz <= rr; gz += B)
+            for (int gx = -rr; gx <= rr; gx += B)
+            {
+                float cdx = gx + B * 0.5f, cdz = gz + B * 0.5f;
+                if (cdx * cdx + cdz * cdz > (rr + 4f) * (rr + 4f)) continue;
+                int bx0 = cy.cx + gx, bz0 = cy.cz + gz;
+                AddJob(bx0 + B / 2, bz0 + B / 2, () => BuildGarden(bx0, bz0, B));
+            }
+        }
+    }
+
+    // ---------- будівлі ----------
+
+    // Звичайна сучасна будівля: стіни з вікнами, плаский дах із парапетом, навіс над входом
+    void BuildModernBuilding(int f, int ox, int oz, int w, int d, int h, int cIdx)
+    {
+        var rng = new System.Random(Hash(seed ^ 0x6D6, ox, oz));
+        SetT(f, ox, oz, w, d);
+        int style = rng.Next(3);   // 0 бетон, 1 цегла, 2 скляний офіс
+        byte[] wallSrc = style == 1 ? mBrick : mWall;
+        byte accent = flagSet[(cIdx + rng.Next(0, 3)) % flagSet.Length];
+
+        // деталі першими: двері й навіс
+        PH(w / 2, 1, 0, cDoor);
+        PH(w / 2, 2, 0, cDoor);
+        if (h >= 4 && w >= 5)
+            for (int lx = 1; lx < w - 1; lx++) PH(lx, 3, -1, accent);
+
+        // стіни
+        for (int y = 0; y < h; y++)
+        for (int lz = 0; lz < d; lz++)
+        for (int lx = 0; lx < w; lx++)
+        {
+            if (lx != 0 && lx != w - 1 && lz != 0 && lz != d - 1) continue;
+            bool corner = (lx == 0 || lx == w - 1) && (lz == 0 || lz == d - 1);
+            byte id;
+            if (y == 0) id = cStone2;
+            else if (corner) id = Pick(wallSrc, Hash(lx, y, lz));
+            else
+            {
+                bool win;
+                if (style == 2) win = y % 3 != 0;
+                else
+                {
+                    int along = (lx == 0 || lx == w - 1) ? lz : lx;
+                    win = y >= 2 && (y & 1) == 0 && (along & 1) == 1;
+                }
+                id = win ? Pick(mGlassSet, Hash(lx, y, lz)) : Pick(wallSrc, Hash(lx, y, lz));
+            }
+            PH(lx, y, lz, id);
+        }
+
+        // парапет, дах, надбудова
+        for (int lz = 0; lz < d; lz++)
+        for (int lx = 0; lx < w; lx++)
+            if (lx == 0 || lx == w - 1 || lz == 0 || lz == d - 1)
+                PH(lx, h + 1, lz, Pick(wallSrc, Hash(lx, h, lz)));
+        if (rng.NextDouble() < 0.5 && w >= 5 && d >= 5)
+            PBox(1, h + 1, 1, 2, 1, 2, mWall[1]);
+        PBox(0, h, 0, w, 1, d, mRoof);
+        PBox(0, 0, 0, w, 1, d, cFloor);
+    }
+
+    // Порожній ярус башти (стіни зі скла й бетонних смуг)
+    void TowerShell(int S, int ins, int y0, int y1)
+    {
+        int lo = ins, hi = S - 1 - ins;
+        for (int y = y0; y < y1; y++)
+        for (int lz = lo; lz <= hi; lz++)
+        for (int lx = lo; lx <= hi; lx++)
+        {
+            if (lx != lo && lx != hi && lz != lo && lz != hi) continue;
+            bool corner = (lx == lo || lx == hi) && (lz == lo || lz == hi);
+            byte id;
+            if (y == 0) id = cStone2;
+            else if (corner || y % 3 == 0) id = Pick(mWall, Hash(lx, y, lz));
+            else id = Pick(mGlassSet, Hash(lx, y, lz));
+            PH(lx, y, lz, id);
+        }
+        PBox(lo, y1, lo, hi - lo + 1, 1, hi - lo + 1, mRoof);
+    }
+
+    // Хмарочос: подіум, основна вежа, верхній ярус, антена з прапором королівства
+    void BuildSkyscraper(int cx, int cz, int cIdx, bool capital)
+    {
+        int S = capital ? 15 : 9;
+        SetT(0, cx - S / 2, cz - S / 2, S, S);
+        int H = capital ? capitalTowerHeight : townTowerHeight;
+        int podH = capital ? 6 : 4;
+        int topIns = capital ? 4 : 3;
+        int topH = capital ? 10 : 6;
+        int mid = S / 2;
+        byte flag = flagSet[cIdx % flagSet.Length];
+
+        // двері
+        for (int lx = mid - (capital ? 1 : 0); lx <= mid + (capital ? 1 : 0); lx++)
+        {
+            PH(lx, 1, 0, cDoor);
+            PH(lx, 2, 0, cDoor);
+        }
+
+        // антена й прапор
+        int topY = H + topH;
+        for (int y = topY + 1; y <= topY + 9; y++) PH(mid, y, mid, mLampPole);
+        for (int y = topY + 6; y <= topY + 8; y++)
+        for (int lx = mid + 1; lx <= mid + 4; lx++)
+            PH(lx, y, mid, flag);
+
+        // яруси зверху вниз (раніше поставлене не перезаписується)
+        TowerShell(S, topIns, H, topY);
+        TowerShell(S, 2, podH, H);
+        TowerShell(S, 0, 0, podH);
+        PBox(0, 0, 0, S, 1, S, cFloor);
+    }
+
+    // Фонтан у центрі сучасного села
+    void BuildFountain(int cx, int cz)
+    {
+        Disc(cx, cz, 1.6f, 1, 2, cWater);
+        Add(cx, 2, cz, cStone);
+        Add(cx, 3, cz, cWater);
+        Disc(cx, cz, 2.8f, 0, 2, cStone);
+        Disc(cx, cz, 3.6f, 0, 1, cStone2);
+    }
+
+    // Вуличний ліхтар
+    void BuildLamp(int x, int z)
+    {
+        Add(x, 4, z, mLampHead);
+        for (int y = 0; y < 4; y++) Add(x, y, z, mLampPole);
     }
 }
