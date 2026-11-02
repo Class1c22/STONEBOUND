@@ -9,6 +9,7 @@ using UnityEngine.SceneManagement;
 // столицю із замком або місто, десятки сіл (колодязь чи вітряк у центрі), дороги з хуторами й деревами,
 // двори, городи, поля з парканами, луки, ліси з підліском і валунами.
 // Частина островів сучасні королівства (див. CountryGenerator.Modern.cs): хмарочоси, асфальт, ліхтарі.
+// Навколо кожного острова є малі острівці з пальмами й маяками та об'єкти в морі (див. CountryGenerator.Sea.cs).
 //
 // Як це працює:
 //  * Світ поділений на великі клітини (Island Spacing). У кожній клітині з імовірністю Island Chance
@@ -402,11 +403,12 @@ public partial class CountryGenerator : MonoBehaviour
         if (s.exists)
         {
             int half = sp / 2;
-            float cap = (half - 16f) / (1f + coastJitterFrac);
+            // смуга isletBand лишається для малих острівців і об'єктів у морі навколо великого острова
+            float cap = Mathf.Max(60f, (half - 16f - Mathf.Max(0, isletBand)) / (1f + coastJitterFrac));
             float rmax = Mathf.Min(islandRadiusMax, cap);
             float rmin = Mathf.Min(islandRadiusMin, rmax);
             s.R = isSpawn ? Mathf.RoundToInt(rmax) : Mathf.RoundToInt(Mathf.Lerp(rmin, rmax, (float)rng.NextDouble()));
-            float ext = s.R * (1f + coastJitterFrac) + 6f;
+            float ext = s.R * (1f + coastJitterFrac) + 6f + Mathf.Max(0, isletBand);
             float jit = isSpawn ? 0f : Mathf.Max(0f, half - ext - 4f);
             s.cx = rx * sp + Mathf.RoundToInt(((float)rng.NextDouble() * 2f - 1f) * jit);
             s.cz = rz * sp + Mathf.RoundToInt(((float)rng.NextDouble() * 2f - 1f) * jit);
@@ -578,8 +580,10 @@ public partial class CountryGenerator : MonoBehaviour
 
         // 2. лишаємо тільки ту частину острова, що з'єднана з центром
         KeepCenterComponent(s);
+        var islets = AddIslets(s);          // малі острівці (до розрахунку відстаней)
         ComputeLandDist(s);
         if (s.isSpawn) ComputeSpawn(s);
+        PlanIsletsAndSea(s, islets);        // острівці, маяки, буї, човни
 
         // 3. міста й села
         float area = Mathf.PI * R * R;
@@ -671,7 +675,7 @@ public partial class CountryGenerator : MonoBehaviour
             int landCount = 0;
             for (int i = 0; i < s.land.Length; i++) if (s.land[i]) landCount++;
             Debug.Log("[CountryGenerator] Заплановано острів " + s.region + ": R=" + s.R + ", суші=" + landCount +
-                      " вокселів, поселень=" + s.cities.Count + (s.modern ? ", сучасний" : ""));
+                      " вокселів, поселень=" + s.cities.Count + ", острівців=" + islets.Count + (s.modern ? ", сучасний" : ""));
         }
 
         EvictFar(s);
