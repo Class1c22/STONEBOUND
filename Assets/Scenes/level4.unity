@@ -334,9 +334,20 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 35489bd495ef63f419f3796dabee84cb, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CountryGenerator
+  modernChance: 0.5
+  modernWidthMin: 5
+  modernWidthMax: 8
+  modernDepthMin: 5
+  modernDepthMax: 7
+  capitalTowerHeight: 36
+  townTowerHeight: 22
+  downtownMaxHeight: 20
+  lampSpacing: 9
   world: {fileID: 843798773}
   seed: 4004
   randomSeedEachRun: 0
+  debugLog: 1
+  rockWaitSeconds: 2
   spawnRadius: 150
   spawnRadiusInRockRadii: 80
   startClearInRockRadii: 3
@@ -390,57 +401,6 @@ MonoBehaviour:
   roadsideSpacing: 28
   roadsideHouseChance: 0.6
   roadsideTreeSpacing: 5
-  vs: 0
-  T: 0
-  sp: 0
-  rock: {fileID: 0}
-  haveStart: 0
-  rockV: {x: 0, y: 0}
-  startV: {x: 0, y: 0}
-  spawnV: {x: 0, y: 0}
-  startClearV: 0
-  idle: 0
-  idlePos: {x: 0, y: 0}
-  tF: 0
-  tOx: 0
-  tOz: 0
-  tW: 0
-  tD: 0
-  wallSet: []
-  thatchSet: []
-  shutterSet: []
-  gravelSet: []
-  dirtSet: []
-  sandSet: []
-  wheatSet: []
-  pineSet: []
-  flowerColors: []
-  grassSet: []
-  flagSet: []
-  cGlass: 0
-  cDoor: 0
-  cFloor: 0
-  cBrick: 0
-  cCap: 0
-  cPost: 0
-  cBarkA: 0
-  cBarkB: 0
-  cSoil: 0
-  cSoilDark: 0
-  cStem: 0
-  cSun: 0
-  cSunCenter: 0
-  cStraw: 0
-  cStraw2: 0
-  cStone: 0
-  cStone2: 0
-  cCrop: 0
-  cCabbage: 0
-  cPumpkin: 0
-  cWater: 0
-  cGroundA: 0
-  cGroundB: 0
-  cGroundDirt: 0
 --- !u!1 &832575517
 GameObject:
   m_ObjectHideFlags: 0
@@ -700,6 +660,7 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
+  - {fileID: 2116368548}
   - {fileID: 2040653210}
   - {fileID: 595406077}
   - {fileID: 843798774}
@@ -767,6 +728,117 @@ MonoBehaviour:
   world: {fileID: 843798773}
   oldGround: {fileID: 0}
   oldMountains: {fileID: 0}
+--- !u!1 &2116368547
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 2116368548}
+  - component: {fileID: 2116368549}
+  m_Layer: 0
+  m_Name: CountryGenerator
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &2116368548
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2116368547}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: -29.144392, y: -11.01, z: 1.6892805}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1838282995}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &2116368549
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2116368547}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 35489bd495ef63f419f3796dabee84cb, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CountryGenerator
+  modernChance: 0.5
+  modernWidthMin: 5
+  modernWidthMax: 8
+  modernDepthMin: 5
+  modernDepthMax: 7
+  capitalTowerHeight: 36
+  townTowerHeight: 22
+  downtownMaxHeight: 20
+  lampSpacing: 9
+  world: {fileID: 843798773}
+  seed: 4004
+  randomSeedEachRun: 0
+  debugLog: 1
+  rockWaitSeconds: 2
+  spawnRadius: 150
+  spawnRadiusInRockRadii: 80
+  startClearInRockRadii: 3
+  voxelsPerFrame: 12000
+  tileSize: 48
+  islandSpacing: 900
+  islandChance: 0.7
+  islandRadiusMin: 150
+  islandRadiusMax: 380
+  coastJitterFrac: 0.22
+  noiseFreq: 0.008
+  coastMargin: 5
+  beachWidth: 3
+  maxLoadedIslands: 10
+  lakeScale: 0.012
+  lakeThreshold: 0.66
+  lakeCoastMargin: 90
+  lakeCenterClear: 70
+  pondScale: 0.045
+  pondThreshold: 0.74
+  landHeight: 0.06
+  roadHeight: 0.09
+  flatCollider: 1
+  voxelsPerTown: 60000
+  voxelsPerVillage: 9000
+  capitalMinIslandRadius: 220
+  cityRadiusMin: 22
+  cityRadiusMax: 32
+  capitalRadius: 40
+  citySpacing: 80
+  roadWidth: 2
+  crossStreetSpacing: 26
+  villageRadiusMin: 9
+  villageRadiusMax: 14
+  villageSpacing: 40
+  windmillChance: 0.15
+  houseWidthMin: 3
+  houseWidthMax: 4
+  houseDepthMin: 3
+  houseDepthMax: 3
+  houseWallHeight: 2
+  houseGap: 1
+  houseChance: 0.95
+  tallHouseChance: 0.25
+  thatchChance: 0.3
+  chimneyChance: 0.5
+  plotSize: 32
+  treeDensity: 0.9
+  fenceChance: 0.6
+  gardenDensity: 0.8
+  roadsideSpacing: 28
+  roadsideHouseChance: 0.6
+  roadsideTreeSpacing: 5
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

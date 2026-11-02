@@ -14,19 +14,21 @@ using UnityEngine.SceneManagement;
 //  * Світ поділений на великі клітини (Island Spacing). У кожній клітині з імовірністю Island Chance
 //    є один острів, який повністю вміщується в клітину, тож острови не перетинаються.
 //    Усе виводиться із Seed: ту саму карту дає те саме значення, а Random Seed Each Run дає нову.
-//  * Острів плануватиметься (суша, озера, міста, дороги) тоді, коли камінь наближається до нього.
+//  * Острів плануватиметься (суша, озера, міста, дороги) тоді, коли фокус (камінь) наближається до нього.
 //    Далекі острови вивантажуються з пам'яті (Max Loaded Islands) і при поверненні плануються так само.
 //  * Суша це плоскі квадри трохи над морем (колір трави, пляж, дороги), озера це просто діри в суші,
 //    крізь які видно море. Усе інше справжні вокселі, і камінь ламає їх.
-//  * Плитки будуються лише поблизу каменя, найближчі першими, по кадрах (Voxels Per Frame).
+//  * Плитки будуються лише поблизу фокуса, найближчі першими, по кадрах (Voxels Per Frame).
 //  * Камінь на старті переноситься на суцільну сушу острова біля початку координат.
+//  * ЯКЩО КАМЕНЯ НА СЦЕНІ НЕМАЄ, через Rock Wait Seconds острови будуються навколо камери,
+//    щоб карта не лишалася порожньою.
 //
 // Підлога (море) має бути на y = 0 (SeaGroundGenerator), VoxelWorld на (0,0,0) з масштабом 1.
 // Усі розміри тут у ВОКСЕЛЯХ, тому все масштабується разом із world.voxelSize.
 // ЩОБ УСЕ БУЛО ДРІБНІШИМ: зменш voxelSize у VoxelWorld і збільш Island Spacing та радіуси островів.
 //
-// ВАЖЛИВО: публічні поля серіалізуються в Inspector. Натисни ⋮ біля компонента -> Reset,
-// щоб підхопити нові значення за замовчуванням.
+// Значення з Inspector на старті обмежуються розумними мінімумами (Sanitize), тож застарілі нулі
+// більше не ламають генерацію. Усе одно корисно натиснути ⋮ біля компонента -> Reset.
 public partial class CountryGenerator : MonoBehaviour
 {
     [Header("Зв'язки")]
@@ -35,6 +37,12 @@ public partial class CountryGenerator : MonoBehaviour
     public int seed = 4004;
     [Tooltip("Нова випадкова карта при кожному запуску")]
     public bool randomSeedEachRun = false;
+
+    [Header("Діагностика")]
+    [Tooltip("Писати в консоль, що відбувається (камінь, плитки, матеріал)")]
+    public bool debugLog = true;
+    [Tooltip("Якщо каменя немає стільки секунд, острови будуються навколо камери")]
+    public float rockWaitSeconds = 2f;
 
     [Header("Стрімінг")]
     [Tooltip("Як далеко від каменя будується карта (метри)")]
@@ -78,10 +86,10 @@ public partial class CountryGenerator : MonoBehaviour
     [Range(0.5f, 1f)] public float pondThreshold = 0.74f;
 
     [Header("Суша (висота над морем, метри)")]
-    [Tooltip("Висота плоскої трави над морем. Море на y = 0")]
-    public float landHeight = 0.01f;
+    [Tooltip("Висота плоскої трави над морем. Море на y = 0. Менше 0.05 примусово піднімається (інакше море мерехтить крізь траву)")]
+    public float landHeight = 0.06f;
     [Tooltip("Висота плоских доріг над морем")]
-    public float roadHeight = 0.03f;
+    public float roadHeight = 0.09f;
     [Tooltip("Тонкий колайдер на плоскій суші: камінь їде по ній, а не по морю під нею")]
     public bool flatCollider = true;
 
@@ -184,13 +192,25 @@ public partial class CountryGenerator : MonoBehaviour
 
     float vs;
     int T, sp;
+    float landY, roadY, sandY;
 
     RockAbsorber rock;
     bool haveStart;
-    Vector2 rockV, startV, spawnV;
+    Vector2 rockV, startV, spawnV;     // rockV це позиція ФОКУСА (камінь або камера) у вокселях
     float startClearV;
     bool idle;
     Vector2 idlePos;
+
+    // фокус стрімінгу
+    Vector3 focusWorld;
+    float focusRadius = 1f;
+    bool usingFallback;
+    float noRockTimer;
+    float nextRockSearch;
+
+    // діагностика
+    int dbgTiles, dbgQuads, dbgVoxels;
+    bool dbgMatWarned;
 
     // поточне перетворення для малювання будівель: facing 0..3, початок, розміри
     int tF, tOx, tOz, tW, tD;
@@ -240,15 +260,52 @@ public partial class CountryGenerator : MonoBehaviour
         if (randomSeedEachRun) seed = Random.Range(1, 1000000);
 
         vs = world.voxelSize;
+        if (vs <= 0f)
+        {
+            Debug.LogError("[CountryGenerator] world.voxelSize <= 0, генерація зупинена", this);
+            enabled = false;
+            return;
+        }
+
+        Sanitize();
         T = Mathf.Max(16, tileSize);
         sp = Mathf.Max(400, islandSpacing);
 
+        // суша мусить бути помітно над морем, інакше глибинний буфер віддає перемогу морю
+        landY = Mathf.Max(landHeight, 0.05f);
+        roadY = Mathf.Max(roadHeight, landY + 0.03f);
+        sandY = landY + 0.01f;
+
         InitColors();
 
+        if (world.RuntimeMaterial == null)
+            Debug.LogError("[CountryGenerator] world.RuntimeMaterial == null: плоска суша не матиме матеріалу й буде невидимою", this);
+
         // стартовий острів планується одразу, щоб знати, куди ставити камінь
-        Ensure(GetRegion(0, 0));
+        Island start = GetRegion(0, 0);
+        Ensure(start);
+
+        if (debugLog)
+            Debug.Log("[CountryGenerator] Старт: seed=" + seed + ", voxelSize=" + vs + ", tile=" + T + ", spacing=" + sp +
+                      ", стартовий острів R=" + start.R + " centre=(" + start.cx + "," + start.cz + ")" +
+                      ", точка старту (вокселі)=" + spawnV + ", світова=" + StartPoint, this);
 
         StartCoroutine(Worker());
+    }
+
+    // Застарілі або нульові значення в Inspector не повинні ламати генерацію
+    void Sanitize()
+    {
+        islandSpacing = Mathf.Max(islandSpacing, 400);
+        islandRadiusMin = Mathf.Max(islandRadiusMin, 60);
+        islandRadiusMax = Mathf.Max(islandRadiusMax, islandRadiusMin);
+        tileSize = Mathf.Max(tileSize, 16);
+        voxelsPerFrame = Mathf.Max(voxelsPerFrame, 1000);
+        spawnRadius = Mathf.Max(spawnRadius, 60f);
+        spawnRadiusInRockRadii = Mathf.Max(spawnRadiusInRockRadii, 20f);
+        maxLoadedIslands = Mathf.Max(maxLoadedIslands, 4);
+        roadWidth = Mathf.Max(roadWidth, 1);
+        rockWaitSeconds = Mathf.Max(rockWaitSeconds, 0.5f);
     }
 
     byte C(int r, int g, int b)
@@ -608,6 +665,15 @@ public partial class CountryGenerator : MonoBehaviour
         s.jobsAdded = true;
         if (!loaded.Contains(s)) loaded.Add(s);
         cur = prev;
+
+        if (debugLog)
+        {
+            int landCount = 0;
+            for (int i = 0; i < s.land.Length; i++) if (s.land[i]) landCount++;
+            Debug.Log("[CountryGenerator] Заплановано острів " + s.region + ": R=" + s.R + ", суші=" + landCount +
+                      " вокселів, поселень=" + s.cities.Count + (s.modern ? ", сучасний" : ""));
+        }
+
         EvictFar(s);
     }
 
@@ -981,13 +1047,13 @@ public partial class CountryGenerator : MonoBehaviour
         return false;
     }
 
-    // Планує по одному острову за кадр, поки камінь ще далеко, щоб не було підвисання при підпливанні
+    // Планує по одному острову за кадр, поки фокус ще далеко, щоб не було підвисання при підпливанні
     bool PreplanNearby()
     {
         int half = sp / 2;
         int rx = FloorDiv(Mathf.RoundToInt(rockV.x) + half, sp);
         int rz = FloorDiv(Mathf.RoundToInt(rockV.y) + half, sp);
-        float R = Mathf.Max(spawnRadius, rock.Radius * spawnRadiusInRockRadii) / vs;
+        float R = Mathf.Max(spawnRadius, focusRadius * spawnRadiusInRockRadii) / vs;
         float lim = R + T + 250f;
         for (int dz = -1; dz <= 1; dz++)
         for (int dx = -1; dx <= 1; dx++)
@@ -1003,7 +1069,7 @@ public partial class CountryGenerator : MonoBehaviour
         return false;
     }
 
-    // Найближча до каменя ще не збудована плитка, що перетинає острів
+    // Найближча до фокуса ще не збудована плитка, що перетинає острів
     bool FindNearestTile(float reach, out Vector2Int best)
     {
         best = default;
@@ -1035,13 +1101,13 @@ public partial class CountryGenerator : MonoBehaviour
 
         while (true)
         {
-            if (!UpdateRock())
+            if (!UpdateFocus())
             {
                 yield return null;
                 continue;
             }
 
-            // нічого будувати: чекаємо, поки камінь зрушить
+            // нічого будувати: чекаємо, поки фокус зрушить
             if (idle && (rockV - idlePos).sqrMagnitude < (T * 0.5f) * (T * 0.5f))
             {
                 yield return null;
@@ -1055,9 +1121,11 @@ public partial class CountryGenerator : MonoBehaviour
                 continue;
             }
 
-            float Rv = Mathf.Max(spawnRadius, rock.Radius * spawnRadiusInRockRadii) / vs;   // у вокселях
+            float Rv = Mathf.Max(spawnRadius, focusRadius * spawnRadiusInRockRadii) / vs;   // у вокселях
             if (!FindNearestTile(Rv + T, out Vector2Int tile))
             {
+                if (debugLog && !idle)
+                    Debug.Log("[CountryGenerator] Поруч із фокусом " + rockV + " (вокселі) немає непобудованих плиток з островом. Збудовано плиток: " + dbgTiles);
                 idle = true;
                 idlePos = rockV;
                 yield return null;
@@ -1076,7 +1144,11 @@ public partial class CountryGenerator : MonoBehaviour
                 {
                     VoxelOp op = ops[idx];
                     // нічого не затираємо: деталі завжди ставляться ПЕРШИМИ, а заливка потім
-                    if (world.GetVoxel(op.pos) == 0) world.SetVoxel(op.pos, op.id);
+                    if (world.GetVoxel(op.pos) == 0)
+                    {
+                        world.SetVoxel(op.pos, op.id);
+                        dbgVoxels++;
+                    }
                 }
                 yield return null;
             }
@@ -1085,34 +1157,70 @@ public partial class CountryGenerator : MonoBehaviour
         }
     }
 
-    // Знаходить камінь у сцені й оновлює його позицію у світових вокселях. false, поки каменя немає
-    bool UpdateRock()
+    RockAbsorber FindRock()
     {
         RockAbsorber[] all = FindObjectsByType<RockAbsorber>(FindObjectsSortMode.None);
-        RockAbsorber found = null;
-        if (all.Length == 1) found = all[0];
-        else if (all.Length > 1)
+        if (all.Length == 0) return null;
+        if (all.Length == 1) return all[0];
+
+        // під час переходу між сценами існує й заглушка нової сцени: беремо камінь активної сцени
+        Scene active = SceneManager.GetActiveScene();
+        for (int i = 0; i < all.Length; i++)
+            if (all[i].gameObject.scene == active) return all[i];
+        return all[0];
+    }
+
+    // Оновлює фокус стрімінгу (позиція у світових вокселях). Фокус це камінь, а якщо каменя
+    // немає більше Rock Wait Seconds, то камера. false, поки фокуса ще немає
+    bool UpdateFocus()
+    {
+        if (rock == null || Time.unscaledTime >= nextRockSearch)
         {
-            // під час переходу між сценами існує й заглушка нової сцени: беремо камінь активної сцени
-            Scene active = SceneManager.GetActiveScene();
-            found = all[0];
-            for (int i = 0; i < all.Length; i++)
-                if (all[i].gameObject.scene == active) { found = all[i]; break; }
-        }
-        if (found == null) return false;
+            nextRockSearch = Time.unscaledTime + 1f;
+            RockAbsorber found = FindRock();
+            if (found == null)
+            {
+                rock = null;
+            }
+            else if (found != rock)
+            {
+                rock = found;
+                usingFallback = false;
 
-        if (found != rock)
+                // швидкий камінь не повинен проскакувати крізь землю
+                Rigidbody rb = rock.GetComponent<Rigidbody>();
+                if (rb != null) rb.collisionDetectionMode = CollisionDetectionMode.Continuous;
+
+                PlaceRockOnLand();
+                if (debugLog) Debug.Log("[CountryGenerator] Камінь знайдено й поставлено на " + rock.WorldCenter);
+            }
+        }
+
+        if (rock != null)
         {
-            rock = found;
+            focusWorld = rock.WorldCenter;
+            focusRadius = Mathf.Max(0.1f, rock.Radius);
+            noRockTimer = 0f;
+        }
+        else
+        {
+            noRockTimer += Time.unscaledDeltaTime;
+            if (noRockTimer < rockWaitSeconds) return false;
 
-            // швидкий камінь не повинен проскакувати крізь землю
-            Rigidbody rb = rock.GetComponent<Rigidbody>();
-            if (rb != null) rb.collisionDetectionMode = CollisionDetectionMode.Continuous;
+            Camera cam = Camera.main;
+            if (cam == null) cam = FindFirstObjectByType<Camera>();
+            focusWorld = cam != null ? cam.transform.position : StartPoint;
+            focusRadius = 1f;
 
-            PlaceRockOnLand();
+            if (!usingFallback)
+            {
+                usingFallback = true;
+                Debug.LogWarning("[CountryGenerator] RockAbsorber не знайдено на сцені. Острови будуються навколо " +
+                                 (cam != null ? "камери" : "стартової точки") + ". Додай камінь на сцену, щоб він ставився на сушу.", this);
+            }
         }
 
-        Vector3 l = world.transform.InverseTransformPoint(rock.WorldCenter);
+        Vector3 l = world.transform.InverseTransformPoint(focusWorld);
         rockV = new Vector2(l.x / vs, l.z / vs);
         return true;
     }
@@ -1152,6 +1260,11 @@ public partial class CountryGenerator : MonoBehaviour
             jobs.Remove(tile);
         }
         BuildTileFlat(tile);
+        dbgTiles++;
+
+        if (debugLog && (dbgTiles <= 3 || dbgTiles % 25 == 0))
+            Debug.Log("[CountryGenerator] Плитка " + tile + " збудована: вокселів у черзі=" + ops.Count +
+                      ", плиток усього=" + dbgTiles + ", квадів суші=" + dbgQuads + ", вокселів поставлено=" + dbgVoxels);
     }
 
     // ---------- плоска суша: трава, пляж, дороги ----------
@@ -1191,18 +1304,18 @@ public partial class CountryGenerator : MonoBehaviour
             if (kind != 0)
             {
                 id = s.modern ? ModernRoadColor(kind, x, z) : RoadColor(kind, x, z);
-                y = roadHeight;
+                y = roadY;
             }
             else if (s.dist[i] <= beachWidth)
             {
                 id = sandSet[Hash01(x, 4, z) < 0.5f ? 0 : 1];
-                y = landHeight + 0.002f;
+                y = sandY;
             }
             else
             {
                 float r = Hash01(x, 5, z);
                 id = r < 0.12f ? cGroundDirt : (r < 0.55f ? cGroundA : cGroundB);
-                y = landHeight;
+                y = landY;
             }
 
             float fx0 = x * vs, fx1 = fx0 + vs, fz0 = z * vs, fz1 = fz0 + vs;
@@ -1221,6 +1334,7 @@ public partial class CountryGenerator : MonoBehaviour
             mTris.Add(sv); mTris.Add(sv + 2); mTris.Add(sv + 3);
         }
         if (mVerts.Count == 0) return;
+        dbgQuads += mVerts.Count / 4;
 
         var mesh = new Mesh { name = "CountryFlat", indexFormat = IndexFormat.UInt32 };
         mesh.SetVertices(mVerts);
@@ -1235,6 +1349,12 @@ public partial class CountryGenerator : MonoBehaviour
         var rend = go.AddComponent<MeshRenderer>();
         rend.sharedMaterial = world.RuntimeMaterial;
         rend.shadowCastingMode = ShadowCastingMode.Off;
+
+        if (world.RuntimeMaterial == null && !dbgMatWarned)
+        {
+            dbgMatWarned = true;
+            Debug.LogError("[CountryGenerator] Суша створена, але world.RuntimeMaterial == null, тому її не видно", this);
+        }
 
         // тонкий колайдер: камінь їде по траві й дорогах, а не по морю під ними
         if (flatCollider)
