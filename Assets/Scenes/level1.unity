@@ -12342,6 +12342,9 @@ PrefabInstance:
     - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 8c1c09ebe82f0db4d91254dc0f1bd860, type: 3}
       insertIndex: -1
       addedObject: {fileID: 2032603340}
+    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 8c1c09ebe82f0db4d91254dc0f1bd860, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 2032603341}
   m_SourcePrefab: {fileID: 100100000, guid: 8c1c09ebe82f0db4d91254dc0f1bd860, type: 3}
 --- !u!4 &1961571802 stripped
 Transform:
@@ -12663,6 +12666,31 @@ MonoBehaviour:
   revealAnimator: {fileID: 222801954}
   revealTrigger: loadingrev
   revealDuration: 0.5
+--- !u!114 &2032603341
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2032603331}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9e0a551056d3e9d49ba5139a80191023, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::FloatingRock
+  floatLevel: 0.5
+  maxBuoyancyMultiplier: 3
+  maxRiseSpeed: 4
+  waterDrag: 3
+  quadraticDrag: 0.6
+  waterAngularDrag: 3
+  wakeStrength: 0.35
+  splashStrength: 1
+  waveDrift: 0.4
+  paddle: 1.5
+  ignoreDebrisBelow: 1
+  ignoreAllDebris: 0
+  belowThreshold: 0.2
 --- !u!1 &2140901507
 GameObject:
   m_ObjectHideFlags: 0
