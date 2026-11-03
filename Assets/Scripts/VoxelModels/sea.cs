@@ -1,49 +1,59 @@
 using UnityEngine;
 
-// Нескінченне море замість землі. Заміна FloorGenerator.
-// Повісь на порожній GameObject на y = 0 (там, де стоять споруди). Створює одну велику плоску підлогу
-// кольору води з колайдером, яка їде за каменем кроками по клітинках (текстура стоїть у світі на місці),
-// тому краю моря не видно. Острови малює й будує CountryGenerator: вони лежать поверх цього моря.
-// Підлога не частина VoxelWorld, тож камінь її не руйнує.
-// Щоб замінити траву: вимкни старий об'єкт з FloorGenerator (або вкажи його в Old Ground нижче).
+// Нескінченне море з хвилями замість землі. Заміна FloorGenerator.
+// Повісь на порожній GameObject на y = 0 (там, де стоять споруди).
+// Створює: (1) далеку плоску підлогу кольору води (тільки картинка), яка їде за каменем кроками по плитках,
+// (2) невидиме тверде дно на seabedDepth нижче, (3) воксельну хвилясту воду навколо каменя (WaterSurface).
+// Острови малює й будує CountryGenerator: вони лежать поверх цього моря. Море не частина VoxelWorld.
 public class SeaGroundGenerator : MonoBehaviour
 {
     [Header("Море")]
-    [Tooltip("Сторона квадрата моря в метрах. Має бути більша за дальність видимості камери")]
+    [Tooltip("Сторона далекої підлоги в метрах. Має бути більша за дальність видимості камери")]
     public float size = 1200f;
-    [Tooltip("Товщина колайдера вниз, щоб камінь не провалився на швидкості")]
+    [Tooltip("Товщина колайдера дна вниз")]
     public float thickness = 20f;
-    [Tooltip("Розмір одного повтору текстури в метрах. Море пересувається саме цим кроком")]
+    [Tooltip("Розмір одного повтору текстури в метрах. Далека підлога пересувається саме цим кроком")]
     public float tileSize = 8f;
+    [Tooltip("Наскільки нижче за цей об'єкт лежить рівень води (мінус = вода трохи нижче суші)")]
+    public float levelOffset = -0.15f;
+    [Tooltip("Глибина дна під водою. Має бути більша за діаметр каменя на найбільшій стадії")]
+    public float seabedDepth = 50f;
+
+    [Header("Хвилі")]
+    public int waterCells = 100;
+    public float waterCellSize = 1f;
+    [Range(0f, 3f)] public float waveHeight = 1f;
+    public bool blockyWaves = true;
+    public float heightStep = 0.1f;
+    public WaterSurface.Wave[] waves = new WaterSurface.Wave[]
+    {
+        new WaterSurface.Wave { direction = new Vector2(1f, 0.3f),    amplitude = 0.2f,  wavelength = 14f, speed = 2.5f },
+        new WaterSurface.Wave { direction = new Vector2(-0.4f, 1f),   amplitude = 0.12f, wavelength = 7f,  speed = 1.8f },
+        new WaterSurface.Wave { direction = new Vector2(0.7f, -0.7f), amplitude = 0.06f, wavelength = 3.5f, speed = 1.2f },
+    };
 
     [Header("Вигляд")]
-    [Tooltip("Якщо задано World, піксель текстури дорівнює вокселю, тож вода має той самий масштаб, що й споруди")]
     public bool matchVoxelSize = true;
-    [Tooltip("Розмір пікселя текстури: більше = дрібніші плями. Ігнорується, якщо Match Voxel Size й задано World")]
     public int textureResolution = 32;
     public Color colorA = new Color(0.235f, 0.51f, 0.78f);
     public Color colorB = new Color(0.215f, 0.47f, 0.74f);
-    [Tooltip("Світлі блікі на воді (0 = немає)")]
     [Range(0f, 0.5f)] public float sparkleAmount = 0.12f;
     public Color sparkleColor = new Color(0.51f, 0.745f, 0.92f);
     public int seed = 11;
     public bool receiveShadows = true;
 
-    [Header("Фізика")]
+    [Header("Фізика дна")]
     [Range(0f, 2f)] public float friction = 0.6f;
     [Range(0f, 1f)] public float bounciness = 0f;
 
     [Header("Зв'язки")]
-    [Tooltip("Камінь, за яким їде море. Якщо порожньо, шукається сам (після переходу між сценами теж)")]
     public RockAbsorber rock;
-    [Tooltip("Воксельний світ: його власна воксельна земля вимикається, бо земля тепер це море")]
     public VoxelWorld world;
-    [Tooltip("Старий plane/земля: вимкнеться")]
     public GameObject oldGround;
-    [Tooltip("Старий генератор гір: вимкнеться")]
     public GameObject oldMountains;
 
     Transform floor;
+    WaterSurface water;
     float findTimer;
 
     void Start()
@@ -54,20 +64,29 @@ public class SeaGroundGenerator : MonoBehaviour
         Build();
     }
 
+    void OnDestroy()
+    {
+        if (water != null) Destroy(water.gameObject);
+    }
+
     [ContextMenu("Rebuild")]
     public void Build()
     {
         if (floor != null) Destroy(floor.gameObject);
+        if (water != null) Destroy(water.gameObject);
 
         size = Mathf.Max(10f, size);
         tileSize = Mathf.Max(0.5f, tileSize);
-        size = Mathf.Max(2f * tileSize, Mathf.Round(size / (2f * tileSize)) * 2f * tileSize);   // кратно плитці
+        size = Mathf.Max(2f * tileSize, Mathf.Round(size / (2f * tileSize)) * 2f * tileSize);
 
-        var go = new GameObject("Sea");
+        float waterY = transform.position.y + levelOffset;
+        Material mat = BuildMaterial();
+
+        // 1) далека підлога (тільки візуально), трохи нижче води, щоб не мерехтіла
+        var go = new GameObject("SeaFar");
         go.transform.SetParent(transform, false);
         floor = go.transform;
 
-        // один квад; UV = метри / tileSize, тож текстура прив'язана до світу
         float h = size * 0.5f, uv = size / tileSize;
         var mesh = new Mesh { name = "SeaQuad" };
         mesh.vertices = new[]
@@ -81,12 +100,15 @@ public class SeaGroundGenerator : MonoBehaviour
         go.AddComponent<MeshFilter>().sharedMesh = mesh;
 
         var rend = go.AddComponent<MeshRenderer>();
-        rend.sharedMaterial = BuildMaterial();
+        rend.sharedMaterial = mat;
         rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         rend.receiveShadows = receiveShadows;
 
-        // колайдер-коробка: верх на рівні підлоги
-        var box = go.AddComponent<BoxCollider>();
+        // 2) тверде невидиме дно глибоко під водою
+        var seabed = new GameObject("Seabed");
+        seabed.transform.SetParent(go.transform, false);
+        seabed.transform.localPosition = new Vector3(0f, -seabedDepth, 0f);
+        var box = seabed.AddComponent<BoxCollider>();
         box.size = new Vector3(size, thickness, size);
         box.center = new Vector3(0f, -thickness * 0.5f, 0f);
         box.sharedMaterial = new PhysicsMaterial("Sea")
@@ -98,7 +120,33 @@ public class SeaGroundGenerator : MonoBehaviour
             bounceCombine = PhysicsMaterialCombine.Minimum
         };
 
+        // 3) хвиляста вода (окремий об'єкт у X=0,Z=0 без батька, щоб координати збігались зі світовими)
+        var wgo = new GameObject("SeaWater");
+        wgo.SetActive(false);   // налаштуємо поля до Awake
+        wgo.transform.position = new Vector3(0f, waterY, 0f);
+        wgo.AddComponent<MeshFilter>();
+        wgo.AddComponent<MeshRenderer>().sharedMaterial = mat;
+        water = wgo.AddComponent<WaterSurface>();
+        water.cellsPerSide = Mathf.Max(8, waterCells);
+        water.cellSize = Mathf.Max(0.05f, waterCellSize);
+        water.blocky = blockyWaves;
+        water.heightStep = heightStep;
+        water.uvTileSize = tileSize;
+        water.waves = ScaledWaves();
+        wgo.SetActive(true);
+
         Follow(true);
+    }
+
+    WaterSurface.Wave[] ScaledWaves()
+    {
+        var w = new WaterSurface.Wave[waves.Length];
+        for (int i = 0; i < w.Length; i++)
+        {
+            w[i] = waves[i];
+            w[i].amplitude *= waveHeight;
+        }
+        return w;
     }
 
     Material BuildMaterial()
@@ -117,7 +165,6 @@ public class SeaGroundGenerator : MonoBehaviour
         return m;
     }
 
-    // Піксельна плиточна текстура: два відтінки води й світлі блікі
     Texture2D BuildTexture()
     {
         int n = textureResolution;
@@ -151,7 +198,6 @@ public class SeaGroundGenerator : MonoBehaviour
         Follow(false);
     }
 
-    // Море стоїть там, де камінь, але зсувається лише кроками tileSize, щоб текстура не пливла
     void Follow(bool force)
     {
         if (floor == null) return;
@@ -169,6 +215,9 @@ public class SeaGroundGenerator : MonoBehaviour
         Vector3 focus = rock != null ? rock.WorldCenter : transform.position;
         float x = Mathf.Round(focus.x / tileSize) * tileSize;
         float z = Mathf.Round(focus.z / tileSize) * tileSize;
-        floor.position = new Vector3(x, transform.position.y, z);
+        // далека підлога: трохи нижче води
+        floor.position = new Vector3(x, transform.position.y + levelOffset - 0.03f, z);
+
+        if (water != null) water.follow = rock != null ? rock.transform : null;
     }
 }
