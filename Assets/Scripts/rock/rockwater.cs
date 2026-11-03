@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 // Повісь на камінь (Rigidbody + SphereCollider). Працює з будь-якою масою й розміром каменя.
@@ -7,31 +8,39 @@ public class FloatingRock : MonoBehaviour
     [Header("Плавучість")]
     [Range(0.1f, 0.9f)] public float floatLevel = 0.5f;   // яка частка кулі у воді в спокої
     public float maxBuoyancyMultiplier = 3f;
+    [Tooltip("Макс. швидкість підйому у воді, м/с. Не дає викинути камінь у повітря")]
+    public float maxRiseSpeed = 4f;
 
     [Header("Опір води (сповільнення)")]
-    [Tooltip("Лінійний опір: гальмує завжди")]
     public float waterDrag = 3f;
-    [Tooltip("Квадратичний опір: чим швидше камінь, тим сильніше гальмує")]
     public float quadraticDrag = 0.6f;
-    [Tooltip("Гасіння обертання: у воді камінь важче розкрутити")]
     public float waterAngularDrag = 3f;
 
     [Header("Хвилі від каменя")]
-    [Tooltip("Наскільки сильно рух вперед піднімає хвилю спереду й опускає воду ззаду")]
     public float wakeStrength = 0.35f;
-    [Tooltip("Наскільки вертикальний рух каменя (падіння, хитання) б'є по воді")]
     public float splashStrength = 1f;
 
     [Header("Хвилі на камінь")]
     public float waveDrift = 0.4f;
 
     [Header("Гребок")]
-    [Tooltip("У воді немає тертя об землю, тож цей параметр перетворює обертання на рух. 0 = вимкнути")]
     public float paddle = 1.5f;
+
+    [Header("Уламки у воді")]
+    [Tooltip("У воді камінь не колайдиться з уламками (VoxelPiece), які лежать під ним, тож вони не піднімають його")]
+    public bool ignoreDebrisBelow = true;
+    [Tooltip("Ігнорувати у воді взагалі всі уламки. Може зламати втягування на E, якщо воно через колізії")]
+    public bool ignoreAllDebris = false;
+    [Tooltip("Наскільки нижче центру (частка радіуса) має бути уламок, щоб вважатись нижнім")]
+    [Range(-0.5f, 1f)] public float belowThreshold = 0.2f;
 
     Rigidbody rb;
     SphereCollider sc;
     float prevFraction;
+
+    readonly Collider[] buf = new Collider[256];
+    readonly HashSet<int> ignored = new HashSet<int>();
+    float clearTimer;
 
     void Awake()
     {
@@ -61,6 +70,9 @@ public class FloatingRock : MonoBehaviour
         float fraction = h * h * (3f * r - h) / (4f * r * r * r);
         float dt = Time.fixedDeltaTime;
 
+        // уламки не піднімають камінь
+        if (ignoreDebrisBelow || ignoreAllDebris) IgnoreDebris(c, r);
+
         // плавучість: сила = вага * (fraction / floatLevel), рівновага при fraction == floatLevel
         float g = Physics.gravity.magnitude;
         float mult = Mathf.Min(fraction / floatLevel, maxBuoyancyMultiplier);
@@ -73,7 +85,18 @@ public class FloatingRock : MonoBehaviour
 #endif
         Vector3 ang = rb.angularVelocity;
 
-        // опір води: лінійний + квадратичний (більший камінь гальмує слабше відносно своєї маси)
+        // обмеження підйому: у воді камінь не вилітає вгору
+        if (maxRiseSpeed > 0f && vel.y > maxRiseSpeed)
+        {
+            vel.y = maxRiseSpeed;
+#if UNITY_6000_0_OR_NEWER
+            rb.linearVelocity = vel;
+#else
+            rb.velocity = vel;
+#endif
+        }
+
+        // опір води: лінійний + квадратичний
         Vector3 drag = -vel * (waterDrag * fraction)
                        - vel * (vel.magnitude * quadraticDrag * fraction / Mathf.Max(0.1f, r));
         rb.AddForce(drag, ForceMode.Acceleration);
@@ -94,7 +117,6 @@ public class FloatingRock : MonoBehaviour
         // ───── хвилі від каменя ─────
         float submerged = Mathf.Clamp01(fraction / floatLevel);
 
-        // слід: спереду вода піднімається, ззаду опускається (хвилі розходяться за напрямком руху)
         Vector3 hv = new Vector3(vel.x, 0f, vel.z);
         float hs = hv.magnitude;
         if (hs > 0.1f)
@@ -106,11 +128,49 @@ public class FloatingRock : MonoBehaviour
             water.AddDisturbance(c - dir * (r * 0.9f), rad, -a);
         }
 
-        // бризки: падіння й хитання б'ють по воді вертикально
         float splash = vel.y * dt * Mathf.Max(fraction, prevFraction) * splashStrength;
         if (Mathf.Abs(splash) > 0.0005f)
             water.AddDisturbance(c, r * 1.1f, splash);
 
         prevFraction = fraction;
+    }
+
+    // Вимикає колізію каменя з уламками поруч (нижніми або всіма)
+    void IgnoreDebris(Vector3 c, float r)
+    {
+        clearTimer -= Time.fixedDeltaTime;
+        if (clearTimer <= 0f)
+        {
+            clearTimer = 10f;
+            ignored.Clear();   // знищені уламки не копляться
+        }
+
+        int count = Physics.OverlapSphereNonAlloc(c, r * 1.6f + 0.5f, buf, ~0, QueryTriggerInteraction.Ignore);
+        for (int i = 0; i < count; i++)
+        {
+            Collider col = buf[i];
+            buf[i] = null;
+            if (col == null || col == sc) continue;
+
+            int id = col.GetInstanceID();
+            if (ignored.Contains(id)) continue;
+            if (!IsPiece(col)) continue;
+
+            if (!ignoreAllDebris)
+            {
+                // нижній уламок: центр нижче центру каменя
+                if (col.bounds.center.y > c.y - r * belowThreshold) continue;
+            }
+
+            Physics.IgnoreCollision(sc, col, true);
+            ignored.Add(id);
+        }
+    }
+
+    static bool IsPiece(Collider col)
+    {
+        if (col.TryGetComponent<VoxelPiece>(out _)) return true;
+        Rigidbody body = col.attachedRigidbody;
+        return body != null && body.TryGetComponent<VoxelPiece>(out _);
     }
 }
