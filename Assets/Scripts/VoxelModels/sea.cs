@@ -3,7 +3,7 @@ using UnityEngine;
 // Нескінченне море з хвилями замість землі. Заміна FloorGenerator.
 // Повісь на порожній GameObject на y = 0 (там, де стоять споруди).
 // Створює: (1) далеку плоску підлогу кольору води (тільки картинка), яка їде за каменем кроками по плитках,
-// (2) невидиме тверде дно на seabedDepth нижче, (3) воксельну хвилясту воду навколо каменя (WaterSurface).
+// (2) невидиме тверде дно на seabedDepth нижче, (3) воксельну хвилясту прозору воду навколо камери (WaterSurface).
 // Острови малює й будує CountryGenerator: вони лежать поверх цього моря. Море не частина VoxelWorld.
 public class SeaGroundGenerator : MonoBehaviour
 {
@@ -16,6 +16,8 @@ public class SeaGroundGenerator : MonoBehaviour
     public float tileSize = 8f;
     [Tooltip("Наскільки нижче за цей об'єкт лежить рівень води (мінус = вода трохи нижче суші)")]
     public float levelOffset = -0.15f;
+    [Tooltip("На скільки далека підлога лежить нижче рівня води (щоб не перекривала западини хвиль)")]
+    public float farPlaneDrop = 0.4f;
     [Tooltip("Глибина дна під водою. Має бути більша за діаметр каменя на найбільшій стадії")]
     public float seabedDepth = 50f;
 
@@ -23,6 +25,7 @@ public class SeaGroundGenerator : MonoBehaviour
     public int waterCells = 100;
     public float waterCellSize = 1f;
     [Range(0f, 3f)] public float waveHeight = 1f;
+    [Range(1f, 4f)] public float crestSharpness = 1.8f;
     public bool blockyWaves = true;
     public float heightStep = 0.1f;
     public WaterSurface.Wave[] waves = new WaterSurface.Wave[]
@@ -32,6 +35,11 @@ public class SeaGroundGenerator : MonoBehaviour
         new WaterSurface.Wave { direction = new Vector2(0.7f, -0.7f), amplitude = 0.06f, wavelength = 3.5f, speed = 1.2f },
     };
 
+    [Header("Брижі від каменя")]
+    public float rippleSpeed = 8f;
+    [Range(0.9f, 0.999f)] public float rippleDamping = 0.988f;
+    public float maxRipple = 3f;
+
     [Header("Вигляд")]
     public bool matchVoxelSize = true;
     public int textureResolution = 32;
@@ -39,6 +47,10 @@ public class SeaGroundGenerator : MonoBehaviour
     public Color colorB = new Color(0.215f, 0.47f, 0.74f);
     [Range(0f, 0.5f)] public float sparkleAmount = 0.12f;
     public Color sparkleColor = new Color(0.51f, 0.745f, 0.92f);
+    [Tooltip("Прозорість води: 1 = непрозора, менше = видно камінь під водою й дно біля берега")]
+    [Range(0.3f, 1f)] public float waterAlpha = 0.85f;
+    [Tooltip("Глянець: на пласких гранях дає відблиски сонця")]
+    [Range(0f, 1f)] public float smoothness = 0.85f;
     public int seed = 11;
     public bool receiveShadows = true;
 
@@ -80,9 +92,12 @@ public class SeaGroundGenerator : MonoBehaviour
         size = Mathf.Max(2f * tileSize, Mathf.Round(size / (2f * tileSize)) * 2f * tileSize);
 
         float waterY = transform.position.y + levelOffset;
-        Material mat = BuildMaterial();
 
-        // 1) далека підлога (тільки візуально), трохи нижче води, щоб не мерехтіла
+        Texture2D tex = BuildTexture();
+        Material farMat = BuildMaterial(tex, false);                 // далека підлога: непрозора
+        Material waterMat = BuildMaterial(tex, waterAlpha < 0.99f);  // вода: напівпрозора
+
+        // 1) далека підлога (тільки візуально)
         var go = new GameObject("SeaFar");
         go.transform.SetParent(transform, false);
         floor = go.transform;
@@ -100,7 +115,7 @@ public class SeaGroundGenerator : MonoBehaviour
         go.AddComponent<MeshFilter>().sharedMesh = mesh;
 
         var rend = go.AddComponent<MeshRenderer>();
-        rend.sharedMaterial = mat;
+        rend.sharedMaterial = farMat;
         rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         rend.receiveShadows = receiveShadows;
 
@@ -120,18 +135,23 @@ public class SeaGroundGenerator : MonoBehaviour
             bounceCombine = PhysicsMaterialCombine.Minimum
         };
 
-        // 3) хвиляста вода (окремий об'єкт у X=0,Z=0 без батька, щоб координати збігались зі світовими)
+        // 3) хвиляста вода (окремий об'єкт без батька, щоб координати збігались зі світовими)
         var wgo = new GameObject("SeaWater");
         wgo.SetActive(false);   // налаштуємо поля до Awake
         wgo.transform.position = new Vector3(0f, waterY, 0f);
         wgo.AddComponent<MeshFilter>();
-        wgo.AddComponent<MeshRenderer>().sharedMaterial = mat;
+        wgo.AddComponent<MeshRenderer>().sharedMaterial = waterMat;
         water = wgo.AddComponent<WaterSurface>();
+        water.useCamera = true;
         water.cellsPerSide = Mathf.Max(8, waterCells);
         water.cellSize = Mathf.Max(0.05f, waterCellSize);
         water.blocky = blockyWaves;
         water.heightStep = heightStep;
         water.uvTileSize = tileSize;
+        water.crestSharpness = crestSharpness;
+        water.rippleSpeed = rippleSpeed;
+        water.rippleDamping = rippleDamping;
+        water.maxRipple = maxRipple;
         water.waves = ScaledWaves();
         wgo.SetActive(true);
 
@@ -149,19 +169,34 @@ public class SeaGroundGenerator : MonoBehaviour
         return w;
     }
 
-    Material BuildMaterial()
+    Material BuildMaterial(Texture2D tex, bool transparent)
     {
         Shader lit = Shader.Find("Universal Render Pipeline/Lit");
         if (lit == null) lit = Shader.Find("Standard");
-        var m = new Material(lit) { name = "SeaMat" };
+        var m = new Material(lit) { name = transparent ? "SeaWaterMat" : "SeaFarMat" };
 
-        var tex = BuildTexture();
         if (m.HasProperty("_BaseMap")) m.SetTexture("_BaseMap", tex);
         if (m.HasProperty("_MainTex")) m.SetTexture("_MainTex", tex);
-        if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", Color.white);
-        if (m.HasProperty("_Color")) m.SetColor("_Color", Color.white);
-        if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", 0f);
+
+        float a = transparent ? waterAlpha : 1f;
+        if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", new Color(1f, 1f, 1f, a));
+        if (m.HasProperty("_Color")) m.SetColor("_Color", new Color(1f, 1f, 1f, a));
+        if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", transparent ? smoothness : 0f);
         if (m.HasProperty("_Metallic")) m.SetFloat("_Metallic", 0f);
+
+        if (transparent && m.HasProperty("_Surface"))
+        {
+            m.SetFloat("_Surface", 1f);
+            m.SetFloat("_Blend", 0f);
+            if (m.HasProperty("_SrcBlend")) m.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            if (m.HasProperty("_DstBlend")) m.SetFloat("_DstBlend", (float)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            if (m.HasProperty("_SrcBlendAlpha")) m.SetFloat("_SrcBlendAlpha", (float)UnityEngine.Rendering.BlendMode.One);
+            if (m.HasProperty("_DstBlendAlpha")) m.SetFloat("_DstBlendAlpha", (float)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            if (m.HasProperty("_ZWrite")) m.SetFloat("_ZWrite", 0f);
+            m.SetOverrideTag("RenderType", "Transparent");
+            m.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            m.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+        }
         return m;
     }
 
@@ -215,9 +250,9 @@ public class SeaGroundGenerator : MonoBehaviour
         Vector3 focus = rock != null ? rock.WorldCenter : transform.position;
         float x = Mathf.Round(focus.x / tileSize) * tileSize;
         float z = Mathf.Round(focus.z / tileSize) * tileSize;
-        // далека підлога: трохи нижче води
-        floor.position = new Vector3(x, transform.position.y + levelOffset - 0.03f, z);
+        floor.position = new Vector3(x, transform.position.y + levelOffset - farPlaneDrop, z);
 
-        if (water != null) water.follow = rock != null ? rock.transform : null;
+        // запасний варіант, якщо камеру не знайдено
+        if (water != null && water.follow == null && rock != null) water.follow = rock.transform;
     }
 }
