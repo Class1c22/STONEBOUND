@@ -887,9 +887,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b90265da90cacfa468e7af7a015f82ce, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::MountainMapGenerator
-  size: 1200
+  size: 500
   thickness: 20
-  tileSize: 8
+  tileSize: 2
   textureResolution: 32
   colorA: {r: 0.3, g: 0.48, b: 0.18, a: 1}
   colorB: {r: 0.36, g: 0.55, b: 0.22, a: 1}

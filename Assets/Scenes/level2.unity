@@ -905,7 +905,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b90265da90cacfa468e7af7a015f82ce, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::MountainMapGenerator
-  size: 1200
+  size: 500
   thickness: 20
   tileSize: 8
   textureResolution: 32
@@ -1003,24 +1003,30 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d2a93f45a89375b4387803ecb6dfeba8, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::WindParticles
-  particlesEnabled: 1
-  copyLookFromGrass: 1
-  yieldToGrassField: 1
   windParticlesA: {fileID: 1752815267}
   windParticlesB: {fileID: 1300623100}
-  areaInRockRadii: 40
-  thicknessInRockRadii: 4
-  heightARockRadii: 0.8
-  heightBRockRadii: 2.5
-  particleSizeInRockRadii: 0.15
-  baseRateA: 70
-  baseRateB: 30
+  particlesEnabled: 1
+  rock: {fileID: 0}
+  cellInRockRadii: 12.5
+  seed: 1
+  spawnAreaCells: 56
+  spawnThicknessCells: 3
+  refAreaCells: 14
+  keepDensity: 1
+  heightCellsA: 1.5
+  heightCellsB: 4
+  followGround: 1
   minEmission: 0.15
   bMinStrength: 0.45
-  speedMinRockRadii: 3
-  speedMaxRockRadii: 12
-  directionJitter: 30
-  eddySizeRockRadii: 8
+  speedMinCells: 4
+  speedMaxCells: 16
+  localWind: 1
+  gustSizeCells: 7
+  gustSpeedCells: 5
+  turbulenceSizeCells: 1.5
+  turbulenceSpeed: 1.6
+  turbulence: 0.35
+  localDirectionJitter: 45
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
