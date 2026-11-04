@@ -14,7 +14,18 @@ public class FloatingRock : MonoBehaviour
     [Header("Опір води (сповільнення)")]
     public float waterDrag = 3f;
     public float quadraticDrag = 0.6f;
+    [Tooltip("Гасить лише обертання навколо вертикальної осі (щоб не крутився дзиґою)")]
     public float waterAngularDrag = 3f;
+
+    [Header("Кочення у воді")]
+    [Tooltip("Наскільки сильно обертання підлаштовується під рух (камінь крутиться, коли пливе). 0 = вимкнути")]
+    public float spinFollow = 3f;
+    [Tooltip("Гребок: швидкість підлаштовується під обертання (обертаєш = пливе)")]
+    public float paddle = 1.5f;
+    [Tooltip("Наскільки хвилі розгойдують і підкочують камінь")]
+    public float waveRoll = 0.25f;
+    [Tooltip("Макс. швидкість обертання, рад/с (стандарт Unity = 7, для кочення замало)")]
+    public float maxAngularSpeed = 40f;
 
     [Header("Хвилі від каменя")]
     public float wakeStrength = 0.35f;
@@ -24,9 +35,6 @@ public class FloatingRock : MonoBehaviour
 
     [Header("Хвилі на камінь")]
     public float waveDrift = 0.4f;
-
-    [Header("Гребок")]
-    public float paddle = 1.5f;
 
     [Header("Уламки у воді")]
     [Tooltip("У воді камінь не колайдиться з уламками (VoxelPiece), які лежать під ним, тож вони не піднімають його")]
@@ -56,6 +64,7 @@ public class FloatingRock : MonoBehaviour
     {
         rb = GetComponent<Rigidbody>();
         sc = GetComponent<SphereCollider>();
+        rb.maxAngularVelocity = Mathf.Max(rb.maxAngularVelocity, maxAngularSpeed);
     }
 
     void FixedUpdate()
@@ -118,24 +127,39 @@ public class FloatingRock : MonoBehaviour
         Vector3 drag = -vel * (waterDrag * fraction)
                        - vel * (vel.magnitude * quadraticDrag * fraction / Mathf.Max(0.1f, r));
         rb.AddForce(drag, ForceMode.Acceleration);
-        rb.AddTorque(-ang * (waterAngularDrag * fraction), ForceMode.Acceleration);
 
         // хвилі зносять камінь вниз по схилу
         Vector2 slope = water.GetSlope(c.x, c.z);
         rb.AddForce(new Vector3(-slope.x, 0f, -slope.y) * (waveDrift * g * fraction), ForceMode.Acceleration);
 
-        // гребок: швидкість кочення v = ω × up * r
+        Vector3 hv = new Vector3(vel.x, 0f, vel.z);
+        Vector3 angH = new Vector3(ang.x, 0f, ang.z);
+
+        // ───── кочення: обертання ↔ рух ─────
+        // умова чистого кочення: v = ω × up * r  ⇒  ω = up × v / r
+        if (spinFollow > 0f)
+        {
+            Vector3 rollAng = Vector3.Cross(Vector3.up, hv) / Mathf.Max(0.05f, r);
+
+            // хвилі розгойдують і підкочують камінь вниз по схилу
+            rollAng += new Vector3(-slope.y, 0f, slope.x) * (-waveRoll);
+
+            rb.AddTorque((rollAng - angH) * (spinFollow * fraction), ForceMode.Acceleration);
+        }
+
+        // гасіння обертання навколо вертикалі
+        rb.AddTorque(new Vector3(0f, -ang.y, 0f) * (waterAngularDrag * fraction), ForceMode.Acceleration);
+
+        // гребок: швидкість підлаштовується під обертання (v = ω × up * r)
         if (paddle > 0f)
         {
             Vector3 desired = Vector3.Cross(ang, Vector3.up) * r;
-            Vector3 horizVel = new Vector3(vel.x, 0f, vel.z);
-            rb.AddForce((desired - horizVel) * (paddle * fraction), ForceMode.Acceleration);
+            rb.AddForce((desired - hv) * (paddle * fraction), ForceMode.Acceleration);
         }
 
         // ───── хвилі від каменя (накопичуються й передаються воді раз на disturbInterval) ─────
         float submerged = Mathf.Clamp01(fraction / floatLevel);
 
-        Vector3 hv = new Vector3(vel.x, 0f, vel.z);
         float hs = hv.magnitude;
         if (hs > 0.1f)
         {
