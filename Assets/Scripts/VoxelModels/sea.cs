@@ -22,18 +22,22 @@ public class SeaGroundGenerator : MonoBehaviour
     [Tooltip("Глибина дна під водою. Має бути більша за діаметр каменя на найбільшій стадії")]
     public float seabedDepth = 50f;
 
-    [Header("Хвилі")]
+    [Header("Хвилі: продуктивність")]
     [Tooltip("Клітинок на сторону основної (дрібної) сітки навколо камери")]
     public int waterCells = 100;
     public float waterCellSize = 1f;
     [Tooltip("Далекі кільця: кожне вдвічі грубіше й вдвічі більше. Видимість хвиль = waterCells * waterCellSize * 2^кільця / 2")]
     [Range(0, 5)] public int lodRings = 3;
-    public float outerUpdateInterval = 0.1f;
+    [Tooltip("Як часто оновлюється основна сітка, с")]
+    public float waterUpdateInterval = 0.05f;
+    [Tooltip("Як часто оновлюється кожне далеке кільце, с")]
+    public float outerUpdateInterval = 0.15f;
     public float skirtDepth = 1f;
     [Range(0.02f, 0.6f)] public float edgeFade = 0.25f;
+
+    [Header("Хвилі: вигляд")]
     [Range(0f, 3f)] public float waveHeight = 1f;
     [Range(1f, 4f)] public float crestSharpness = 1.8f;
-    public bool blockyWaves = true;
     public float heightStep = 0.1f;
     public WaterSurface.Wave[] waves = new WaterSurface.Wave[]
     {
@@ -54,7 +58,7 @@ public class SeaGroundGenerator : MonoBehaviour
     public Color colorB = new Color(0.215f, 0.47f, 0.74f);
     [Range(0f, 0.5f)] public float sparkleAmount = 0.12f;
     public Color sparkleColor = new Color(0.51f, 0.745f, 0.92f);
-    [Tooltip("Прозорість води: 1 = непрозора, менше = видно камінь під водою й дно біля берега")]
+    [Tooltip("Прозорість води: 1 = непрозора (найшвидше, без overdraw), менше = видно камінь під водою")]
     [Range(0.3f, 1f)] public float waterAlpha = 0.85f;
     [Tooltip("Глянець: на пласких гранях дає відблиски сонця")]
     [Range(0f, 1f)] public float smoothness = 0.85f;
@@ -102,7 +106,7 @@ public class SeaGroundGenerator : MonoBehaviour
 
         Texture2D tex = BuildTexture();
         Material farMat = BuildMaterial(tex, false);                 // далека підлога: непрозора
-        Material waterMat = BuildMaterial(tex, waterAlpha < 0.99f);  // вода: напівпрозора
+        Material waterMat = BuildMaterial(tex, waterAlpha < 0.99f);  // вода: напівпрозора (або непрозора)
 
         // 1) далека підлога (тільки візуально)
         var go = new GameObject("SeaFar");
@@ -125,6 +129,9 @@ public class SeaGroundGenerator : MonoBehaviour
         rend.sharedMaterial = farMat;
         rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         rend.receiveShadows = receiveShadows;
+        rend.lightProbeUsage = UnityEngine.Rendering.LightProbeUsage.Off;
+        rend.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
+        rend.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
 
         // 2) тверде невидиме дно глибоко під водою
         var seabed = new GameObject("Seabed");
@@ -153,10 +160,10 @@ public class SeaGroundGenerator : MonoBehaviour
         water.cellsPerSide = Mathf.Max(8, waterCells);
         water.cellSize = Mathf.Max(0.05f, waterCellSize);
         water.lodRings = lodRings;
+        water.updateInterval = waterUpdateInterval;
         water.outerUpdateInterval = outerUpdateInterval;
         water.skirtDepth = skirtDepth;
         water.edgeFade = edgeFade;
-        water.blocky = blockyWaves;
         water.heightStep = heightStep;
         water.uvTileSize = tileSize;
         water.crestSharpness = crestSharpness;
@@ -189,11 +196,15 @@ public class SeaGroundGenerator : MonoBehaviour
         if (m.HasProperty("_BaseMap")) m.SetTexture("_BaseMap", tex);
         if (m.HasProperty("_MainTex")) m.SetTexture("_MainTex", tex);
 
+        bool isWater = transparent || waterAlpha >= 0.99f;
         float a = transparent ? waterAlpha : 1f;
         if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", new Color(1f, 1f, 1f, a));
         if (m.HasProperty("_Color")) m.SetColor("_Color", new Color(1f, 1f, 1f, a));
         if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", transparent ? smoothness : 0f);
         if (m.HasProperty("_Metallic")) m.SetFloat("_Metallic", 0f);
+
+        // стінки води двосторонні: їхній бік залежить від того, яка клітинка вища
+        if (isWater && name != null && m.HasProperty("_Cull")) m.SetFloat("_Cull", 0f);
 
         if (transparent && m.HasProperty("_Surface"))
         {
@@ -262,8 +273,5 @@ public class SeaGroundGenerator : MonoBehaviour
         float x = Mathf.Round(focus.x / tileSize) * tileSize;
         float z = Mathf.Round(focus.z / tileSize) * tileSize;
         floor.position = new Vector3(x, transform.position.y + levelOffset - farPlaneDrop, z);
-
-        // запасний варіант, якщо камеру не знайдено
-        if (water != null && water.follow == null && rock != null) water.follow = rock.transform;
     }
 }

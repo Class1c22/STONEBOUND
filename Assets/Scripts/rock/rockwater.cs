@@ -19,6 +19,8 @@ public class FloatingRock : MonoBehaviour
     [Header("Хвилі від каменя")]
     public float wakeStrength = 0.35f;
     public float splashStrength = 1f;
+    [Tooltip("Як часто хвилі від каменя передаються воді, с (більше = менше навантаження)")]
+    public float disturbInterval = 0.05f;
 
     [Header("Хвилі на камінь")]
     public float waveDrift = 0.4f;
@@ -31,16 +33,24 @@ public class FloatingRock : MonoBehaviour
     public bool ignoreDebrisBelow = true;
     [Tooltip("Ігнорувати у воді взагалі всі уламки. Може зламати втягування на E, якщо воно через колізії")]
     public bool ignoreAllDebris = false;
-    [Tooltip("Наскільки нижче центру (частка радіуса) має бути уламок, щоб вважатись нижнім")]
     [Range(-0.5f, 1f)] public float belowThreshold = 0.2f;
+    [Tooltip("Як часто шукаються уламки поруч, с")]
+    public float debrisCheckInterval = 0.1f;
 
     Rigidbody rb;
     SphereCollider sc;
     float prevFraction;
 
+    // накопичення хвиль від каменя
+    float disturbTimer, accWake, accSplash;
+    Vector3 lastDir = Vector3.forward;
+
+    // кеш уламків
     readonly Collider[] buf = new Collider[256];
+    readonly HashSet<int> pieces = new HashSet<int>();
+    readonly HashSet<int> others = new HashSet<int>();
     readonly HashSet<int> ignored = new HashSet<int>();
-    float clearTimer;
+    float debrisTimer, clearTimer;
 
     void Awake()
     {
@@ -71,7 +81,15 @@ public class FloatingRock : MonoBehaviour
         float dt = Time.fixedDeltaTime;
 
         // уламки не піднімають камінь
-        if (ignoreDebrisBelow || ignoreAllDebris) IgnoreDebris(c, r);
+        if (ignoreDebrisBelow || ignoreAllDebris)
+        {
+            debrisTimer += dt;
+            if (debrisTimer >= debrisCheckInterval)
+            {
+                debrisTimer = 0f;
+                IgnoreDebris(c, r);
+            }
+        }
 
         // плавучість: сила = вага * (fraction / floatLevel), рівновага при fraction == floatLevel
         float g = Physics.gravity.magnitude;
@@ -114,23 +132,33 @@ public class FloatingRock : MonoBehaviour
             rb.AddForce((desired - horizVel) * (paddle * fraction), ForceMode.Acceleration);
         }
 
-        // ───── хвилі від каменя ─────
+        // ───── хвилі від каменя (накопичуються й передаються воді раз на disturbInterval) ─────
         float submerged = Mathf.Clamp01(fraction / floatLevel);
 
         Vector3 hv = new Vector3(vel.x, 0f, vel.z);
         float hs = hv.magnitude;
         if (hs > 0.1f)
         {
-            Vector3 dir = hv / hs;
-            float a = hs * dt * wakeStrength * submerged;
-            float rad = r * 0.8f;
-            water.AddDisturbance(c + dir * (r * 0.9f), rad, a);
-            water.AddDisturbance(c - dir * (r * 0.9f), rad, -a);
+            lastDir = hv / hs;
+            accWake += hs * dt * wakeStrength * submerged;
         }
+        accSplash += vel.y * dt * Mathf.Max(fraction, prevFraction) * splashStrength;
 
-        float splash = vel.y * dt * Mathf.Max(fraction, prevFraction) * splashStrength;
-        if (Mathf.Abs(splash) > 0.0005f)
-            water.AddDisturbance(c, r * 1.1f, splash);
+        disturbTimer += dt;
+        if (disturbTimer >= disturbInterval)
+        {
+            disturbTimer = 0f;
+            if (accWake > 0.0005f)
+            {
+                float rad = r * 0.8f;
+                water.AddDisturbance(c + lastDir * (r * 0.9f), rad, accWake);
+                water.AddDisturbance(c - lastDir * (r * 0.9f), rad, -accWake);
+            }
+            if (Mathf.Abs(accSplash) > 0.0005f)
+                water.AddDisturbance(c, r * 1.1f, accSplash);
+            accWake = 0f;
+            accSplash = 0f;
+        }
 
         prevFraction = fraction;
     }
@@ -138,10 +166,12 @@ public class FloatingRock : MonoBehaviour
     // Вимикає колізію каменя з уламками поруч (нижніми або всіма)
     void IgnoreDebris(Vector3 c, float r)
     {
-        clearTimer -= Time.fixedDeltaTime;
+        clearTimer -= debrisCheckInterval;
         if (clearTimer <= 0f)
         {
             clearTimer = 10f;
+            pieces.Clear();
+            others.Clear();
             ignored.Clear();   // знищені уламки не копляться
         }
 
@@ -153,8 +183,13 @@ public class FloatingRock : MonoBehaviour
             if (col == null || col == sc) continue;
 
             int id = col.GetInstanceID();
-            if (ignored.Contains(id)) continue;
-            if (!IsPiece(col)) continue;
+            if (others.Contains(id) || ignored.Contains(id)) continue;
+
+            if (!pieces.Contains(id))
+            {
+                if (!IsPiece(col)) { others.Add(id); continue; }
+                pieces.Add(id);
+            }
 
             if (!ignoreAllDebris)
             {
