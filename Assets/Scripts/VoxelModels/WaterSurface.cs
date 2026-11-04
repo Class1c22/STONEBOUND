@@ -4,6 +4,7 @@ using UnityEngine.Rendering;
 
 // Можна ставити де завгодно (rotation 0, scale 1). Y об'єкта = базовий рівень води.
 // Центр води сам іде за камерою. Камінь збурює воду через AddDisturbance (див. FloatingRock).
+// Далі від камери вода будується кільцями з дедалі більшими клітинками (LOD).
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
 public class WaterSurface : MonoBehaviour
 {
@@ -23,10 +24,20 @@ public class WaterSurface : MonoBehaviour
     public bool useCamera = true;
     [Tooltip("Використовується, лише коли Use Camera вимкнено (або камери немає)")]
     public Transform follow;
+    [Tooltip("Клітинок на сторону основної (дрібної) сітки. Округлюється до кратного 4")]
     public int cellsPerSide = 100;
     public float cellSize = 1f;
     public float updateInterval = 0.033f;
+    [Tooltip("Частка зовнішнього кільця, де хвилі згасають до рівної води")]
     [Range(0.02f, 0.6f)] public float edgeFade = 0.25f;
+
+    [Header("Далекі кільця (LOD)")]
+    [Tooltip("Скільки кілець навколо основної сітки. Кожне вдвічі грубіше й вдвічі більше. 0 = без кілець")]
+    [Range(0, 5)] public int lodRings = 3;
+    [Tooltip("Як часто оновлюється кожне далеке кільце, с")]
+    public float outerUpdateInterval = 0.1f;
+    [Tooltip("Глибина стінок на краях кілець, щоб не було щілин")]
+    public float skirtDepth = 1f;
 
     [Header("Воксельний вигляд")]
     public bool blocky = true;
@@ -52,9 +63,11 @@ public class WaterSurface : MonoBehaviour
     [Tooltip("Максимальна висота бриж, м")]
     public float maxRipple = 3f;
 
-    Mesh mesh;
-    float timer;
-    float findTimer;
+    Mesh[] meshes;
+    float[][,] centerHs, cornerHs;
+
+    float timer, outerTimer, findTimer;
+    int nextRing;
     Transform camT;
 
     int n;
@@ -64,7 +77,6 @@ public class WaterSurface : MonoBehaviour
     float px, pz;
 
     float[,] rip, ripPrev, scratch;
-    float[,] centerH, cornerH;
 
     float meanCache, sharpCache = -1f;
 
@@ -75,13 +87,35 @@ public class WaterSurface : MonoBehaviour
     void Awake()
     {
         Instance = this;
-        mesh = new Mesh { name = "WaterMesh", indexFormat = IndexFormat.UInt32 };
-        GetComponent<MeshFilter>().sharedMesh = mesh;
-        var r = GetComponent<MeshRenderer>();
-        r.shadowCastingMode = ShadowCastingMode.Off;
-        r.receiveShadows = false;
+        lodRings = Mathf.Clamp(lodRings, 0, 5);
+        int L = lodRings;
+
+        meshes = new Mesh[L + 1];
+        centerHs = new float[L + 1][,];
+        cornerHs = new float[L + 1][,];
+
+        var mainRend = GetComponent<MeshRenderer>();
+        mainRend.shadowCastingMode = ShadowCastingMode.Off;
+        mainRend.receiveShadows = false;
+
+        meshes[0] = new Mesh { name = "WaterMesh", indexFormat = IndexFormat.UInt32 };
+        GetComponent<MeshFilter>().sharedMesh = meshes[0];
+
+        for (int k = 1; k <= L; k++)
+        {
+            var go = new GameObject("WaterLOD" + k);
+            go.transform.SetParent(transform, false);
+            var mf = go.AddComponent<MeshFilter>();
+            var mr = go.AddComponent<MeshRenderer>();
+            mr.sharedMaterial = mainRend.sharedMaterial;
+            mr.shadowCastingMode = ShadowCastingMode.Off;
+            mr.receiveShadows = false;
+            meshes[k] = new Mesh { name = "WaterMeshLOD" + k, indexFormat = IndexFormat.UInt32 };
+            mf.sharedMesh = meshes[k];
+        }
+
         UpdateGrid();
-        Rebuild();
+        for (int k = 0; k <= L; k++) BuildRing(k);
     }
 
     void OnDestroy()
@@ -91,14 +125,35 @@ public class WaterSurface : MonoBehaviour
 
     void LateUpdate()
     {
-        timer += Time.deltaTime;
-        if (timer < updateInterval) return;
-        int steps = Mathf.Clamp(Mathf.FloorToInt(timer / updateInterval), 1, 3);
-        timer = 0f;
+        float dt = Time.deltaTime;
+        timer += dt;
+        outerTimer += dt;
 
-        UpdateGrid();
-        for (int s = 0; s < steps; s++) Step(updateInterval);
-        Rebuild();
+        if (timer >= updateInterval)
+        {
+            int steps = Mathf.Clamp(Mathf.FloorToInt(timer / updateInterval), 1, 3);
+            timer = 0f;
+
+            bool moved = UpdateGrid();
+            for (int s = 0; s < steps; s++) Step(updateInterval);
+            BuildRing(0);
+
+            if (moved)
+            {
+                // центр зсунувся: перебудувати всі кільця одразу, щоб не було щілин
+                for (int k = 1; k <= lodRings; k++) BuildRing(k);
+                outerTimer = 0f;
+                return;
+            }
+        }
+
+        // далекі кільця оновлюються по черзі
+        if (lodRings > 0 && outerTimer >= outerUpdateInterval / lodRings)
+        {
+            outerTimer = 0f;
+            nextRing = nextRing % lodRings + 1;
+            BuildRing(nextRing);
+        }
     }
 
     Transform Focus()
@@ -121,9 +176,10 @@ public class WaterSurface : MonoBehaviour
 
     // ───────────── сітка й симуляція брижів ─────────────
 
-    void UpdateGrid()
+    // повертає true, якщо центр сітки зсунувся
+    bool UpdateGrid()
     {
-        int newN = Mathf.Max(8, cellsPerSide);
+        int newN = Mathf.Max(8, cellsPerSide / 4 * 4);   // кратно 4: отвір кільця збігається з сусіднім
         cs = Mathf.Max(0.05f, cellSize);
 
         Vector3 pos = transform.position;
@@ -132,19 +188,25 @@ public class WaterSurface : MonoBehaviour
 
         Transform ft = Focus();
         Vector3 f = ft != null ? ft.position : pos;
-        int ni = Mathf.RoundToInt(f.x / cs) - newN / 2;
-        int nj = Mathf.RoundToInt(f.z / cs) - newN / 2;
 
+        // центр прив'язаний до найгрубішої клітинки, тож усі кільця вирівняні
+        int m = 1 << lodRings;
+        int ci = Mathf.RoundToInt(f.x / (cs * m)) * m;
+        int cj = Mathf.RoundToInt(f.z / (cs * m)) * m;
+        int ni = ci - newN / 2;
+        int nj = cj - newN / 2;
+
+        bool moved = false;
         if (rip == null || newN != n)
         {
             n = newN;
             rip = new float[n, n];
             ripPrev = new float[n, n];
             scratch = new float[n, n];
-            centerH = null;
-            cornerH = null;
+            for (int k = 0; k < centerHs.Length; k++) { centerHs[k] = null; cornerHs[k] = null; }
             originI = ni;
             originJ = nj;
+            moved = true;
         }
         else if (ni != originI || nj != originJ)
         {
@@ -153,13 +215,15 @@ public class WaterSurface : MonoBehaviour
             Shift(ripPrev, dx, dz);
             originI = ni;
             originJ = nj;
+            moved = true;
         }
 
         ox = originI * cs;
         oz = originJ * cs;
-        half = n * cs * 0.5f;
-        cx = ox + half;
-        cz = oz + half;
+        half = n * cs * m * 0.5f;     // півсторона найбільшого кільця
+        cx = ci * cs;
+        cz = cj * cs;
+        return moved;
     }
 
     // сітка їде за камерою, а брижі лишаються на місці у світі
@@ -302,29 +366,52 @@ public class WaterSurface : MonoBehaviour
 
     // ───────────── меш ─────────────
 
-    void Rebuild()
+    // кільце k: клітинка = cs * 2^k, сітка n×n; для k>0 середина (n/2 × n/2) порожня: там сусіднє дрібніше кільце
+    bool InHole(int k, int i, int j)
     {
-        if (rip == null) return;
+        if (k == 0) return false;
+        int q1 = n / 4, q3 = 3 * n / 4;
+        return i >= q1 && i < q3 && j >= q1 && j < q3;
+    }
+
+    void BuildRing(int k)
+    {
+        if (rip == null || meshes == null || k >= meshes.Length) return;
+
+        float csk = cs * (1 << k);
+        float rox = cx - n * 0.5f * csk;
+        float roz = cz - n * 0.5f * csk;
+        int q1 = n / 4, q3 = 3 * n / 4;
+        float sk = Mathf.Max(0.05f, skirtDepth);
+
+        float[,] H = null, C = null;
 
         if (blocky)
         {
-            if (centerH == null || centerH.GetLength(0) != n) centerH = new float[n, n];
+            if (centerHs[k] == null || centerHs[k].GetLength(0) != n) centerHs[k] = new float[n, n];
+            H = centerHs[k];
             for (int i = 0; i < n; i++)
                 for (int j = 0; j < n; j++)
                 {
-                    float x = ox + (i + 0.5f) * cs, z = oz + (j + 0.5f) * cs;
-                    centerH[i, j] = Quantize((BaseHeight(x, z) + rip[i, j]) * Fade(x, z));
+                    if (InHole(k, i, j)) continue;
+                    float x = rox + (i + 0.5f) * csk, z = roz + (j + 0.5f) * csk;
+                    float v = BaseHeight(x, z);
+                    if (k == 0) v += rip[i, j];
+                    H[i, j] = Quantize(v * Fade(x, z));
                 }
         }
         else
         {
-            if (cornerH == null || cornerH.GetLength(0) != n + 1) cornerH = new float[n + 1, n + 1];
+            if (cornerHs[k] == null || cornerHs[k].GetLength(0) != n + 1) cornerHs[k] = new float[n + 1, n + 1];
+            C = cornerHs[k];
             for (int i = 0; i <= n; i++)
                 for (int j = 0; j <= n; j++)
                 {
-                    float x = ox + i * cs, z = oz + j * cs;
-                    float rv = (R(i - 1, j - 1) + R(i, j - 1) + R(i - 1, j) + R(i, j)) * 0.25f;
-                    cornerH[i, j] = (BaseHeight(x, z) + rv) * Fade(x, z);
+                    if (k > 0 && i > q1 && i < q3 && j > q1 && j < q3) continue;   // всередині отвору
+                    float x = rox + i * csk, z = roz + j * csk;
+                    float v = BaseHeight(x, z);
+                    if (k == 0) v += (R(i - 1, j - 1) + R(i, j - 1) + R(i - 1, j) + R(i, j)) * 0.25f;
+                    C[i, j] = v * Fade(x, z);
                 }
         }
 
@@ -336,62 +423,92 @@ public class WaterSurface : MonoBehaviour
         {
             for (int j = 0; j < n; j++)
             {
-                float x0 = ox + i * cs, x1 = x0 + cs;
-                float z0 = oz + j * cs, z1 = z0 + cs;
+                if (InHole(k, i, j)) continue;
+
+                float x0 = rox + i * csk, x1 = x0 + csk;
+                float z0 = roz + j * csk, z1 = z0 + csk;
+                float hx0, hx1, hz0, hz1;   // висота кожного з 4 країв (для стінок)
 
                 if (blocky)
                 {
-                    float h = centerH[i, j];
+                    float h = H[i, j];
+                    hx0 = hx1 = hz0 = hz1 = h;
                     AddQuad(new Vector3(x0, h, z0), new Vector3(x0, h, z1),
                             new Vector3(x1, h, z1), new Vector3(x1, h, z0), 0);
 
-                    if (!walls) continue;
-
-                    if (i + 1 < n)
+                    if (walls)
                     {
-                        float hn = centerH[i + 1, j];
-                        if (Mathf.Abs(h - hn) > 0.0001f)
+                        if (i + 1 < n && !InHole(k, i + 1, j))
                         {
-                            float lo = Mathf.Min(h, hn), hi = Mathf.Max(h, hn);
-                            if (h > hn)
-                                AddQuad(new Vector3(x1, lo, z0), new Vector3(x1, hi, z0),
-                                        new Vector3(x1, hi, z1), new Vector3(x1, lo, z1), 1);
-                            else
-                                AddQuad(new Vector3(x1, lo, z1), new Vector3(x1, hi, z1),
-                                        new Vector3(x1, hi, z0), new Vector3(x1, lo, z0), 1);
+                            float hn = H[i + 1, j];
+                            if (Mathf.Abs(h - hn) > 0.0001f)
+                                WallX(x1, z0, z1, Mathf.Min(h, hn), Mathf.Max(h, hn), h > hn);
                         }
-                    }
-                    if (j + 1 < n)
-                    {
-                        float hn = centerH[i, j + 1];
-                        if (Mathf.Abs(h - hn) > 0.0001f)
+                        if (j + 1 < n && !InHole(k, i, j + 1))
                         {
-                            float lo = Mathf.Min(h, hn), hi = Mathf.Max(h, hn);
-                            if (h > hn)
-                                AddQuad(new Vector3(x1, lo, z1), new Vector3(x1, hi, z1),
-                                        new Vector3(x0, hi, z1), new Vector3(x0, lo, z1), 2);
-                            else
-                                AddQuad(new Vector3(x0, lo, z1), new Vector3(x0, hi, z1),
-                                        new Vector3(x1, hi, z1), new Vector3(x1, lo, z1), 2);
+                            float hn = H[i, j + 1];
+                            if (Mathf.Abs(h - hn) > 0.0001f)
+                                WallZ(z1, x0, x1, Mathf.Min(h, hn), Mathf.Max(h, hn), h > hn);
                         }
                     }
                 }
                 else
                 {
-                    AddQuad(new Vector3(x0, cornerH[i, j], z0),
-                            new Vector3(x0, cornerH[i, j + 1], z1),
-                            new Vector3(x1, cornerH[i + 1, j + 1], z1),
-                            new Vector3(x1, cornerH[i + 1, j], z0), 0);
+                    float a = C[i, j], b = C[i, j + 1], c2 = C[i + 1, j + 1], d = C[i + 1, j];
+                    AddQuad(new Vector3(x0, a, z0), new Vector3(x0, b, z1),
+                            new Vector3(x1, c2, z1), new Vector3(x1, d, z0), 0);
+                    hx0 = (a + b) * 0.5f;
+                    hx1 = (d + c2) * 0.5f;
+                    hz0 = (a + d) * 0.5f;
+                    hz1 = (b + c2) * 0.5f;
+                }
+
+                // стінки-"спідниці" на краях кільця, щоб між кільцями не було щілин
+                bool inI = i >= q1 && i < q3, inJ = j >= q1 && j < q3;
+                if (i == n - 1) WallX(x1, z0, z1, hx1 - sk, hx1, true);
+                if (i == 0)     WallX(x0, z0, z1, hx0 - sk, hx0, false);
+                if (j == n - 1) WallZ(z1, x0, x1, hz1 - sk, hz1, true);
+                if (j == 0)     WallZ(z0, x0, x1, hz0 - sk, hz0, false);
+                if (k > 0)
+                {
+                    if (i == q1 - 1 && inJ) WallX(x1, z0, z1, hx1 - sk, hx1, true);
+                    if (i == q3 && inJ)     WallX(x0, z0, z1, hx0 - sk, hx0, false);
+                    if (j == q1 - 1 && inI) WallZ(z1, x0, x1, hz1 - sk, hz1, true);
+                    if (j == q3 && inI)     WallZ(z0, x0, x1, hz0 - sk, hz0, false);
                 }
             }
         }
 
-        mesh.Clear();
-        mesh.SetVertices(verts);
-        mesh.SetUVs(0, uvs);
-        mesh.SetTriangles(tris, 0);
-        mesh.RecalculateNormals();   // вершини не спільні, тож нормалі пласкі
-        mesh.bounds = new Bounds(new Vector3(cx - px, 0f, cz - pz), new Vector3(n * cs, maxRipple * 2f + 10f, n * cs));
+        Mesh m = meshes[k];
+        m.Clear();
+        m.SetVertices(verts);
+        m.SetUVs(0, uvs);
+        m.SetTriangles(tris, 0);
+        m.RecalculateNormals();   // вершини не спільні, тож нормалі пласкі
+        m.bounds = new Bounds(new Vector3(cx - px, 0f, cz - pz),
+                              new Vector3(n * csk, maxRipple * 2f + sk + 10f, n * csk));
+    }
+
+    // стінка в площині X (x = const), від lo до hi, дивиться в +X якщо facePos
+    void WallX(float x, float z0, float z1, float lo, float hi, bool facePos)
+    {
+        if (facePos)
+            AddQuad(new Vector3(x, lo, z0), new Vector3(x, hi, z0),
+                    new Vector3(x, hi, z1), new Vector3(x, lo, z1), 1);
+        else
+            AddQuad(new Vector3(x, lo, z1), new Vector3(x, hi, z1),
+                    new Vector3(x, hi, z0), new Vector3(x, lo, z0), 1);
+    }
+
+    // стінка в площині Z (z = const), дивиться в +Z якщо facePos
+    void WallZ(float z, float x0, float x1, float lo, float hi, bool facePos)
+    {
+        if (facePos)
+            AddQuad(new Vector3(x1, lo, z), new Vector3(x1, hi, z),
+                    new Vector3(x0, hi, z), new Vector3(x0, lo, z), 2);
+        else
+            AddQuad(new Vector3(x0, lo, z), new Vector3(x0, hi, z),
+                    new Vector3(x1, hi, z), new Vector3(x1, lo, z), 2);
     }
 
     // uvMode: 0 = верх (x,z), 1 = стінка в площині X (z,y), 2 = стінка в площині Z (x,y)

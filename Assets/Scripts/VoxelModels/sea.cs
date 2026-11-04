@@ -3,7 +3,8 @@ using UnityEngine;
 // Нескінченне море з хвилями замість землі. Заміна FloorGenerator.
 // Повісь на порожній GameObject на y = 0 (там, де стоять споруди).
 // Створює: (1) далеку плоску підлогу кольору води (тільки картинка), яка їде за каменем кроками по плитках,
-// (2) невидиме тверде дно на seabedDepth нижче, (3) воксельну хвилясту прозору воду навколо камери (WaterSurface).
+// (2) невидиме тверде дно на seabedDepth нижче, (3) воксельну хвилясту прозору воду навколо камери (WaterSurface)
+// з далекими кільцями, які грубішають з відстанню.
 // Острови малює й будує CountryGenerator: вони лежать поверх цього моря. Море не частина VoxelWorld.
 public class SeaGroundGenerator : MonoBehaviour
 {
@@ -22,8 +23,14 @@ public class SeaGroundGenerator : MonoBehaviour
     public float seabedDepth = 50f;
 
     [Header("Хвилі")]
+    [Tooltip("Клітинок на сторону основної (дрібної) сітки навколо камери")]
     public int waterCells = 100;
     public float waterCellSize = 1f;
+    [Tooltip("Далекі кільця: кожне вдвічі грубіше й вдвічі більше. Видимість хвиль = waterCells * waterCellSize * 2^кільця / 2")]
+    [Range(0, 5)] public int lodRings = 3;
+    public float outerUpdateInterval = 0.1f;
+    public float skirtDepth = 1f;
+    [Range(0.02f, 0.6f)] public float edgeFade = 0.25f;
     [Range(0f, 3f)] public float waveHeight = 1f;
     [Range(1f, 4f)] public float crestSharpness = 1.8f;
     public bool blockyWaves = true;
@@ -145,6 +152,10 @@ public class SeaGroundGenerator : MonoBehaviour
         water.useCamera = true;
         water.cellsPerSide = Mathf.Max(8, waterCells);
         water.cellSize = Mathf.Max(0.05f, waterCellSize);
+        water.lodRings = lodRings;
+        water.outerUpdateInterval = outerUpdateInterval;
+        water.skirtDepth = skirtDepth;
+        water.edgeFade = edgeFade;
         water.blocky = blockyWaves;
         water.heightStep = heightStep;
         water.uvTileSize = tileSize;
