@@ -12570,10 +12570,10 @@ MonoBehaviour:
     destroyRadiusMultiplier: 1
     absorbCostMultiplier: 1
   - name: "\u0421\u043A\u0435\u043B\u044F"
-    radiusRatio: 3.2
+    radiusRatio: 3
     speedMultiplier: 1.3
     forceMultiplier: 1.5
-    destroyRadiusMultiplier: 1.75
+    destroyRadiusMultiplier: 1
     absorbCostMultiplier: 1
   - name: "\u0413\u043E\u0440\u0430"
     radiusRatio: 4.5
@@ -12684,13 +12684,18 @@ MonoBehaviour:
   waterDrag: 3
   quadraticDrag: 0.6
   waterAngularDrag: 3
+  spinFollow: 3
+  paddle: 1.5
+  waveRoll: 0.25
+  maxAngularSpeed: 40
   wakeStrength: 0.35
   splashStrength: 1
+  disturbInterval: 0.05
   waveDrift: 0.4
-  paddle: 1.5
   ignoreDebrisBelow: 1
   ignoreAllDebris: 0
   belowThreshold: 0.2
+  debrisCheckInterval: 0.1
 --- !u!1 &2140901507
 GameObject:
   m_ObjectHideFlags: 0
