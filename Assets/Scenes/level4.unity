@@ -14,7 +14,7 @@ OcclusionCullingSettings:
 RenderSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 10
-  m_Fog: 0
+  m_Fog: 1
   m_FogColor: {r: 0.5, g: 0.5, b: 0.5, a: 1}
   m_FogMode: 3
   m_FogDensity: 0.01
@@ -582,9 +582,10 @@ MonoBehaviour:
   cellSize: 1
   updateInterval: 0.033
   edgeFade: 0.25
-  blocky: 1
+  lodRings: 3
+  outerUpdateInterval: 0.15
+  skirtDepth: 1
   heightStep: 0.1
-  walls: 1
   uvTileSize: 8
   crestSharpness: 1.8
   waves:
@@ -862,9 +863,13 @@ MonoBehaviour:
   seabedDepth: 50
   waterCells: 100
   waterCellSize: 1
+  lodRings: 3
+  waterUpdateInterval: 0.05
+  outerUpdateInterval: 0.15
+  skirtDepth: 1
+  edgeFade: 0.25
   waveHeight: 1
   crestSharpness: 1.8
-  blockyWaves: 1
   heightStep: 0.1
   waves:
   - direction: {x: 1, y: 0.3}
