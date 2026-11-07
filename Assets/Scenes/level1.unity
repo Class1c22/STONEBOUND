@@ -5339,6 +5339,7 @@ GameObject:
   - component: {fileID: 330585547}
   - component: {fileID: 330585548}
   - component: {fileID: 330585549}
+  - component: {fileID: 330585550}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -5536,6 +5537,32 @@ MonoBehaviour:
     m_RotationOrder: 4
   sprintEmissionAmount: 0
   followCamera: 1
+--- !u!114 &330585550
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 330585543}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2c9fbe8b0c9184b42ad2f93a930d31e2, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PlanetCamera
+  planet: {fileID: 0}
+  rock: {fileID: 2032603337}
+  distanceInRadii: 7
+  heightInRadii: 3.5
+  lookAtHeightInRadii: 0.5
+  minDistance: 3
+  positionSmooth: 0.08
+  rotationSharpness: 12
+  followHeading: 1
+  minHeadingSpeed: 2
+  headingTurnRate: 70
+  maxFollowAngle: 80
+  minFarClip: 5000
+  checkInterval: 0.5
 --- !u!1 &410087039
 GameObject:
   m_ObjectHideFlags: 0
@@ -12326,6 +12353,9 @@ PrefabInstance:
       addedObject: {fileID: 2032603334}
     - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 8c1c09ebe82f0db4d91254dc0f1bd860, type: 3}
       insertIndex: -1
+      addedObject: {fileID: 2032603342}
+    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 8c1c09ebe82f0db4d91254dc0f1bd860, type: 3}
+      insertIndex: -1
       addedObject: {fileID: 2032603333}
     - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 8c1c09ebe82f0db4d91254dc0f1bd860, type: 3}
       insertIndex: -1
@@ -12550,6 +12580,8 @@ MonoBehaviour:
   shrinkSpeed: 6
   maxAttached: 300
   growOnlyOnTierUp: 1
+  allowStageSkipKey: 1
+  stageSkipKey: 28
   stages:
   - name: "\u041A\u0430\u043C\u0456\u043D\u044C"
     radiusRatio: 1
@@ -12696,6 +12728,29 @@ MonoBehaviour:
   ignoreAllDebris: 0
   belowThreshold: 0.2
   debrisCheckInterval: 0.1
+--- !u!114 &2032603342
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2032603331}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: bff97310dbc3cd14986c10271555e981, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PlanetRockController
+  acceleration: 45
+  maxSpeed: 30
+  idleDrag: 0.4
+  checkInterval: 0.5
+  disableNameParts:
+  - Controller
+  - Move
+  - Input
+  - Player
+  - Wind
+  showDebug: 1
 --- !u!1 &2140901507
 GameObject:
   m_ObjectHideFlags: 0

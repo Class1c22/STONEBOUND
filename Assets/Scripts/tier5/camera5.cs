@@ -1,9 +1,11 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 // Камера для планети. Висить на Main Camera постійно (генератор додасть її сам, якщо її нема).
-// Знайшла PlanetGenerator у сцені: вимикає FollowCamera і сама керує камерою.
-// Планети нема: нічого не чіпає і повертає FollowCamera.
+// Знайшла PlanetGenerator у сцені: АВТОМАТИЧНО вимикає всі FollowCamera (щокадру, поки активна) і сама керує камерою.
+// Планети нема: нічого не чіпає і повертає FollowCamera в той стан, у якому він був.
 // Камера стоїть позаду каменя й трохи вище, видно кривину планети. "Вгору" = від центру планети.
+[DefaultExecutionOrder(1000)]
 public class PlanetCamera : MonoBehaviour
 {
     public PlanetGenerator planet;
@@ -33,8 +35,10 @@ public class PlanetCamera : MonoBehaviour
     [Tooltip("Як часто (сек) перевіряти, чи є планета в сцені")]
     public float checkInterval = 0.5f;
 
-    Behaviour oldCam;
-    bool oldWasEnabled;
+    // усі FollowCamera, які ми вимкнули, і їхній початковий стан
+    readonly List<FollowCamera> oldCams = new List<FollowCamera>();
+    readonly Dictionary<FollowCamera, bool> oldState = new Dictionary<FollowCamera, bool>();
+
     bool active;
     float nextCheck;
     Rigidbody rockRb;
@@ -49,24 +53,51 @@ public class PlanetCamera : MonoBehaviour
     public Vector3 Up { get; private set; }
     public Vector3 Right { get { return Vector3.Cross(Up, fwd).normalized; } }
 
-    void Awake()
-    {
-        FindOldCamera();
-    }
-
     void OnDisable()
     {
         SetActive(false);
     }
 
-    void FindOldCamera()
+    // знаходимо всі FollowCamera: у сцені, на цьому об'єкті, у каменя
+    void CollectOldCams()
     {
-        oldCam = GetComponent("FollowCamera") as Behaviour;
-        if (oldCam == null)
+        var all = FindObjectsByType<FollowCamera>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+        for (int i = 0; i < all.Length; i++) Track(all[i]);
+
+        var mine = GetComponentInParent<FollowCamera>(true);
+        Track(mine);
+
+        if (rock != null) Track(rock.followCamera);
+    }
+
+    void Track(FollowCamera f)
+    {
+        if (f == null || oldState.ContainsKey(f)) return;
+        oldState[f] = f.enabled;
+        oldCams.Add(f);
+    }
+
+    // вимикаємо всі знайдені FollowCamera (викликається щокадру, поки камера активна)
+    void KeepOldCamsOff()
+    {
+        for (int i = 0; i < oldCams.Count; i++)
         {
-            var t = System.Type.GetType("FollowCamera");
-            if (t != null) oldCam = GetComponentInParent(t) as Behaviour;
+            var f = oldCams[i];
+            if (f != null && f.enabled) f.enabled = false;
         }
+    }
+
+    void RestoreOldCams()
+    {
+        for (int i = 0; i < oldCams.Count; i++)
+        {
+            var f = oldCams[i];
+            if (f == null) continue;
+            bool was;
+            if (oldState.TryGetValue(f, out was) && was) f.enabled = true;
+        }
+        oldCams.Clear();
+        oldState.Clear();
     }
 
     void SetActive(bool on)
@@ -79,20 +110,20 @@ public class PlanetCamera : MonoBehaviour
         {
             var c = GetComponent<Camera>();
             if (c != null && c.farClipPlane < minFarClip) c.farClipPlane = minFarClip;
-        }
 
-        if (oldCam == null) FindOldCamera();
-        if (oldCam == null) return;
+            CollectOldCams();
+            KeepOldCamsOff();
+        }
+        else
+        {
+            RestoreOldCams();
+        }
+    }
 
-        if (on)
-        {
-            oldWasEnabled = oldCam.enabled;
-            oldCam.enabled = false;
-        }
-        else if (oldWasEnabled)
-        {
-            oldCam.enabled = true;
-        }
+    // Update виконується після Update інших скриптів (порядок 1000): якщо хтось увімкнув FollowCamera назад, вимикаємо до LateUpdate
+    void Update()
+    {
+        if (active) KeepOldCamsOff();
     }
 
     void LateUpdate()
@@ -112,10 +143,20 @@ public class PlanetCamera : MonoBehaviour
             if (rock != null && rockRb == null)
                 rockRb = rock.GetComponentInParent<Rigidbody>();
 
-            SetActive(planet != null && rock != null);
+            bool on = planet != null && rock != null;
+            SetActive(on);
+
+            // з'явились нові FollowCamera (наприклад після переходу між сценами)
+            if (active)
+            {
+                CollectOldCams();
+                KeepOldCamsOff();
+            }
         }
 
         if (!active || planet == null || rock == null) return;
+
+        KeepOldCamsOff();
 
         Vector3 c = rock.WorldCenter;
         Vector3 up = planet.UpAt(c);
