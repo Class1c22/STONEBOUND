@@ -10,13 +10,13 @@ public class PlanetCamera : MonoBehaviour
     public RockAbsorber rock;
 
     [Header("Позиція відносно каменя (у радіусах каменя)")]
-    public float distanceInRadii = 7f;
-    public float heightInRadii = 3.5f;
+    public float distanceInRadii = 14f;
+    public float heightInRadii = 7f;
     public float lookAtHeightInRadii = 0.5f;
-    public float minDistance = 3f;
+    public float minDistance = 8f;
 
     [Header("Плавність")]
-    public float positionSmooth = 0.08f;
+    public float positionSmooth = 0.1f;
     public float rotationSharpness = 12f;
 
     [Header("Пошук")]
@@ -51,7 +51,11 @@ public class PlanetCamera : MonoBehaviour
     void FindOldCamera()
     {
         oldCam = GetComponent("FollowCamera") as Behaviour;
-        if (oldCam == null) oldCam = GetComponentInParent(System.Type.GetType("FollowCamera")) as Behaviour;
+        if (oldCam == null)
+        {
+            var t = System.Type.GetType("FollowCamera");
+            if (t != null) oldCam = GetComponentInParent(t) as Behaviour;
+        }
     }
 
     void SetActive(bool on)

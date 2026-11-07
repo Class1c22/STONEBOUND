@@ -7,9 +7,10 @@ using UnityEngine.Rendering;
 // Повісь на порожній GameObject, VoxelWorld і камінь знайдуться самі.
 // VoxelWorld має стояти на (0,0,0) з масштабом 1. FloorGenerator і VillageGenerator у цій сцені вимкни.
 //
-//  * ОСНОВА (Bedrock): гладка куля з SphereCollider і земляно-кам'яною текстурою. Каменем не ламається.
-//  * КОРА: шар справжніх вокселів на основі. Зверху шар біому, під ним земля (бруд), глибше земля з камінням.
-//    При руйнуванні з кори летять уламки кольору землі, а коли кору знесено, видно основу.
+//  * Уся кора генерується ОДИН РАЗ на старті (від полюса, де стартує камінь, і далі).
+//    Поки йде генерація, камінь заморожений, на екрані відсотки. Потім камінь може котитись будь-де.
+//  * ОСНОВА (Bedrock): гладка куля з SphereCollider і земляною текстурою. Каменем не ламається.
+//  * КОРА: шар справжніх вокселів. Зверху шар біому, під ним земля (бруд), глибше земля з камінням.
 //  * МОРЕ: прозора водяна куля. Біля берегів піщане мілководдя. У воді камінь сповільнюється.
 //  * КЛІМАТ: за широтою + шум вологості: сніг, тундра, ліс, трава, савана, пустеля, джунглі, гори.
 //  * КРАЇНИ: діаграма Вороного, на межах гравійна смуга.
@@ -17,6 +18,7 @@ using UnityEngine.Rendering;
 //  * ГРАВІТАЦІЯ радіальна: до центру планети.
 //
 // Усі розміри у ВОКСЕЛЯХ. Висота світу потрібна приблизно 2 * (Bedrock + Crust + TreeMargin).
+// Планета з Bedrock 200 це кілька мільйонів вокселів: якщо важко, зменш bedrockRadius.
 public class PlanetGenerator : MonoBehaviour
 {
     [Header("Зв'язки")]
@@ -53,11 +55,12 @@ public class PlanetGenerator : MonoBehaviour
     public float waterDrag = 1.5f;
     [Range(0f, 2f)] public float friction = 0.6f;
 
-    [Header("Стрімінг")]
-    public float spawnRadius = 120f;
-    public float spawnRadiusInRockRadii = 60f;
+    [Header("Генерація")]
     public int blockSize = 24;
-    public int voxelsPerFrame = 6000;
+    [Tooltip("Скільки мс на кадр можна витрачати на генерацію")]
+    public float frameBudgetMs = 30f;
+    public bool freezeRockWhileLoading = true;
+    public bool showProgress = true;
 
     [Header("Вигляд")]
     public Color waterColor = new Color(0.15f, 0.45f, 0.85f, 0.72f);
@@ -73,7 +76,6 @@ public class PlanetGenerator : MonoBehaviour
     struct Col { public bool sea, shallow, border, beach; public int biome; public float thick, treeP; }
 
     readonly List<VoxelOp> ops = new List<VoxelOp>();
-    readonly HashSet<Vector3Int> built = new HashSet<Vector3Int>();
 
     float vs;
     int Rb, B;
@@ -83,12 +85,16 @@ public class PlanetGenerator : MonoBehaviour
 
     RockAbsorber rock;
     Rigidbody rb;
-    Vector3 rockV;                   // позиція каменя у вокселях
+    bool rockWasKinematic;
+    bool frozen;
 
     byte[][] topSets, soilSets, leafSets;
     byte[] stoneSet, sandSet, borderSet, trunkSet;
 
     // ---------- публічне ----------
+
+    public bool Ready { get; private set; }
+    public float Progress { get; private set; }
 
     public Vector3 CenterWorld
     {
@@ -149,7 +155,7 @@ public class PlanetGenerator : MonoBehaviour
         InitColors();
         BuildBedrock();
         BuildWater();
-        StartCoroutine(Worker());
+        StartCoroutine(Generate());
     }
 
     byte Cl(int r, int g, int b)
@@ -222,7 +228,7 @@ public class PlanetGenerator : MonoBehaviour
         for (int j = 0; j < seg; j++)
         {
             int a = i * (seg + 1) + j, b = a + seg + 1;
-            // порядок вершин такий, щоб передня грань дивилась НАЗОВНІ (раніше було навпаки, тому планета здавалась прозорою)
+            // передня грань дивиться НАЗОВНІ
             tris[t++] = a; tris[t++] = a + 1; tris[t++] = b;
             tris[t++] = a + 1; tris[t++] = b + 1; tris[t++] = b;
         }
@@ -413,69 +419,104 @@ public class PlanetGenerator : MonoBehaviour
         return c;
     }
 
-    // ---------- стрімінг ----------
+    // ---------- повна генерація один раз ----------
 
-    IEnumerator Worker()
+    IEnumerator Generate()
     {
         for (int i = 0; i < 4; i++) yield return null;
 
-        while (true)
+        FindRock();
+        Freeze(true);
+
+        // усі блоки, що зачіпають кору
+        float outer = Rb + crustMax + B;
+        float inner = Rb - B;
+        int lo = Mathf.FloorToInt((-outer) / B) - 1;
+        int hi = Mathf.CeilToInt(outer / B) + 1;
+        int cx = Mathf.FloorToInt(C.x / B), cy = Mathf.FloorToInt(C.y / B), cz = Mathf.FloorToInt(C.z / B);
+
+        var list = new List<Vector3Int>();
+        var dist = new Dictionary<Vector3Int, float>();
+        Vector3 startV = C + Vector3.up * (Rb + crustMax + 1);
+        for (int dz = lo; dz <= hi; dz++)
+        for (int dy = lo; dy <= hi; dy++)
+        for (int dx = lo; dx <= hi; dx++)
         {
-            if (!UpdateRock()) { yield return null; continue; }
+            var b = new Vector3Int(cx + dx, cy + dy, cz + dz);
+            Vector3 bc = new Vector3(b.x + 0.5f, b.y + 0.5f, b.z + 0.5f) * B;
+            float dr = (bc - C).magnitude;
+            if (dr > outer || dr < inner) continue;
+            list.Add(b);
+            dist[b] = (bc - startV).sqrMagnitude;
+        }
+        // спершу блоки біля старту, далі назовні
+        list.Sort((a, b) => dist[a].CompareTo(dist[b]));
 
-            float R = Mathf.Max(spawnRadius, rock.Radius * spawnRadiusInRockRadii) / vs;
-            Vector3Int rb0 = new Vector3Int(Mathf.FloorToInt(rockV.x / B), Mathf.FloorToInt(rockV.y / B), Mathf.FloorToInt(rockV.z / B));
-            int k = Mathf.CeilToInt(R / B) + 1;
+        var sw = new System.Diagnostics.Stopwatch();
+        sw.Start();
+        int total = Mathf.Max(1, list.Count);
 
-            bool found = false;
-            Vector3Int best = default;
-            float bestD = float.MaxValue;
-            for (int dz = -k; dz <= k; dz++)
-            for (int dy = -k; dy <= k; dy++)
-            for (int dx = -k; dx <= k; dx++)
+        for (int bi = 0; bi < list.Count; bi++)
+        {
+            BuildBlock(list[bi]);
+
+            int cnt = 0;
+            for (int idx = 0; idx < ops.Count; idx++)
             {
-                var b = new Vector3Int(rb0.x + dx, rb0.y + dy, rb0.z + dz);
-                if (built.Contains(b)) continue;
-                Vector3 bc = new Vector3(b.x + 0.5f, b.y + 0.5f, b.z + 0.5f) * B;
-                float dr = (bc - C).magnitude;
-                if (dr > Rb + crustMax + B || dr < Rb - B) continue;   // блок не зачіпає кору
-                float dd = (bc - rockV).magnitude;
-                if (dd > R + B) continue;
-                if (dd < bestD) { bestD = dd; best = b; found = true; }
-            }
-            if (!found) { yield return null; continue; }
-
-            built.Add(best);
-            BuildBlock(best);
-
-            int idx = 0;
-            while (idx < ops.Count)
-            {
-                int end = Mathf.Min(ops.Count, idx + Mathf.Max(100, voxelsPerFrame));
-                for (; idx < end; idx++)
+                VoxelOp op = ops[idx];
+                if (world.GetVoxel(op.pos) == 0) world.SetVoxel(op.pos, op.id);
+                if ((++cnt & 1023) == 0 && sw.ElapsedMilliseconds > frameBudgetMs)
                 {
-                    VoxelOp op = ops[idx];
-                    if (world.GetVoxel(op.pos) == 0) world.SetVoxel(op.pos, op.id);
+                    yield return null;
+                    sw.Restart();
                 }
-                yield return null;
             }
             ops.Clear();
-            yield return null;
+
+            Progress = (bi + 1f) / total;
+            if (sw.ElapsedMilliseconds > frameBudgetMs)
+            {
+                yield return null;
+                sw.Restart();
+            }
         }
+
+        Progress = 1f;
+        Ready = true;
+        Freeze(false);
     }
 
-    bool UpdateRock()
+    void FindRock()
     {
         if (rock == null)
         {
             rock = FindFirstObjectByType<RockAbsorber>();
-            if (rock == null) return false;
+            if (rock == null) return;
+        }
+        if (rb == null)
+        {
             rb = rock.GetComponentInParent<Rigidbody>();
             if (rb != null) rb.useGravity = false;
         }
-        Vector3 l = world.transform.InverseTransformPoint(rock.WorldCenter);
-        rockV = l / vs;
-        return true;
+    }
+
+    // на час генерації камінь стоїть на місці
+    void Freeze(bool on)
+    {
+        if (!freezeRockWhileLoading || rb == null) return;
+        if (on && !frozen)
+        {
+            rockWasKinematic = rb.isKinematic;
+            rb.linearVelocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+            rb.isKinematic = true;
+            frozen = true;
+        }
+        else if (!on && frozen)
+        {
+            rb.isKinematic = rockWasKinematic;
+            frozen = false;
+        }
     }
 
     void BuildBlock(Vector3Int b)
@@ -559,8 +600,9 @@ public class PlanetGenerator : MonoBehaviour
 
     void FixedUpdate()
     {
-        if (rock == null || rb == null) return;
+        if (rock == null || rb == null) { FindRock(); if (rock == null || rb == null) return; }
         rb.useGravity = false;
+        if (rb.isKinematic) return;
 
         Vector3 to = CenterWorld - rb.worldCenterOfMass;
         float dist = to.magnitude;
@@ -571,6 +613,17 @@ public class PlanetGenerator : MonoBehaviour
         float waterR = (Rb + seaHeight) * vs;
         if (dist < waterR + rock.Radius * 0.5f)
             rb.AddForce(-rb.linearVelocity * waterDrag, ForceMode.Acceleration);
+    }
+
+    // ---------- екран завантаження ----------
+
+    void OnGUI()
+    {
+        if (Ready || !showProgress) return;
+        var style = new GUIStyle(GUI.skin.label) { fontSize = 28, alignment = TextAnchor.MiddleCenter };
+        style.normal.textColor = Color.white;
+        GUI.Label(new Rect(0, Screen.height * 0.45f, Screen.width, 60f),
+            "Генерація планети " + Mathf.RoundToInt(Progress * 100f) + "%", style);
     }
 
     // ---------- допоміжне ----------
