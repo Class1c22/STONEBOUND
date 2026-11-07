@@ -6,6 +6,7 @@ using UnityEngine.InputSystem;
 // Всмоктані фігури прилипають до поверхні як новий шар, а камінь (і його колайдер) росте.
 // Кнопка R (скрипт RockBlast) віддає частину набраного: камінь меншає, а шматки розлітаються.
 // Нижче початку поточної стадії камінь не меншає: на межі стадії R просто нічого не робить.
+// Кнопка N: камінь миттєво переходить на наступну стадію.
 [RequireComponent(typeof(Rigidbody), typeof(SphereCollider))]
 public class RockAbsorber : MonoBehaviour
 {
@@ -32,6 +33,11 @@ public class RockAbsorber : MonoBehaviour
     [Header("Ріст за ярусами")]
     [Tooltip("Увімкнено: під час рівня камінь НЕ росте (розмір фіксований), об'єм лише накопичується. Камінь виростає одразу, коли досягнуто порогу наступної стадії (це робить TierTransition під час відльоту камери)")]
     public bool growOnlyOnTierUp = true;
+
+    [Header("Перехід на наступну стадію (кнопка N)")]
+    [Tooltip("Кнопка N миттєво піднімає камінь на наступну стадію")]
+    public bool allowStageSkipKey = true;
+    public Key stageSkipKey = Key.N;
 
     [Header("Стадії розміру (за зростанням radiusRatio)")]
     public List<RockStage> stages = DefaultStages();
@@ -168,10 +174,15 @@ public class RockAbsorber : MonoBehaviour
 
     void Update()
     {
+        var kbd = Keyboard.current;
+
+        // N: миттєвий перехід на наступну стадію
+        if (allowStageSkipKey && kbd != null && kbd[stageSkipKey].wasPressedThisFrame)
+            NextStageNow();
+
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
         // тест росту: G додає 30% поточного об'єму (у релізній збірці цього коду немає)
-        var dbgKb = Keyboard.current;
-        if (dbgKb != null && dbgKb.gKey.wasPressedThisFrame) DebugGrow(0.3f);
+        if (kbd != null && kbd.gKey.wasPressedThisFrame) DebugGrow(0.3f);
 #endif
         // плавна зміна розміру колайдера (росте повільно, меншає швидко)
         if (!Mathf.Approximately(currentRadius, targetRadius))
@@ -184,6 +195,19 @@ public class RockAbsorber : MonoBehaviour
             // камінь меншає: шматки на поверхні стискаються разом із ним, а не висять у повітрі
             if (currentRadius < prev) PullAttachedIn(currentRadius / prev);
         }
+    }
+
+    // Миттєво піднімає камінь на наступну стадію (розмір і об'єм ставляться одразу).
+    // Повертає false, якщо це вже остання стадія.
+    public bool NextStageNow()
+    {
+        if (stages == null || stages.Count == 0 || Stage >= stages.Count - 1) return false;
+
+        float ratio = stages[Stage + 1].radiusRatio;
+        SetSizeRatio(ratio);
+
+        if (showDebug) Debug.Log($"[Rock] N: перехід на стадію {Stage + 1}/{StageCount}: {StageName}", this);
+        return true;
     }
 
     // Радіус слідує за об'ємом лише коли ріст за ярусами вимкнено.

@@ -1,25 +1,35 @@
 using UnityEngine;
 
-// Камера для планети. Висить на Main Camera постійно.
+// Камера для планети. Висить на Main Camera постійно (генератор додасть її сам, якщо її нема).
 // Знайшла PlanetGenerator у сцені: вимикає FollowCamera і сама керує камерою.
 // Планети нема: нічого не чіпає і повертає FollowCamera.
-// Позиція завжди одна відносно каменя: позаду й вище, "вгору" = від центру планети.
+// Камера стоїть позаду каменя й трохи вище, видно кривину планети. "Вгору" = від центру планети.
 public class PlanetCamera : MonoBehaviour
 {
     public PlanetGenerator planet;
     public RockAbsorber rock;
 
     [Header("Позиція відносно каменя (у радіусах каменя)")]
-    public float distanceInRadii = 14f;
-    public float heightInRadii = 7f;
+    public float distanceInRadii = 18f;
+    public float heightInRadii = 4f;
     public float lookAtHeightInRadii = 0.5f;
-    public float minDistance = 8f;
+    public float minDistance = 10f;
 
     [Header("Плавність")]
     public float positionSmooth = 0.1f;
     public float rotationSharpness = 12f;
 
-    [Header("Пошук")]
+    [Header("Камера за каменем (слідує за напрямком руху)")]
+    public bool followHeading = true;
+    [Tooltip("Швидкість по поверхні, від якої камера починає повертатись")]
+    public float minHeadingSpeed = 2f;
+    [Tooltip("Градусів за секунду")]
+    public float headingTurnRate = 70f;
+    [Tooltip("Якщо рух під більшим кутом до камери, камера не розвертається (щоб не крутилась при русі назад)")]
+    public float maxFollowAngle = 80f;
+
+    [Header("Інше")]
+    public float minFarClip = 5000f;
     [Tooltip("Як часто (сек) перевіряти, чи є планета в сцені")]
     public float checkInterval = 0.5f;
 
@@ -27,6 +37,7 @@ public class PlanetCamera : MonoBehaviour
     bool oldWasEnabled;
     bool active;
     float nextCheck;
+    Rigidbody rockRb;
 
     Vector3 fwd;
     Vector3 vel;
@@ -64,6 +75,12 @@ public class PlanetCamera : MonoBehaviour
         active = on;
         init = false;
 
+        if (on)
+        {
+            var c = GetComponent<Camera>();
+            if (c != null && c.farClipPlane < minFarClip) c.farClipPlane = minFarClip;
+        }
+
         if (oldCam == null) FindOldCamera();
         if (oldCam == null) return;
 
@@ -92,6 +109,9 @@ public class PlanetCamera : MonoBehaviour
             if (planet != null && rock == null)
                 rock = FindFirstObjectByType<RockAbsorber>();
 
+            if (rock != null && rockRb == null)
+                rockRb = rock.GetComponentInParent<Rigidbody>();
+
             SetActive(planet != null && rock != null);
         }
 
@@ -116,6 +136,22 @@ public class PlanetCamera : MonoBehaviour
         Vector3 f = Vector3.ProjectOnPlane(fwd, up);
         if (f.sqrMagnitude < 1e-6f) f = Vector3.ProjectOnPlane(transform.right, up);
         fwd = f.normalized;
+
+        // камера повільно розвертається за напрямком руху каменя
+        if (followHeading && rockRb != null && !rockRb.isKinematic)
+        {
+            Vector3 v = Vector3.ProjectOnPlane(rockRb.linearVelocity, up);
+            if (v.magnitude > minHeadingSpeed)
+            {
+                float ang = Vector3.SignedAngle(fwd, v.normalized, up);
+                if (Mathf.Abs(ang) < maxFollowAngle)
+                {
+                    float maxStep = headingTurnRate * Time.deltaTime;
+                    float step = Mathf.Clamp(ang, -maxStep, maxStep);
+                    fwd = (Quaternion.AngleAxis(step, up) * fwd).normalized;
+                }
+            }
+        }
 
         float r = rock.Radius;
         float back = Mathf.Max(minDistance, r * distanceInRadii);

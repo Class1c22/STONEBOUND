@@ -8,7 +8,9 @@ using UnityEngine.Rendering;
 // VoxelWorld має стояти на (0,0,0) з масштабом 1. FloorGenerator і VillageGenerator у цій сцені вимкни.
 //
 //  * Уся кора генерується ОДИН РАЗ на старті (від полюса, де стартує камінь, і далі).
-//    Поки йде генерація, камінь заморожений, на екрані відсотки. Потім камінь може котитись будь-де.
+//    Камінь ставиться над північним полюсом і ЖОРСТКО заморожується (щокадру повертається на місце),
+//    на екрані відсотки. Потім камінь може котитись будь-де.
+//  * На старті автоматично додаються PlanetRockController (на камінь) і PlanetCamera (на Main Camera), якщо їх нема.
 //  * ОСНОВА (Bedrock): гладка куля з SphereCollider і земляною текстурою. Каменем не ламається.
 //  * КОРА: шар справжніх вокселів. Зверху шар біому, під ним земля (бруд), глибше земля з камінням.
 //  * МОРЕ: прозора водяна куля. Біля берегів піщане мілководдя. У воді камінь сповільнюється.
@@ -61,6 +63,10 @@ public class PlanetGenerator : MonoBehaviour
     public float frameBudgetMs = 30f;
     public bool freezeRockWhileLoading = true;
     public bool showProgress = true;
+    [Tooltip("Поставити камінь над північним полюсом перед генерацією")]
+    public bool placeRockAtStart = true;
+    [Tooltip("Автоматично додати PlanetRockController і PlanetCamera, якщо їх нема")]
+    public bool autoSetup = true;
 
     [Header("Вигляд")]
     public Color waterColor = new Color(0.15f, 0.45f, 0.85f, 0.72f);
@@ -87,6 +93,9 @@ public class PlanetGenerator : MonoBehaviour
     Rigidbody rb;
     bool rockWasKinematic;
     bool frozen;
+    Transform lockT;
+    Vector3 lockPos;
+    Quaternion lockRot;
 
     byte[][] topSets, soilSets, leafSets;
     byte[] stoneSet, sandSet, borderSet, trunkSet;
@@ -426,6 +435,11 @@ public class PlanetGenerator : MonoBehaviour
         for (int i = 0; i < 4; i++) yield return null;
 
         FindRock();
+        if (rock != null)
+        {
+            if (placeRockAtStart) PlaceRockAtStart();
+            if (autoSetup) AutoSetup();
+        }
         Freeze(true);
 
         // усі блоки, що зачіпають кору
@@ -483,6 +497,7 @@ public class PlanetGenerator : MonoBehaviour
 
         Progress = 1f;
         Ready = true;
+        FindRock();
         Freeze(false);
     }
 
@@ -496,28 +511,91 @@ public class PlanetGenerator : MonoBehaviour
         if (rb == null)
         {
             rb = rock.GetComponentInParent<Rigidbody>();
+            if (rb == null) rb = rock.GetComponentInChildren<Rigidbody>();
             if (rb != null) rb.useGravity = false;
         }
     }
 
-    // на час генерації камінь стоїть на місці
-    void Freeze(bool on)
+    // ставимо камінь над північним полюсом (над поверхнею, щоб не застряг у вокселях)
+    void PlaceRockAtStart()
     {
-        if (!freezeRockWhileLoading || rb == null) return;
-        if (on && !frozen)
+        float lift = Rb + crustMax + 1f + rock.Radius / vs + 2f;
+        Vector3 target = world.transform.TransformPoint((C + Vector3.up * lift) * vs);
+        Vector3 delta = target - rock.WorldCenter;
+
+        Transform t = rb != null ? rb.transform : rock.transform;
+        t.position += delta;
+        if (rb != null && !rb.isKinematic)
         {
-            rockWasKinematic = rb.isKinematic;
             rb.linearVelocity = Vector3.zero;
             rb.angularVelocity = Vector3.zero;
-            rb.isKinematic = true;
+        }
+        Physics.SyncTransforms();
+    }
+
+    // додаємо керування й камеру, якщо їх нема в сцені
+    void AutoSetup()
+    {
+        if (FindFirstObjectByType<PlanetRockController>() == null)
+        {
+            GameObject host = rb != null ? rb.gameObject : rock.gameObject;
+            host.AddComponent<PlanetRockController>();
+        }
+        if (FindFirstObjectByType<PlanetCamera>() == null && Camera.main != null)
+        {
+            Camera.main.gameObject.AddComponent<PlanetCamera>();
+        }
+    }
+
+    // на час генерації камінь стоїть на місці: kinematic + щокадру повертається на запам'ятану позицію
+    void Freeze(bool on)
+    {
+        if (!freezeRockWhileLoading) return;
+
+        if (on && !frozen)
+        {
+            if (rock == null) return;
+            lockT = rb != null ? rb.transform : rock.transform;
+            lockPos = lockT.position;
+            lockRot = lockT.rotation;
+
+            if (rb != null)
+            {
+                rockWasKinematic = rb.isKinematic;
+                if (!rb.isKinematic)
+                {
+                    rb.linearVelocity = Vector3.zero;
+                    rb.angularVelocity = Vector3.zero;
+                }
+                rb.isKinematic = true;
+            }
             frozen = true;
         }
         else if (!on && frozen)
         {
-            rb.isKinematic = rockWasKinematic;
             frozen = false;
+            if (rb != null)
+            {
+                rb.isKinematic = rockWasKinematic;
+                if (!rb.isKinematic)
+                {
+                    rb.linearVelocity = Vector3.zero;
+                    rb.angularVelocity = Vector3.zero;
+                    rb.WakeUp();
+                }
+            }
         }
     }
+
+    void HoldFrozen()
+    {
+        if (!frozen || lockT == null) return;
+        lockT.position = lockPos;
+        lockT.rotation = lockRot;
+    }
+
+    void Update() { HoldFrozen(); }
+    void LateUpdate() { HoldFrozen(); }
 
     void BuildBlock(Vector3Int b)
     {
@@ -600,6 +678,8 @@ public class PlanetGenerator : MonoBehaviour
 
     void FixedUpdate()
     {
+        HoldFrozen();
+
         if (rock == null || rb == null) { FindRock(); if (rock == null || rb == null) return; }
         rb.useGravity = false;
         if (rb.isKinematic) return;
