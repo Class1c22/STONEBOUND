@@ -11,8 +11,9 @@ using UnityEngine.SceneManagement;
 // 1) камінь завмирає і росте до наступної стадії;
 // 2) камера віддаляється вгору (разом із ростом каменя);
 // 3) анімація 1: хмарки закривають екран (стартують за Cover Lead секунд ДО кінця відльоту камери);
-// 4) вантажиться наступна сцена (екран закритий);
-// 5) КАМІНЬ І КАМЕРА переносяться в нову сцену (камінь стає на місце заглушки, камера нової сцени видаляється);
+// 4) вантажиться наступна сцена (екран закритий). Якщо завантаження довге, запускається анімація очікування;
+// 5) КАМІНЬ І КАМЕРА переносяться в нову сцену (камінь стає на місце заглушки, камера нової сцени видаляється).
+//    Якщо в сцені є PlanetGenerator, чекаємо, поки планета згенерується (теж з анімацією очікування);
 // 6) анімація 2: хмарки розлітаються, а камера повертається від каменя назад (зворотний відліт).
 //
 // У кожній сцені лишай свій RockAbsorber (з усім обладнанням) і свою камеру як заглушки: звідти беруться
@@ -28,6 +29,9 @@ using UnityEngine.SceneManagement;
 //  - Update Mode = Unscaled Time (щоб працювали, навіть якщо Time.timeScale = 0);
 //  - стан за замовчуванням: ПОРОЖНІЙ (хмарок не видно, екран чистий); перехід з нього на закриття лише за тригером Cover Trigger;
 //  - закриття (Cover Trigger, за замовчуванням "loading"): анімація, що закриває весь екран і лишається в кінці закритою (Loop Time вимкнено);
+//  - ОЧІКУВАННЯ (Wait Trigger, за замовчуванням "loadingwait"): новий стан, що ЗАЦИКЛЕНИЙ (Loop Time увімкнено).
+//    Переходи: стан закриття -> очікування за тригером Wait Trigger, очікування -> розліт за тригером Reveal Trigger.
+//    Перехід закриття -> розліт лишається (якщо завантаження швидке, очікування просто пропускається);
 //  - розліт (Reveal Trigger, за замовчуванням "loadingrev"): розліт; після нього екран чистий.
 //  Скрипт запускає анімації лише тригерами (Animator.SetTrigger), умови переходів між станами налаштовуєш в Animator.
 //  Після кожного переходу скрипт робить Rebind(): аніматор повертається в стан за замовчуванням.
@@ -97,6 +101,18 @@ public class TierTransition : MonoBehaviour
     [Tooltip("Скільки тримати екран закритим перед початком завантаження сцени")]
     public float holdClosed = 0.2f;
 
+    [Header("Хмарки: довге завантаження / генерація планети")]
+    [Tooltip("Animator з анімацією очікування. Порожньо = той самий, що в закритті. Анімація має бути зациклена")]
+    public Animator waitAnimator;
+    [Tooltip("Назва параметра-тригера, що запускає анімацію очікування (порожньо = вимкнути очікування)")]
+    public string waitTrigger = "loadingwait";
+    [Tooltip("Якщо завантаження сцени триває довше за стільки секунд (відлік від закритого екрана), запускається анімація очікування")]
+    public float waitDelay = 1.5f;
+    [Tooltip("Якщо в новій сцені є PlanetGenerator: чекати, поки планета згенерується, і показувати анімацію очікування одразу")]
+    public bool waitForPlanet = true;
+    [Tooltip("Максимум секунд очікування генерації планети (запобіжник, щоб гра не зависла)")]
+    public float planetTimeout = 180f;
+
     [Header("Хмарки: розліт у новій сцені")]
     [Tooltip("Може бути той самий Animator, що й вище")]
     public Animator revealAnimator;
@@ -116,6 +132,7 @@ public class TierTransition : MonoBehaviour
     RockAbsorber rock;
     float maxTimer, findTimer;
     bool warnedNoNext;
+    bool waitFired;
 
     void Awake()
     {
@@ -235,6 +252,7 @@ public class TierTransition : MonoBehaviour
     {
         IsBusy = true;
         maxTimer = 0f;
+        waitFired = false;
 
         RockAbsorber carried = rock;
         FollowCamera follow = FindFirstObjectByType<FollowCamera>();
@@ -352,8 +370,13 @@ public class TierTransition : MonoBehaviour
         bool approach = hasRig && carried != null && keptFollow != null && keptCam != null && approachOnArrive && flyDuration > 0f;
         bool fogCarry = false;
 
+        float loadClock = Time.unscaledTime;    // відлік довгого завантаження від закритого екрана
         AsyncOperation op = loader();
-        while (!op.isDone) yield return null;
+        while (!op.isDone)
+        {
+            if (Time.unscaledTime - loadClock >= waitDelay) FireWait();   // довго вантажиться: анімація очікування
+            yield return null;
+        }
         if (fogOn)
         {
             if (SceneManager.GetActiveScene() == sceneBefore)
@@ -379,6 +402,23 @@ public class TierTransition : MonoBehaviour
         else
         {
             rock = FindFirstObjectByType<RockAbsorber>();
+        }
+
+        // якщо в сцені є планета: чекаємо, поки вона згенерується (анімація очікування грає одразу)
+        if (waitForPlanet)
+        {
+            PlanetGenerator planet = FindFirstObjectByType<PlanetGenerator>();
+            if (planet != null && planet.enabled)
+            {
+                float planetClock = Time.unscaledTime;
+                while (!planet.Ready && planet != null && Time.unscaledTime - planetClock < planetTimeout)
+                {
+                    FireWait();
+                    yield return null;
+                }
+                if (planet != null && !planet.Ready)
+                    Debug.LogWarning("[TierTransition] Планета не встигла згенеруватись за " + planetTimeout + " с, іду далі.", this);
+            }
         }
 
         // ===== 6. анімація 2: хмарки розлітаються, камера підлітає назад до каменя =====
@@ -408,6 +448,7 @@ public class TierTransition : MonoBehaviour
             {
                 revealed = true;
                 Revealing?.Invoke();
+                ResetWaitTrigger();     // тригер очікування більше не потрібен
                 Fire(revealAnimator != null ? revealAnimator : coverAnimator, revealTrigger);
             }
 
@@ -631,6 +672,22 @@ public class TierTransition : MonoBehaviour
 
     // ---------- аніматори ----------
 
+    // Запускає анімацію очікування (один раз за перехід)
+    void FireWait()
+    {
+        if (waitFired || string.IsNullOrEmpty(waitTrigger)) return;
+        waitFired = true;
+        Fire(waitAnimator != null ? waitAnimator : coverAnimator, waitTrigger);
+    }
+
+    void ResetWaitTrigger()
+    {
+        if (string.IsNullOrEmpty(waitTrigger)) return;
+        Animator a = waitAnimator != null ? waitAnimator : coverAnimator;
+        if (a != null && a.gameObject.activeInHierarchy && HasParameter(a, waitTrigger))
+            a.ResetTrigger(waitTrigger);
+    }
+
     static void Fire(Animator a, string trigger)
     {
         if (a == null)
@@ -668,6 +725,7 @@ public class TierTransition : MonoBehaviour
     {
         Reset(coverAnimator);
         if (revealAnimator != coverAnimator) Reset(revealAnimator);
+        if (waitAnimator != coverAnimator && waitAnimator != revealAnimator) Reset(waitAnimator);
     }
 
     // ---------- камера і камінь ----------
