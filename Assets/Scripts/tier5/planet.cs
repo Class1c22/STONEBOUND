@@ -17,7 +17,8 @@ using UnityEngine.Rendering;
 //  * КЛІМАТ: за широтою + шум вологості: сніг, тундра, ліс, трава, савана, пустеля, джунглі, гори.
 //  * КРАЇНИ: діаграма Вороного, на межах гравійна смуга.
 //  * ДЕРЕВА: вокселні, ростуть радіально від центру планети.
-//  * ГРАВІТАЦІЯ радіальна: до центру планети.
+//  * ГРАВІТАЦІЯ радіальна: до центру планети. Діє і на камінь, і на уламки (VoxelPiece).
+//    Для уламків окремі налаштування: множник сили, опір води, частота пошуку нових уламків.
 //
 // Усі розміри у ВОКСЕЛЯХ. Висота світу потрібна приблизно 2 * (Bedrock + Crust + TreeMargin).
 // Планета з Bedrock 200 це кілька мільйонів вокселів: якщо важко, зменш bedrockRadius.
@@ -50,12 +51,24 @@ public class PlanetGenerator : MonoBehaviour
     public bool trees = true;
     [Range(0f, 3f)] public float treeDensity = 1f;
 
-    [Header("Гравітація")]
+    [Header("Гравітація (камінь)")]
     [Tooltip("Прискорення до центру планети, м/с²")]
     public float gravity = 30f;
     [Tooltip("Опір води для каменя")]
     public float waterDrag = 1.5f;
     [Range(0f, 2f)] public float friction = 0.6f;
+
+    [Header("Гравітація (уламки)")]
+    [Tooltip("Притягувати уламки (VoxelPiece) до центру планети")]
+    public bool pieceGravity = true;
+    [Tooltip("Множник гравітації уламків відносно гравітації каменя (1 = така сама)")]
+    [Range(0f, 3f)] public float pieceGravityMul = 1f;
+    [Tooltip("Опір води для уламків")]
+    public float pieceWaterDrag = 3f;
+    [Tooltip("Як часто (сек) шукати нові уламки. Менше = швидше підхоплює, але важче")]
+    [Range(0.02f, 1f)] public float pieceScanInterval = 0.1f;
+    [Tooltip("Уламки далі за цю відстань від центру планети (у радіусах основи) не чіпаємо. 0 = без обмеження")]
+    public float pieceMaxDistanceRadii = 0f;
 
     [Header("Генерація")]
     public int blockSize = 24;
@@ -96,6 +109,11 @@ public class PlanetGenerator : MonoBehaviour
     Transform lockT;
     Vector3 lockPos;
     Quaternion lockRot;
+
+    // уламки
+    readonly List<Rigidbody> pieceBodies = new List<Rigidbody>();
+    readonly HashSet<Rigidbody> pieceSet = new HashSet<Rigidbody>();
+    float nextPieceScan;
 
     byte[][] topSets, soilSets, leafSets;
     byte[] stoneSet, sandSet, borderSet, trunkSet;
@@ -680,6 +698,9 @@ public class PlanetGenerator : MonoBehaviour
     {
         HoldFrozen();
 
+        // уламки: притягуємо до центру планети (незалежно від каменя)
+        if (pieceGravity) ApplyPieceGravity();
+
         if (rock == null || rb == null) { FindRock(); if (rock == null || rb == null) return; }
         rb.useGravity = false;
         if (rb.isKinematic) return;
@@ -693,6 +714,57 @@ public class PlanetGenerator : MonoBehaviour
         float waterR = (Rb + seaHeight) * vs;
         if (dist < waterR + rock.Radius * 0.5f)
             rb.AddForce(-rb.linearVelocity * waterDrag, ForceMode.Acceleration);
+    }
+
+    // Знаходить усі VoxelPiece у сцені й запам'ятовує їхні Rigidbody (раз на pieceScanInterval)
+    void RefreshPieces()
+    {
+        pieceBodies.Clear();
+        pieceSet.Clear();
+
+        VoxelPiece[] all = FindObjectsByType<VoxelPiece>(FindObjectsSortMode.None);
+        for (int i = 0; i < all.Length; i++)
+        {
+            Rigidbody prb = all[i].GetComponent<Rigidbody>();
+            if (prb == null) prb = all[i].GetComponentInParent<Rigidbody>();
+            if (prb == null || prb == rb) continue;
+            if (pieceSet.Add(prb)) pieceBodies.Add(prb);
+        }
+    }
+
+    void ApplyPieceGravity()
+    {
+        if (world == null || vs <= 0f) return;
+
+        if (Time.time >= nextPieceScan)
+        {
+            nextPieceScan = Time.time + pieceScanInterval;
+            RefreshPieces();
+        }
+
+        Vector3 center = CenterWorld;
+        float waterR = (Rb + seaHeight) * vs;
+        float maxD = pieceMaxDistanceRadii > 0f ? pieceMaxDistanceRadii * Rb * vs : float.MaxValue;
+        float g = gravity * pieceGravityMul;
+
+        for (int i = pieceBodies.Count - 1; i >= 0; i--)
+        {
+            Rigidbody p = pieceBodies[i];
+            if (p == null) { pieceBodies.RemoveAt(i); continue; }   // уламок всмоктало/знищено
+
+            p.useGravity = false;                                    // прибираємо глобальну гравітацію Unity
+            if (p.isKinematic) continue;
+
+            Vector3 to = center - p.worldCenterOfMass;
+            float dist = to.magnitude;
+            if (dist < 0.01f || dist > maxD) continue;
+
+            p.AddForce(to / dist * g, ForceMode.Acceleration);
+
+            // у воді уламки теж сповільнюються
+            if (pieceWaterDrag > 0f && dist < waterR)
+                p.AddForce(-p.linearVelocity * pieceWaterDrag, ForceMode.Acceleration);
+        }
     }
 
     // ---------- екран завантаження ----------
