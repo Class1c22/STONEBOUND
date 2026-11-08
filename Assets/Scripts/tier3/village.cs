@@ -1,193 +1,242 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 
-// Генератор сіл для 3 рівня: окремі села (хати з дворами, комори, церква з цвинтарем, вітряк, криниця, площа з дубом,
-// поля, баштан, ставок, річка з мостом), між якими лежить густий ліс. Повісь на порожній GameObject,
-// VoxelWorld і камінь знайдуться самі.
+// Генератор міста для 3 рівня. Те саме місто, що й на 2 рівні (дороги, будинки з меблями, дерева, паркани,
+// особливі ділянки), але камінь виріс, і місто тепер набагато менше за нього (houseToRockHeight = 0.25),
+// до того ж воно поділене на РАЙОНИ: житловий, центр, парк, ферма, промзона.
+//
+// Як працює масштаб:
+//  * Усе проєктується так само, як на 2 рівні: у "проєктних вокселях" (будинок, меблі, вікна не змінюються).
+//  * Коли генератор уперше бачить камінь, він рахує множник scaleF з розміру каменя: щоб висота будинку
+//    дорівнювала houseToRockHeight від висоти каменя. Кожен проєктний воксель потім ставиться як
+//    куб scaleF x scaleF x scaleF справжніх вокселів. Тож деталі лишаються гарними, а місто росте разом із каменем.
+//  * Множник цілий і не може бути менший за 1: якщо камінь замалий для заданого співвідношення,
+//    генератор попередить у консолі.
+//  * Усі розміри в метрах (blockSize, houseWidth тощо) задані як на 2 рівні, тобто в проєктних метрах.
+//    Реальний розмір дорівнює їм, помноженим на scaleF.
+//
+// Райони:
+//  * Світ ділиться на райони по districtBlocks x districtBlocks кварталів, межі трохи "гуляють" (districtWarp).
+//  * Тип району вибирається детерміновано з seed і ваг (wResidential тощо).
+//  * Кожен район має свій профіль (Zone): шанси будинків, дерев, особливих ділянок, поверховість, дахи, двори.
+//
+// Повісь на порожній GameObject, перетягни VoxelWorld. Камінь береться зі сцени сам.
 // Підлога має бути на y = 0 (FloorGenerator), VoxelWorld на (0,0,0) з масштабом 1.
-//
-// Усі розміри тут у ВОКСЕЛЯХ, тому село масштабується разом із world.voxelSize: виставляєш розмір вокселя
-// сцени 3 (приблизно в 4-5 разів більший за тир 2) і нічого більше не міняєш.
-//
-// Як це працює (усе росте навколо каменя й без кінця):
-//  * Світ ділиться на регіони 2R x 2R вокселів. Регіон з'являється, коли камінь підходить ближче за Spawn Radius.
-//    Кожен регіон це ОКРЕМЕ СЕЛО зі своїм планом: головна дорога, бічні вулички, церква, криниця, вітряк,
-//    площа з дубом, двори вздовж доріг, за селом поля, лука, сад, баштан, ставок і невеликі гаї.
-//  * З УСІХ чотирьох боків регіону лежить смуга густого лісу (Border Band). Між двома селами вона подвоюється,
-//    тож села чітко розділені лісом.
-//  * Головна дорога й річка залежать від глобальної координати x, тому вони проходять крізь ліс і зшивають
-//    сусідні села в одну безкінечну смугу. Дерева дорогу не перекривають.
-//  * Регіон ріжеться на плитки (Tile Size). Плитки будуються лише поблизу каменя, найближчі першими, і
-//    розставляються по кадрах (Voxels Per Frame), тож підвисань немає.
-//  * Дороги й річка плоскі (без колайдера): камінь їде по підлозі й не ламає їх. Усе інше справжні вокселі,
-//    і камінь ламає їх.
-//  * Навколо стартової позиції каменя нічого не ставиться (Start Clear In Rock Radii), крім доріг.
-//  * Те саме значення Seed завжди дає те саме село.
-public class VillageGenerator : MonoBehaviour
+public class Tier3CityGenerator : MonoBehaviour
 {
+    public enum RoadMode
+    {
+        [Tooltip("Плоский воксельний килим без колайдера: камінь їде по підлозі й не ламає дорогу")]
+        FlatMesh,
+        [Tooltip("Справжні вокселі завтовшки 1 проєктний воксель: камінь може їх вибивати")]
+        SolidVoxels
+    }
+
+    public enum District { Residential, Downtown, Park, Farm, Industrial }
+
     [Header("Зв'язки")]
     [Tooltip("Якщо порожньо, береться VoxelWorld зі сцени")]
     public VoxelWorld world;
-    public int seed = 3003;
+    public int seed = 12345;
+
+    [Header("Масштаб рівня 3")]
+    [Tooltip("Висота будинку відносно висоти каменя. 0.25 = будинок вчетверо нижчий за камінь")]
+    [Range(0.05f, 1.5f)] public float houseToRockHeight = 0.25f;
+    [Tooltip("0 = рахувати з розміру каменя. Більше 0 = задати множник вручну")]
+    public int manualScale = 0;
+    [Tooltip("Верхня межа множника (великі множники дуже важкі: вокселів у scale^3 разів більше)")]
+    public int maxScale = 4;
+    [Tooltip("Стиснення міста: 1 = як було, 2 = усе місто вдвічі менше (кожні 2x2x2 проєктних вокселі стають одним справжнім), 3 = утричі. " +
+             "Деталі (двері, вікна) стають грубішими, меблі всередині вимикаються. Це єдиний спосіб зробити місто меншим, ніж scaleF = 1")]
+    [Range(1, 4)] public int downscale = 2;
 
     [Header("Стрімінг")]
-    [Tooltip("Як далеко від каменя з'являється село (метри)")]
-    public float spawnRadius = 150f;
-    [Tooltip("Те саме, але в радіусах каменя: коли камінь росте, село з'являється далі. Береться більше з двох")]
-    public float spawnRadiusInRockRadii = 80f;
-    [Tooltip("Навколо стартової позиції каменя нічого не ставиться (в радіусах каменя). Дороги лишаються")]
-    public float startClearInRockRadii = 6f;
-    [Tooltip("Скільки вокселів ставити за кадр. Менше = плавніше, але село з'являється довше")]
-    public int voxelsPerFrame = 6000;
+    [Tooltip("Як далеко від каменя з'являються квартали (проєктні метри, множиться на scaleF)")]
+    public float spawnRadius = 160f;
+    [Tooltip("Те саме, але в радіусах каменя: коли камінь росте, місто з'являється далі. Береться більше з двох. Місто дрібне, тож кварталів у радіусі багато: тримай 30-50; якщо важко, зменш або збільш Voxels Per Frame")]
+    public float spawnRadiusInRockRadii = 45f;
+    [Tooltip("Скільки справжніх вокселів ставити за кадр. Менше = плавніше, але будівлі з'являються довше")]
+    public int voxelsPerFrame = 12000;
+    public float scanInterval = 0.3f;
+    [Tooltip("Навколо стартової позиції каменя будинків і дерев не буде (проєктні метри, множиться на scaleF). Дороги лишаються")]
+    public float startClearRadius = 12f;
 
-    [Header("Регіон (у вокселях)")]
-    [Tooltip("Півсторона одного села-регіону. Мінімум 120, інакше річка й поля не вміщаються")]
-    public int mapRadius = 150;
-    [Tooltip("Сторона плитки, яка будується за раз")]
-    public int tileSize = 48;
-    [Tooltip("Ширина лісу з КОЖНОГО боку регіону. Між двома селами ліс удвічі ширший")]
-    public int borderBand = 30;
-    [Tooltip("Щільність лісу в смузі розділювача (0..1)")]
-    [Range(0.3f, 1f)] public float forestDensity = 0.92f;
-
-    [Header("Дороги (у вокселях)")]
-    public int mainRoadWidth = 6;
-    public int laneWidth = 4;
-    [Tooltip("Наскільки головна дорога в'ється")]
-    public float roadCurve = 14f;
-    [Tooltip("Частота звивів (менше = плавніше)")]
-    public float roadWave = 0.035f;
-    [Tooltip("Висота плоскої дороги над підлогою (метри), щоб не мерехтіла разом із підлогою")]
+    [Header("Квартали й дороги (проєктні метри)")]
+    public float blockSize = 28f;
+    public float roadWidth = 5f;
+    [Range(1, 4)] public int lotsPerSide = 2;
+    public RoadMode roadMode = RoadMode.FlatMesh;
+    [Tooltip("Висота плоскої дороги над підлогою (для FlatMesh, справжні метри), щоб не мерехтіла разом із підлогою")]
     public float roadHeight = 0.03f;
-    [Tooltip("Скільки бічних вуличок (крім дороги через міст)")]
-    public int laneCount = 6;
-    public int laneLengthMin = 28;
-    public int laneLengthMax = 50;
+    [Tooltip("Шанс ліхтаря в кожній з точок уздовж дороги")]
+    [Range(0f, 1f)] public float streetLampChance = 0.7f;
 
-    [Header("Річка")]
-    public bool river = true;
-    public int riverWidth = 12;
-
-    [Header("Двори й хати (у вокселях)")]
-    [Tooltip("На скільки вокселів в обидва боки від центру тягнеться село вздовж головної дороги")]
-    public int villageHalfLength = 80;
-    public int yardWidthMin = 20;
-    public int yardWidthMax = 26;
-    public int yardDepth = 22;
-    [Tooltip("Решта дворів: город із грядками")]
-    [Range(0f, 1f)] public float houseChance = 0.85f;
-    public int houseWidthMin = 10;
-    public int houseWidthMax = 13;
-    public int houseDepthMin = 7;
-    public int houseDepthMax = 9;
-    public int wallHeight = 5;
-    [Tooltip("Шанс солом'яного даху (інакше черепиця або дранка)")]
-    [Range(0f, 1f)] public float thatchChance = 0.5f;
-    [Range(0f, 1f)] public float chimneyChance = 0.6f;
-    [Range(0f, 1f)] public float fenceChance = 0.8f;
+    [Header("Ділянки (житловий район; інші райони мають свої профілі)")]
+    [Range(0f, 1f)] public float houseChance = 0.5f;
+    [Tooltip("Шанс гаю (кілька дерев)")]
+    [Range(0f, 1f)] public float treeLotChance = 0.15f;
+    [Tooltip("Шанс особливої ділянки: фонтан, майданчик, ставок, город, парковка, водонапірна вежа, ярмарок. Решта ділянок порожні")]
+    [Range(0f, 1f)] public float specialLotChance = 0.25f;
+    [Range(0f, 1f)] public float fenceChance = 0.6f;
+    [Tooltip("Скільки дерев максимум у дворі будинку (якщо вміщаються)")]
     public int treesPerYardMax = 2;
+    [Tooltip("Скільки дрібниць максимум у дворі: кущі, клумби, лавки, будка, мангал, машина, басейн")]
+    public int propsPerYardMax = 2;
+    [Range(0f, 1f)] public float mailboxChance = 0.7f;
+    public int treesPerGroveMin = 2;
+    public int treesPerGroveMax = 5;
 
-    [Header("Атмосфера")]
-    [Tooltip("Шанс, що хата двоповерхова (з балконом)")]
-    [Range(0f, 1f)] public float twoStoryChance = 0.18f;
-    [Tooltip("Шанс, що двір це комора з сіном")]
-    [Range(0f, 1f)] public float barnChance = 0.12f;
-    [Tooltip("Скільки дрібниць максимум у дворі: дрова, копиці, вулики, корова, свині з курами, віз, будка")]
-    public int yardExtrasMax = 3;
-    [Tooltip("Шанс могили в кожному місці цвинтаря біля церкви")]
-    [Range(0f, 1f)] public float graveChance = 0.55f;
-    [Tooltip("Відстань між ліхтарними стовпами вздовж головної дороги (0 = без стовпів)")]
-    public int poleSpacing = 28;
+    [Header("Райони")]
+    [Tooltip("Вимкнути = усе місто житлове, як раніше")]
+    public bool useDistricts = true;
+    [Tooltip("Сторона району в кварталах")]
+    [Min(1)] public int districtBlocks = 4;
+    [Tooltip("Наскільки межі районів «гуляють», щоб не були ідеальною сіткою")]
+    [Range(0f, 1f)] public float districtWarp = 0.35f;
+    [Tooltip("Вага (відносна частота) кожного типу району")]
+    public float wResidential = 4f;
+    public float wDowntown = 2f;
+    public float wPark = 3f;
+    public float wFarm = 1.5f;
+    public float wIndustrial = 1.5f;
 
-    [Header("Околиці (у вокселях)")]
-    [Tooltip("Розмір ділянки поля/лісу")]
-    public int plotSize = 48;
+    [Header("Будинки (проєктні метри)")]
+    public float houseWidthMin = 6f;
+    public float houseWidthMax = 9f;
+    public float houseDepthMin = 5f;
+    public float houseDepthMax = 8f;
+    public float floorHeight = 3f;
+    public float wallThickness = 0.5f;
+    [Range(0f, 1f)] public float twoFloorChance = 0.35f;
+    [Range(0f, 1f)] public float flatRoofChance = 0.2f;
+    [Range(0f, 1f)] public float chimneyChance = 0.5f;
+    [Tooltip("Порожні всередині. Дах підпирають колони з кроком pillarSpacing, тож він не падає. " +
+             "Якщо вимкнути, будинки стануть суцільними (без меблів), а вокселів буде значно більше")]
+    public bool hollowHouses = true;
+    [Tooltip("Крок колон усередині будинку у проєктних вокселях. Якщо дах усе ж падає, зменш")]
+    public int pillarSpacing = 10;
+    [Tooltip("Ставити меблі (працює лише з hollowHouses). Камінь усе одно не заходить усередину, тож для великих масштабів можна вимкнути")]
+    public bool furnishHouses = true;
+
+    [Header("Дерева (проєктні метри)")]
+    public float trunkHeightMin = 3.5f;
+    public float trunkHeightMax = 5.5f;
+    public float crownRadiusMin = 1.6f;
+    public float crownRadiusMax = 2.4f;
+    [Range(0f, 1f)] public float pineChance = 0.3f;
+
+    [Header("Паркани (проєктні метри)")]
+    public float fenceHeight = 1.2f;
+    public float gateWidth = 2f;
 
     // ---------- внутрішній стан ----------
 
     struct VoxelOp
     {
-        public Vector3Int pos;
+        public Vector3Int pos;   // проєктні координати, під час застосування множаться на scaleF
         public byte id;
     }
 
-    class Lane
+    // профіль ділянок поточного району
+    struct Zone
     {
-        public int x, side, len, endZ;
-        public bool exit;
+        public float house, tree, special, fence, flatRoof, twoFloor;
+        public int maxFloors, yardTrees, props, groveBonus;
+        public int[] specials;   // 0 фонтан, 1 майданчик, 2 ставок, 3 город, 4 парковка, 5 вежа, 6 ярмарок,
+                                 // 7 парк, 8 футбольне поле, 9 заправка, 10 сонячна ферма, 11 вітряки
     }
 
     readonly List<VoxelOp> ops = new List<VoxelOp>();
+    readonly HashSet<Vector2Int> requested = new HashSet<Vector2Int>();
+    readonly List<Vector2Int> queue = new List<Vector2Int>();
 
-    // Регіон = одне село. Координати всередині регіону локальні: від -M до M. Світові = локальні + (ox, oz)
-    class Region
-    {
-        public Vector2Int key;
-        public int ox, oz;
-        public byte[] roadKind;     // 0 = нічого, 1 = головна дорога, 2 = вуличка, 3 = міст
-        public bool[] riverMask;
-        public bool[] occ;          // зайнято дворами, церквою, вітряком
-        public int[] roadZ;         // z осі головної дороги для кожного x
-        public List<Lane> lanes = new List<Lane>();
-        public Dictionary<Vector2Int, List<System.Action>> jobs = new Dictionary<Vector2Int, List<System.Action>>();
-        public List<Vector2Int> pending = new List<Vector2Int>();
-    }
+    int down = 1;                              // стиснення (з downscale)
+    float ES => scaleF / (float)down;          // справжній розмір проєктного вокселя у вокселях світу
+    int scaleF;                                // 0 = ще не визначено; 1 і більше = множник
+    float vs;                                  // справжній розмір одного проєктного вокселя (метри)
+    int blockV, roadV, lotV, floorV, wallV, fenceV, gateV;
+    int doorHalf = 4, doorH = 9;
 
-    readonly Dictionary<Vector2Int, Region> regions = new Dictionary<Vector2Int, Region>();
-    Region cur;
-    int curOx, curOz;
-
-    // Посилання на дані поточного регіону (SetCur перемикає їх), тож весь код нижче працює з "поточним" регіоном
-    byte[] roadKind;
-    bool[] riverMask;
-    bool[] occ;
-    int[] roadZ;
-    List<Lane> lanes;
-    Dictionary<Vector2Int, List<System.Action>> jobs;
-
-    float vs;
-    int M, N, T, tilesPerSide, hw, lw;
-    float roadPh1, roadPh2, riverPh;   // глобальні фази: однакові в усіх регіонах, тож дорога й річка зшиваються
-
+    // камінь береться зі сцени автоматично (див. FindRock), у Inspector його немає
     RockAbsorber rock;
+
+    // район і профіль поточного кварталу
+    District curDistrict;
+    Zone zone;
+
+    // для трави: які квартали вже повністю розставлені
+    readonly HashSet<Vector2Int> doneBlocks = new HashSet<Vector2Int>();
+    public bool LayoutReady => scaleF > 0 && vs > 0f && blockV > 0;
+    public int ScaleFactor => scaleF;
+    public int BlockVoxels => blockV;
+    public int RoadVoxels => roadV;
+    public bool IsBlockDone(int bx, int bz) => doneBlocks.Contains(new Vector2Int(bx, bz));
+
+    float scanTimer;
     bool haveStart;
-    Vector2 rockV, startV;             // позиція каменя й його старт у світових вокселях
-    float startClearV;
+    Vector2 startLocal, lastRockLocal;
 
-    // поточне перетворення для малювання будівель: facing 0..3, початок, розміри
-    int tF, tOx, tOz, tW, tD;
+    // зайняті прямокутники поточної ділянки (проєктні воксельні координати x/z)
+    readonly List<RectInt> taken = new List<RectInt>();
 
-    // буфери плоского меша
+    // стан поточного будинку
+    bool stairsOk;
+    int stairZs;
+    int hFacing, hOx, hOz;
+    int ix0, ix1, iz0, iz1;
+    byte[,] occ;
+    readonly List<Vector2Int> pil = new List<Vector2Int>();
+
+    // поточне перетворення для малювання меблів і дрібниць
+    int tFacing, tOx, tOz, tX0, tZ0, tA, tB, tS, tY0, tH;
+
+    // кольори (індекси палітри VoxelWorld)
+    byte[] wallA, wallB, roofA, roofB;
+    byte[][] leafSets;
+    byte[] pineSet;
+    byte cPlinth, cTrim, cGlass, cFrame, cDoor, cInterior, cBrick;
+    byte cAsphaltA, cAsphaltB, cCurb, cLine;
+    byte cPost, cPlank, cRail, cBarkA, cBarkB;
+
+    byte cFloorA, cFloorB, cInnerWall, cWoodDark, cWoodMid;
+    byte cWhite, cBlack, cMetal, cGray, cScreen, cSheet, cPot, cLeafG, cLampShade, cCabinet, cCounter, cFire;
+    byte cWater, cWaterLight, cWaterDeep, cStone, cStone2, cSand, cSoil, cSoilDark, cPath, cPathB;
+    byte cRedToy, cYellowToy, cBlueToy, cSeat, cPaveA, cPaveB, cPlayfloor, cSlide;
+    byte cGlassCar, cTire, cTail, cHeadLamp, cPiano;
+    byte cHay, cHayB, cStraw, cShirt, cHat, cReed, cLily;
+    byte cTankA, cTankB, cConcrete, cRoofRed, cLampLight, cDirt;
+    byte cOrange, cCabbage, cPumpkin, cSun, cCorn;
+    byte cLawnA, cLawnB, cSolar, cSolarB, cFieldA, cFieldB;
+    byte[] bookColors, blanketColors, sofaA, sofaB, rugA, rugB, carColors, flowerColors, awA, awB, goodsColors;
+
+    // буфери для плоскої дороги
     readonly List<Vector3> mVerts = new List<Vector3>();
     readonly List<Vector3> mNormals = new List<Vector3>();
     readonly List<Vector2> mUvs = new List<Vector2>();
     readonly List<int> mTris = new List<int>();
 
-    // кольори (індекси палітри VoxelWorld)
-    byte[] wallSet, stripeSet, shutterSet, thatchSet, tileSet, shingleSet, gravelSet, dirtSet, plankSet, barnSet;
-    byte[][] leafSets;
-    byte[] pineSet, flowerColors, domeSet, wheatSet;
-    byte cGlass, cDoor, cFloor, cBrick, cCap, cPath, cPost, cRail, cBarkA, cBarkB;
-    byte cWater, cWaterLight, cSoil, cSoilDark, cStem, cLeaf, cSun, cSunCenter, cStraw, cStraw2;
-    byte cCabbage, cCabbage2, cCorn, cLog, cLogB, cStone, cStone2, cGold, cSail, cMillWall, cMillBase, cMillRoof;
-    byte cCowW, cCowB, cPink, cPigDark, cRed, cPumpkin, cMelon;
+    // меблі: 0 ліжко, 1 шафа, 2 книжкова полиця, 3 диван, 4 телевізор, 5 стіл зі стільцями, 6 письмовий стіл,
+    // 7 кухня, 8 холодильник, 9 рослина, 10 торшер, 11 верстак, 12 ящики, 13 камін, 14 піаніно
+    static readonly int[] DimA = { 7, 8, 9, 12, 9, 11, 9, 14, 4, 3, 3, 12, 4, 10, 10 };
+    static readonly int[] DimB = { 11, 3, 2, 5, 3, 9, 7, 4, 4, 3, 3, 5, 4, 3, 7 };
 
-    // ---------- публічне для інших скриптів ----------
-
-    // Точка на головній дорозі в центрі першого села (світові координати): сюди можна ставити камінь на старті
-    public Vector3 StartPoint
+    // теми кімнат: вітальня, спальня, кухня, кабінет, майстерня
+    static readonly int[][] Themes =
     {
-        get
-        {
-            if (world == null || vs <= 0f) return transform.position;
-            return world.transform.TransformPoint(new Vector3(0f, 0f, RoadZFunc(0) * vs));
-        }
-    }
-    public int TileVoxels => T;
-    public int RegionRadiusVoxels => M;
+        new[] { 13, 3, 4, 2, 14, 9, 9, 10 },
+        new[] { 0, 1, 6, 2, 9, 10 },
+        new[] { 7, 8, 5, 9, 10, 12 },
+        new[] { 2, 2, 2, 6, 3, 9, 10 },
+        new[] { 11, 12, 12, 12, 1, 2, 10 },
+    };
+    static readonly int[] GroundThemes = { 0, 2, 3, 4, 0, 2 };
+    static readonly int[] UpperThemes = { 1, 1, 3, 0 };
+
+    // дрібниці двору: 0 живопліт, 1 клумба, 2 лавка, 3 будка, 4 мангал, 5 машина, 6 басейн
+    static readonly int[] PropA = { 10, 8, 8, 5, 3, 16, 14 };
+    static readonly int[] PropB = { 3, 6, 3, 5, 3, 7, 9 };
 
     // ---------- старт ----------
 
@@ -196,30 +245,64 @@ public class VillageGenerator : MonoBehaviour
         if (world == null) world = FindFirstObjectByType<VoxelWorld>();
         if (world == null)
         {
-            Debug.LogWarning("[VillageGenerator] Не знайдено VoxelWorld", this);
+            Debug.LogWarning("[Tier3CityGenerator] Не знайдено VoxelWorld", this);
             enabled = false;
             return;
         }
 
-        vs = world.voxelSize;
-        M = Mathf.Max(60, mapRadius);
-        N = 2 * M;
-        T = Mathf.Max(16, tileSize);
-        tilesPerSide = Mathf.CeilToInt(N / (float)T);
-        hw = Mathf.Max(2, mainRoadWidth / 2);
-        lw = Mathf.Max(3, laneWidth);
+        // розміри в проєктних вокселях: рахуються з метрів і розміру вокселя світу, як на 2 рівні
+        blockV = Mathf.Max(24, V(blockSize));
+        roadV = Mathf.Clamp(V(roadWidth), 6, blockV / 2);
+        lotsPerSide = Mathf.Max(1, lotsPerSide);
+        lotV = (blockV - roadV) / lotsPerSide;
+        floorV = Mathf.Max(10, V(floorHeight));
+        wallV = Mathf.Max(1, V(wallThickness));
+        fenceV = Mathf.Max(4, V(fenceHeight));
+        gateV = Mathf.Max(4, V(gateWidth));
 
-        if (M < 120)
-            Debug.LogWarning("[VillageGenerator] Map Radius менший за 120: річка, поля й вуличка до мосту можуть не вміститись", this);
-
-        // глобальні фази дороги й річки
-        var g = new System.Random(seed);
-        roadPh1 = (float)g.NextDouble() * 6.28f;
-        roadPh2 = (float)g.NextDouble() * 6.28f;
-        riverPh = (float)g.NextDouble() * 6.28f;
+        if (lotV < 24)
+            Debug.LogWarning("[Tier3CityGenerator] Ділянка замала для будинків: збільш blockSize або зменш lotsPerSide", this);
+        else if (lotV < 40)
+            Debug.LogWarning("[Tier3CityGenerator] Ділянка менша за 40 вокселів: особливі ділянки (фонтан, ставок тощо) замінюються гаєм", this);
 
         InitColors();
         StartCoroutine(Worker());
+    }
+
+    int V(float meters)
+    {
+        return Mathf.Max(1, Mathf.RoundToInt(meters / world.voxelSize));
+    }
+
+    // Множник: будинок (стіни одного поверху + дах) має дорівнювати houseToRockHeight від висоти каменя.
+    // Множник цілий і не менший за 1, тому реальне співвідношення округлюється.
+    void ComputeScale()
+    {
+        down = Mathf.Max(1, downscale);
+        int s;
+        if (manualScale > 0)
+        {
+            s = manualScale;
+        }
+        else
+        {
+            float rockHeight = rock.Radius * 2f;
+            float target = rockHeight * houseToRockHeight;
+
+            // типовий будинок у проєктних вокселях: поверх + дах (половина вужчої сторони)
+            int roofV = Mathf.Min(V(houseWidthMin), V(houseDepthMin)) / 2;
+            float baseMeters = (floorV + roofV) * world.voxelSize;
+            float raw = target * down / Mathf.Max(0.01f, baseMeters);
+            s = Mathf.RoundToInt(raw);
+
+            if (raw < 1f)
+                Debug.LogWarning($"[Tier3CityGenerator] Камінь замалий для houseToRockHeight={houseToRockHeight}: потрібен множник {raw:0.00}, а менше 1 неможливо. " +
+                                 $"Будинок буде ~{baseMeters / down / rockHeight:0.00} від висоти каменя. Збільш камінь або зменш voxelSize світу.", this);
+        }
+
+        scaleF = Mathf.Clamp(s, 1, Mathf.Max(1, maxScale));
+        vs = world.voxelSize * scaleF / down;
+        Debug.Log($"[Tier3CityGenerator] Множник масштабу = {scaleF}, стиснення = {down} (радіус каменя {rock.Radius:0.0} м)", this);
     }
 
     byte C(int r, int g, int b)
@@ -229,120 +312,319 @@ public class VillageGenerator : MonoBehaviour
 
     void InitColors()
     {
-        wallSet = new[] { C(244, 242, 232), C(236, 232, 220), C(247, 245, 238) };
-        stripeSet = new[] { C(70, 120, 175), C(200, 150, 70), C(130, 90, 60), C(90, 140, 110) };
-        shutterSet = new[] { C(60, 110, 170), C(70, 130, 90), C(170, 70, 60) };
-        thatchSet = new[] { C(196, 166, 92), C(184, 152, 80), C(206, 176, 104) };
-        tileSet = new[] { C(168, 62, 50), C(152, 54, 44), C(180, 74, 58) };
-        shingleSet = new[] { C(110, 78, 52), C(98, 68, 46), C(122, 88, 60) };
-        gravelSet = new[] { C(150, 135, 112), C(140, 126, 104), C(120, 110, 92) };
-        dirtSet = new[] { C(128, 100, 70), C(120, 94, 66) };
-        plankSet = new[] { C(170, 130, 85), C(156, 118, 76) };
-        barnSet = new[] { C(165, 58, 48), C(150, 50, 42), C(176, 66, 54) };
+        // стіни (пари відтінків для шахового малюнка)
+        wallA = new[] { C(222, 210, 185), C(170, 195, 215), C(232, 214, 150), C(214, 150, 130), C(190, 190, 185), C(170, 80, 62) };
+        wallB = new[] { C(210, 198, 172), C(158, 184, 205), C(220, 202, 140), C(202, 140, 120), C(178, 178, 174), C(155, 70, 55) };
+        // дахи
+        roofA = new[] { C(110, 70, 52), C(165, 60, 50), C(80, 86, 96), C(70, 110, 100) };
+        roofB = new[] { C(98, 62, 46), C(150, 52, 44), C(70, 76, 86), C(62, 100, 90) };
 
-        cGlass = C(160, 200, 225);
-        cDoor = C(110, 70, 42);
-        cFloor = C(180, 150, 110);
-        cBrick = C(150, 74, 58);
-        cCap = C(96, 48, 40);
-        cPath = C(160, 140, 108);
+        cPlinth = C(120, 118, 112);
+        cTrim = C(240, 236, 226);
+        cGlass = C(150, 195, 225);
+        cFrame = C(245, 245, 240);
+        cDoor = C(110, 70, 45);
+        cInterior = C(150, 138, 120);
+        cBrick = C(150, 70, 55);
+
+        cAsphaltA = C(62, 64, 70);
+        cAsphaltB = C(70, 72, 78);
+        cCurb = C(170, 170, 165);
+        cLine = C(230, 205, 85);
+
         cPost = C(95, 62, 40);
+        cPlank = C(200, 170, 120);
         cRail = C(150, 115, 80);
+
         cBarkA = C(100, 70, 45);
         cBarkB = C(88, 60, 38);
-
         leafSets = new[]
         {
             new[] { C(58, 125, 52), C(72, 145, 58), C(48, 108, 46) },
             new[] { C(95, 160, 70), C(110, 175, 80), C(80, 140, 62) },
-            new[] { C(190, 70, 70), C(86, 150, 62), C(70, 130, 56) },   // яблуня з плодами
+            new[] { C(205, 125, 45), C(190, 95, 40), C(220, 160, 60) },
         };
         pineSet = new[] { C(35, 95, 60), C(42, 110, 66), C(30, 82, 52) };
 
+        // інтер'єр
+        cFloorA = C(176, 132, 86);
+        cFloorB = C(164, 122, 78);
+        cInnerWall = C(236, 226, 204);
+        cWoodDark = C(88, 58, 36);
+        cWoodMid = C(130, 88, 56);
+        cWhite = C(240, 240, 236);
+        cBlack = C(34, 34, 38);
+        cMetal = C(150, 155, 162);
+        cGray = C(110, 112, 118);
+        cScreen = C(70, 130, 190);
+        cSheet = C(235, 232, 222);
+        cPot = C(176, 98, 62);
+        cLeafG = C(60, 140, 60);
+        cLampShade = C(250, 226, 140);
+        cCabinet = C(190, 150, 110);
+        cCounter = C(90, 92, 98);
+        cFire = C(240, 130, 40);
+        cSeat = C(120, 80, 60);
+        cPiano = C(30, 30, 36);
+        bookColors = new[] { C(170, 60, 50), C(60, 90, 150), C(70, 130, 80), C(210, 170, 60), C(120, 70, 120), C(220, 214, 200) };
+        blanketColors = new[] { C(190, 60, 60), C(70, 110, 180), C(80, 150, 100), C(210, 170, 70) };
+        sofaA = new[] { C(90, 110, 150), C(150, 70, 60), C(80, 120, 90), C(120, 100, 80) };
+        sofaB = new[] { C(110, 132, 172), C(172, 92, 80), C(100, 142, 112), C(142, 122, 100) };
+        rugA = new[] { C(160, 50, 50), C(50, 90, 150), C(70, 120, 80), C(140, 100, 50) };
+        rugB = new[] { C(220, 200, 160), C(220, 215, 200), C(225, 215, 170), C(230, 210, 160) };
+
+        // двір, парк, вулиця
         cWater = C(60, 130, 200);
-        cWaterLight = C(130, 190, 235);
-
-        cSoil = C(100, 72, 48);
-        cSoilDark = C(86, 62, 40);
-        cStem = C(70, 130, 56);
-        cLeaf = C(60, 130, 60);
-        cSun = C(250, 200, 40);
-        cSunCenter = C(110, 70, 30);
-        cStraw = C(214, 178, 76);
-        cStraw2 = C(196, 160, 60);
-        wheatSet = new[] { C(214, 178, 70), C(200, 160, 56), C(224, 190, 84) };
-        cCabbage = C(90, 160, 70);
-        cCabbage2 = C(140, 200, 100);
-        cCorn = C(210, 196, 80);
-        flowerColors = new[] { C(240, 240, 235), C(250, 210, 60), C(220, 70, 80), C(150, 110, 200), C(90, 150, 230) };
-
-        cLog = C(150, 106, 62);
-        cLogB = C(136, 94, 54);
+        cWaterLight = C(150, 205, 240);
+        cWaterDeep = C(40, 100, 170);
         cStone = C(150, 150, 146);
         cStone2 = C(124, 124, 120);
-        cGold = C(235, 190, 60);
-        domeSet = new[] { C(60, 130, 110), C(70, 110, 170), C(235, 190, 60) };
-        cSail = C(232, 226, 210);
-        cMillWall = C(240, 236, 224);
-        cMillBase = C(140, 120, 100);
-        cMillRoof = C(110, 70, 50);
-
-        cCowW = C(240, 238, 232);
-        cCowB = C(44, 42, 46);
-        cPink = C(240, 170, 170);
-        cPigDark = C(214, 134, 134);
-        cRed = C(200, 40, 40);
-        cPumpkin = C(232, 128, 36);
-        cMelon = C(54, 128, 72);
+        cSand = C(222, 200, 140);
+        cSoil = C(86, 60, 40);
+        cSoilDark = C(60, 40, 28);
+        cPath = C(190, 176, 150);
+        cPathB = C(176, 162, 136);
+        cRedToy = C(210, 60, 50);
+        cYellowToy = C(240, 200, 60);
+        cBlueToy = C(60, 110, 210);
+        cPaveA = C(196, 192, 184);
+        cPaveB = C(178, 174, 166);
+        cPlayfloor = C(98, 150, 104);
+        cSlide = C(60, 170, 220);
+        cGlassCar = C(130, 170, 200);
+        cTire = C(30, 30, 32);
+        cTail = C(190, 30, 30);
+        cHeadLamp = C(250, 240, 180);
+        cHay = C(214, 180, 80);
+        cHayB = C(194, 160, 64);
+        cStraw = C(224, 200, 110);
+        cShirt = C(70, 100, 170);
+        cHat = C(110, 76, 48);
+        cReed = C(110, 150, 70);
+        cLily = C(70, 160, 80);
+        cTankA = C(180, 60, 50);
+        cTankB = C(220, 215, 205);
+        cConcrete = C(150, 150, 148);
+        cRoofRed = C(165, 60, 50);
+        cLampLight = C(255, 236, 160);
+        cDirt = C(140, 116, 82);
+        cOrange = C(230, 130, 40);
+        cCabbage = C(140, 190, 100);
+        cPumpkin = C(235, 125, 30);
+        cSun = C(250, 200, 30);
+        cCorn = C(240, 210, 80);
+        cLawnA = C(86, 150, 64);
+        cLawnB = C(76, 138, 56);
+        cSolar = C(30, 50, 110);
+        cSolarB = C(44, 70, 140);
+        cFieldA = C(70, 150, 60);
+        cFieldB = C(82, 166, 70);
+        carColors = new[] { C(200, 50, 45), C(50, 90, 180), C(235, 235, 230), C(40, 40, 46), C(230, 190, 50), C(60, 140, 90), C(150, 150, 156) };
+        flowerColors = new[] { C(230, 70, 90), C(250, 210, 60), C(240, 240, 240), C(170, 90, 200), C(250, 140, 60) };
+        awA = new[] { C(200, 50, 45), C(50, 100, 180), C(60, 150, 80), C(230, 140, 40) };
+        awB = new[] { C(240, 238, 230), C(240, 238, 230), C(240, 238, 230), C(240, 238, 230) };
+        goodsColors = new[] { C(200, 50, 40), C(240, 150, 40), C(110, 170, 60), C(240, 210, 60), C(130, 60, 120), C(170, 100, 50) };
     }
 
-    // ---------- допоміжне ----------
+    // ---------- райони ----------
 
-    int I(int x, int z) { return (x + M) + N * (z + M); }
-    bool InMap(int x, int z) { return x >= -M && x < M && z >= -M && z < M; }
-    int RoadZAt(int x) { return roadZ[Mathf.Clamp(x + M, 0, N - 1)]; }
-
-    // Внутрішня межа села: далі починається ліс-розділювач
-    int Inner { get { return M - Mathf.Max(8, borderBand); } }
-
-    bool Free(int x, int z)
+    // Тип району кварталу. Межі зміщує шум, а тип визначається хешем клітинки району.
+    District GetDistrict(int bx, int bz)
     {
-        if (!InMap(x, z)) return false;
-        int i = I(x, z);
-        if (roadKind[i] != 0 || riverMask[i] || occ[i]) return false;
+        if (!useDistricts) return District.Residential;
+        int D = Mathf.Max(1, districtBlocks);
 
-        // біля старту каменя нічого не ставимо (дороги лишаються)
-        if (haveStart)
+        float ox = 1000f + seed * 0.013f, oz = 1000f + seed * 0.017f;
+        float wx = (Mathf.PerlinNoise(bx * 0.21f + ox, bz * 0.21f + 17.3f) - 0.5f) * 2f * districtWarp * D;
+        float wz = (Mathf.PerlinNoise(bx * 0.21f + 91.7f, bz * 0.21f + oz) - 0.5f) * 2f * districtWarp * D;
+        int cx = Mathf.FloorToInt((bx + wx) / D);
+        int cz = Mathf.FloorToInt((bz + wz) / D);
+
+        float total = Mathf.Max(0.0001f, wResidential + wDowntown + wPark + wFarm + wIndustrial);
+        float r = Hash01(cx, 777, cz) * total;
+        if ((r -= wResidential) < 0f) return District.Residential;
+        if ((r -= wDowntown) < 0f) return District.Downtown;
+        if ((r -= wPark) < 0f) return District.Park;
+        if ((r -= wFarm) < 0f) return District.Farm;
+        return District.Industrial;
+    }
+
+    Zone ZoneFor(District d)
+    {
+        switch (d)
         {
-            float dx = x + curOx - startV.x, dz = z + curOz - startV.y;
-            if (dx * dx + dz * dz < startClearV * startClearV) return false;
+            case District.Downtown: // щільна забудова, до 4 поверхів, без парканів
+                return new Zone
+                {
+                    house = 0.8f, tree = 0.03f, special = 0.15f, fence = 0f, flatRoof = 0.6f,
+                    twoFloor = 0.8f, maxFloors = 4, yardTrees = 0, props = 0, groveBonus = 0,
+                    specials = new[] { 0, 4, 6, 6, 7, 9 }
+                };
+            case District.Park: // гаї, ставки, майданчики, майже без будинків
+                return new Zone
+                {
+                    house = 0.03f, tree = 0.35f, special = 0.6f, fence = 0f, flatRoof = 0f,
+                    twoFloor = 0f, maxFloors = 1, yardTrees = 3, props = 1, groveBonus = 3,
+                    specials = new[] { 0, 1, 2, 2, 1, 7, 7, 7, 8 }
+                };
+            case District.Farm: // городи, рідкі садиби
+                return new Zone
+                {
+                    house = 0.2f, tree = 0.15f, special = 0.6f, fence = 0.8f, flatRoof = 0f,
+                    twoFloor = 0.1f, maxFloors = 2, yardTrees = 2, props = 2, groveBonus = 0,
+                    specials = new[] { 3, 3, 3, 6, 10, 11 }
+                };
+            case District.Industrial: // плоскі «склади», парковки, водонапірні вежі
+                return new Zone
+                {
+                    house = 0.45f, tree = 0f, special = 0.4f, fence = 0.5f, flatRoof = 1f,
+                    twoFloor = 0f, maxFloors = 1, yardTrees = 0, props = 1, groveBonus = 0,
+                    specials = new[] { 4, 5, 4, 6, 9, 10, 10 }
+                };
+            default: // житловий: налаштування з Inspector
+                return new Zone
+                {
+                    house = houseChance, tree = treeLotChance, special = specialLotChance,
+                    fence = fenceChance, flatRoof = flatRoofChance, twoFloor = twoFloorChance, maxFloors = 2,
+                    yardTrees = treesPerYardMax, props = propsPerYardMax, groveBonus = 0,
+                    specials = new[] { 0, 1, 2, 3, 4, 5, 6, 7, 7, 8, 9 }
+                };
         }
-        return true;
     }
 
-    // Вісь головної дороги за глобальною координатою x: однакова в усіх регіонах, тож дорога неперервна
-    int RoadZFunc(int xGlobal)
+    // ---------- пошук кварталів навколо каменя ----------
+
+    void Update()
     {
-        return Mathf.RoundToInt(roadCurve * Mathf.Sin(xGlobal * roadWave + roadPh1) +
-                                roadCurve * 0.4f * Mathf.Sin(xGlobal * roadWave * 2.7f + roadPh2));
+        scanTimer -= Time.deltaTime;
+        if (scanTimer > 0f) return;
+        scanTimer = Mathf.Max(0.05f, scanInterval);
+
+        RockAbsorber found = FindRock();
+        if (found == null) return;
+
+        // камінь змінився (заглушка нової сцени → справжній камінь): стартова точка береться заново
+        if (found != rock)
+        {
+            rock = found;
+            haveStart = false;
+        }
+
+        // множник визначається один раз, поки жодного кварталу ще не замовлено
+        if (requested.Count == 0) ComputeScale();
+        if (scaleF <= 0) return;
+
+        ScanBlocks();
     }
 
-    int RiverZFunc(int xGlobal)
+    // Під час переходу між сценами одночасно існують заглушка нової сцени й камінь, що прийшов зі сцени 2
+    // (він ще може стояти на старих координатах). Беремо заглушку: вона стоїть там, де камінь опиниться
+    // після прибуття, і лише потім TierTransition її знищує. Коли камінь один, беремо його.
+    RockAbsorber FindRock()
     {
-        return Mathf.RoundToInt(-0.6f * M + 8f * Mathf.Sin(xGlobal * 0.03f + riverPh));
+        RockAbsorber[] all = FindObjectsByType<RockAbsorber>(FindObjectsSortMode.None);
+        if (all.Length == 0) return null;
+        if (all.Length == 1) return all[0];
+
+        Scene active = SceneManager.GetActiveScene();
+        for (int i = 0; i < all.Length; i++)
+            if (all[i].gameObject.scene == active) return all[i];
+        return all[0];
     }
 
-    void SetCur(Region r)
+    void ScanBlocks()
     {
-        cur = r;
-        curOx = r.ox;
-        curOz = r.oz;
-        roadKind = r.roadKind;
-        riverMask = r.riverMask;
-        occ = r.occ;
-        roadZ = r.roadZ;
-        lanes = r.lanes;
-        jobs = r.jobs;
+        Vector3 local = world.transform.InverseTransformPoint(rock.WorldCenter);
+        lastRockLocal = new Vector2(local.x, local.z);
+        if (!haveStart)
+        {
+            startLocal = lastRockLocal;
+            haveStart = true;
+        }
+
+        float bm = blockV * vs;   // сторона кварталу в метрах
+        float radius = Mathf.Max(spawnRadius * ES, rock.Radius * spawnRadiusInRockRadii);
+        int cx = Mathf.FloorToInt(local.x / bm);
+        int cz = Mathf.FloorToInt(local.z / bm);
+        int n = Mathf.CeilToInt(radius / bm) + 1;
+
+        for (int dz = -n; dz <= n; dz++)
+        for (int dx = -n; dx <= n; dx++)
+        {
+            var cell = new Vector2Int(cx + dx, cz + dz);
+            if (requested.Contains(cell)) continue;
+
+            Vector2 center = new Vector2((cell.x + 0.5f) * bm, (cell.y + 0.5f) * bm);
+            if (Vector2.Distance(center, lastRockLocal) > radius + bm * 0.5f) continue;
+
+            requested.Add(cell);
+            queue.Add(cell);
+        }
+    }
+
+    // Будує по одному кварталу: спочатку набір проєктних вокселів, потім розставляє його по кадрах
+    IEnumerator Worker()
+    {
+        // даємо VoxelWorld.SettleOnStart відпрацювати раніше за нас
+        for (int i = 0; i < 4; i++) yield return null;
+
+        while (true)
+        {
+            if (queue.Count == 0 || scaleF <= 0)
+            {
+                yield return null;
+                continue;
+            }
+
+            // найближчий до каменя квартал
+            float bm = blockV * vs;
+            int best = 0;
+            float bestD = float.MaxValue;
+            for (int i = 0; i < queue.Count; i++)
+            {
+                Vector2 c = new Vector2((queue[i].x + 0.5f) * bm, (queue[i].y + 0.5f) * bm);
+                float d = (c - lastRockLocal).sqrMagnitude;
+                if (d < bestD) { bestD = d; best = i; }
+            }
+            Vector2Int block = queue[best];
+            queue.RemoveAt(best);
+
+            GenerateBlock(block.x, block.y);
+
+            int idx = 0;
+            while (idx < ops.Count)
+            {
+                // бюджет рахується в справжніх вокселях: один проєктний воксель = scaleF^3
+                int budget = Mathf.Max(100, voxelsPerFrame);
+                while (idx < ops.Count && budget > 0)
+                    budget -= ApplyOp(ops[idx++]);
+                yield return null;
+            }
+            ops.Clear();
+            doneBlocks.Add(block);
+            yield return null;
+        }
+    }
+
+    // Нічого не затираємо: старі споруди й уже поставлені частини лишаються.
+    // Через це деталі в генераторі завжди ставляться ПЕРШИМИ, а заливка потім.
+    int ApplyOp(VoxelOp op)
+    {
+        // проєктний воксель p займає на сітці світу відрізок [p*f/down, (p+1)*f/down), але не менше однієї клітинки
+        int f = scaleF, dn = down;
+        int x0 = FloorDiv(op.pos.x * f, dn), x1 = Mathf.Max(x0, FloorDiv((op.pos.x + 1) * f - 1, dn));
+        int y0 = FloorDiv(op.pos.y * f, dn), y1 = Mathf.Max(y0, FloorDiv((op.pos.y + 1) * f - 1, dn));
+        int z0 = FloorDiv(op.pos.z * f, dn), z1 = Mathf.Max(z0, FloorDiv((op.pos.z + 1) * f - 1, dn));
+        int count = 0;
+        for (int y = y0; y <= y1; y++)
+        for (int z = z0; z <= z1; z++)
+        for (int x = x0; x <= x1; x++)
+        {
+            var p = new Vector3Int(x, y, z);
+            count++;
+            if (world.GetVoxel(p) == 0) world.SetVoxel(p, op.id);
+        }
+        return count;
     }
 
     static int FloorDiv(int a, int b)
@@ -352,467 +634,87 @@ public class VillageGenerator : MonoBehaviour
         return q;
     }
 
-    bool TreeClear(int x, int z, int r)
-    {
-        return Free(x, z) && Free(x + r, z) && Free(x - r, z) && Free(x, z + r) && Free(x, z - r);
-    }
+    // ---------- квартал ----------
 
-    bool RectClear(RectInt r)
-    {
-        for (int z = r.y; z < r.yMax; z++)
-        for (int x = r.x; x < r.xMax; x++)
-            if (!Free(x, z)) return false;
-        return true;
-    }
-
-    void MarkOcc(RectInt r)
-    {
-        for (int z = r.y; z < r.yMax; z++)
-        for (int x = r.x; x < r.xMax; x++)
-            if (InMap(x, z)) occ[I(x, z)] = true;
-    }
-
-    void MarkRoad(int x, int z, int kind)
-    {
-        if (!InMap(x, z)) return;
-        int i = I(x, z);
-        if (roadKind[i] != 0) return;
-        roadKind[i] = riverMask[i] ? (byte)3 : (byte)kind;
-    }
-
-    Vector2Int TileOf(int x, int z)
-    {
-        return new Vector2Int(Mathf.Clamp(x + M, 0, N - 1) / T, Mathf.Clamp(z + M, 0, N - 1) / T);
-    }
-
-    void AddJob(int x, int z, System.Action a)
-    {
-        Vector2Int tile = TileOf(x, z);
-        if (!jobs.TryGetValue(tile, out var list))
-        {
-            list = new List<System.Action>();
-            jobs[tile] = list;
-        }
-        list.Add(a);
-    }
-
-    static byte Pick(byte[] set, int h)
-    {
-        return set[(h & 0x7fffffff) % set.Length];
-    }
-
-    // Двір уздовж головної дороги: x0, ширина вздовж дороги, глибина від дороги, side = +1 північ / -1 південь
-    RectInt YardOnRoad(int x0, int width, int depth, int side)
-    {
-        int zMax = int.MinValue, zMin = int.MaxValue;
-        for (int x = x0; x < x0 + width; x++)
-        {
-            int z = RoadZAt(x);
-            if (z > zMax) zMax = z;
-            if (z < zMin) zMin = z;
-        }
-        if (side > 0) return new RectInt(x0, zMax + hw + 2, width, depth);
-        return new RectInt(x0, zMin - hw - 2 - depth, width, depth);
-    }
-
-    // Що стоїть у дворі: 0 город, 1 хата, 2 двоповерхова хата, 3 комора
-    int PickKind(System.Random rng)
-    {
-        if (rng.NextDouble() >= houseChance) return 0;
-        double q = rng.NextDouble();
-        if (q < twoStoryChance) return 2;
-        if (q < twoStoryChance + barnChance) return 3;
-        return 1;
-    }
-
-    // ---------- план села ----------
-
-    // План одного села. Викликається після SetCur(reg): дані регіону вже виділені в reg
-    void Plan(Region reg)
-    {
-        var rng = new System.Random(Hash(seed ^ 0x3131, reg.key.x, reg.key.y));
-        int inner = Inner;
-
-        // головна дорога (функція глобального x)
-        for (int i = 0; i < N; i++) roadZ[i] = RoadZFunc(i - M + curOx);
-
-        // річка на півдні (теж функція глобального x)
-        if (river)
-        {
-            int rw = Mathf.Max(4, riverWidth);
-            int lastC = RiverZFunc(-M - 1 + curOx);
-            for (int i = 0; i < N; i++)
-            {
-                int x = i - M;
-                int c = RiverZFunc(x + curOx);
-                int lo = Mathf.Min(c, lastC) - rw / 2, hi = Mathf.Max(c, lastC) + rw / 2;
-                for (int z = lo; z <= hi; z++)
-                    if (InMap(x, z)) riverMask[I(x, z)] = true;
-                lastC = c;
-            }
-        }
-
-        // головна дорога (проходить крізь ліс до сусідніх сіл)
-        for (int i = 0; i < N; i++)
-        {
-            int x = i - M;
-            int zA = roadZ[i], zB = roadZ[Mathf.Min(i + 1, N - 1)];
-            int lo = Mathf.Min(zA, zB) - hw;
-            int hi = Mathf.Max(zA, zB) + hw - 1 + (mainRoadWidth & 1);
-            for (int z = lo; z <= hi; z++) MarkRoad(x, z, 1);
-        }
-
-        // бічні вулички й дорога на південь (через міст)
-        int exitX = rng.Next(-15, 16);
-        int count = Mathf.Max(0, laneCount);
-        float span = Mathf.Max(10f, villageHalfLength - 25f);
-        for (int k = 0; k < count; k++)
-        {
-            float t = count == 1 ? 0.5f : k / (float)(count - 1);
-            int lx = Mathf.RoundToInt(Mathf.Lerp(-span, span, t)) + rng.Next(-5, 6);
-            if (Mathf.Abs(lx - exitX) < 14) continue;
-            lanes.Add(new Lane
-            {
-                x = lx,
-                side = (k & 1) == 0 ? 1 : -1,
-                len = hw + RI(rng, laneLengthMin, laneLengthMax),
-                exit = false
-            });
-        }
-        // дорога через міст губиться в лісі, не доходячи до краю регіону
-        lanes.Add(new Lane { x = exitX, side = -1, len = Mathf.Max(10, RoadZAt(exitX) + M - borderBand / 2), exit = true });
-
-        foreach (var ln in lanes)
-        {
-            int x0 = ln.x - lw / 2;
-            int zStart = RoadZAt(ln.x);
-            ln.endZ = zStart;
-            for (int t = 0; t < ln.len; t++)
-            {
-                int z = zStart + ln.side * t;
-                if (!ln.exit && InMap(ln.x, z) && riverMask[I(ln.x, z)]) break;
-                for (int dx = 0; dx < lw; dx++) MarkRoad(x0 + dx, z, 2);
-                ln.endZ = z;
-            }
-        }
-
-        // церква з двором (і цвинтарем) та криниця
-        int churchX = rng.Next(-20, 21);
-        int churchSide = rng.Next(2) == 0 ? 1 : -1;
-        RectInt cr = YardOnRoad(churchX - 15, 30, 34, churchSide);
-        if (RectClear(cr))
-        {
-            MarkOcc(cr);
-            int cf = churchSide > 0 ? 0 : 2;
-            AddJob(cr.x + cr.width / 2, cr.y + cr.height / 2, () => BuildChurchYard(cr, cf));
-
-            RectInt wr = YardOnRoad(cr.xMax + 2, 9, 9, churchSide);
-            if (RectClear(wr))
-            {
-                MarkOcc(wr);
-                AddJob(wr.x + 4, wr.y + 4, () => BuildWell(wr.x + 4, wr.y + 4));
-            }
-        }
-
-        // площа зі старим дубом і лавками
-        for (int t = 0; t < 8; t++)
-        {
-            int ox2 = rng.Next(-70, 55);
-            int os = (t & 1) == 0 ? 1 : -1;
-            RectInt orr = YardOnRoad(ox2, 16, 16, os);
-            if (!RectClear(orr)) continue;
-            MarkOcc(orr);
-            AddJob(orr.x + 8, orr.y + 8, () => BuildOakSquare(orr));
-            break;
-        }
-
-        // вітряк на краю села (перед лісом)
-        int mx = (rng.Next(2) == 0 ? -1 : 1) * (inner - 14);
-        int mz = RoadZAt(mx) + (rng.Next(2) == 0 ? 1 : -1) * 38;
-        RectInt mr = new RectInt(mx - 9, mz - 9, 18, 18);
-        if (RectClear(mr))
-        {
-            MarkOcc(mr);
-            AddJob(mx, mz, () => BuildWindmill(mx, mz));
-        }
-
-        // ліхтарні стовпи вздовж головної дороги
-        if (poleSpacing > 0)
-        {
-            for (int px = -villageHalfLength; px <= villageHalfLength; px += poleSpacing)
-            {
-                int pxx = px;
-                AddJob(pxx, RoadZAt(pxx) + hw + 1, () => BuildPole(pxx));
-            }
-        }
-
-        // двори вздовж головної дороги
-        for (int s = 0; s < 2; s++)
-        {
-            int side = s == 0 ? 1 : -1;
-            int x = -villageHalfLength + (s == 1 ? rng.Next(0, 10) : 0);
-            while (x < villageHalfLength)
-            {
-                int yw = RI(rng, yardWidthMin, yardWidthMax);
-                RectInt r = YardOnRoad(x, yw, yardDepth, side);
-                if (RectClear(r))
-                {
-                    int kind = PickKind(rng);
-                    int f = side > 0 ? 0 : 2;
-                    MarkOcc(r);
-                    AddJob(r.x + r.width / 2, r.y + r.height / 2, () => BuildYard(r, f, kind));
-                }
-                x += yw + rng.Next(0, 3);
-            }
-        }
-
-        // двори вздовж бічних вуличок
-        foreach (var ln in lanes)
-        {
-            if (ln.exit) continue;
-            int lxL = ln.x - lw / 2, lxR = lxL + lw - 1;
-            int z = RoadZAt(ln.x) + ln.side * (hw + 2);
-            while (ln.side * (ln.endZ - z) > yardWidthMin)
-            {
-                int yw = RI(rng, yardWidthMin, yardWidthMax);
-                int zLo = ln.side > 0 ? z : z - yw + 1;
-                for (int e = 0; e < 2; e++)
-                {
-                    RectInt r = e == 0
-                        ? new RectInt(lxR + 2, zLo, yardDepth, yw)
-                        : new RectInt(lxL - 1 - yardDepth, zLo, yardDepth, yw);
-                    int f = e == 0 ? 1 : 3;
-                    if (!RectClear(r)) continue;
-                    int kind = PickKind(rng);
-                    MarkOcc(r);
-                    AddJob(r.x + r.width / 2, r.y + r.height / 2, () => BuildYard(r, f, kind));
-                }
-                z += ln.side * (yw + rng.Next(0, 3));
-            }
-        }
-
-        // околиці: поля, лука, сад, гай, ставок, баштан (лише всередині меж села, далі йде ліс-розділювач)
-        int P = Mathf.Max(24, plotSize);
-        for (int pz = -inner; pz < inner; pz += P)
-        for (int px = -inner; px < inner; px += P)
-        {
-            RectInt plot = new RectInt(px, pz, Mathf.Min(P, inner - px), Mathf.Min(P, inner - pz));
-            int cx = plot.x + plot.width / 2, cz = plot.y + plot.height / 2;
-            bool core = Mathf.Abs(cx) < villageHalfLength + P / 2 && Mathf.Abs(cz - RoadZAt(cx)) < yardDepth + hw + 14;
-            if (core) continue;
-
-            float h = Hash01(px, 31, pz);
-            int type = h < 0.24f ? 0 : h < 0.44f ? 1 : h < 0.54f ? 2 : h < 0.64f ? 3 : h < 0.72f ? 4 : h < 0.82f ? 5 : 6;
-            AddJob(cx, cz, () => BuildPlot(plot, type));
-        }
-
-        // усі плитки регіону в чергу (будуються лише поблизу каменя)
-        for (int tz = 0; tz < tilesPerSide; tz++)
-        for (int tx = 0; tx < tilesPerSide; tx++)
-            reg.pending.Add(new Vector2Int(tx, tz));
-    }
-
-    // ---------- регіони й черга плиток ----------
-
-    Region CreateRegion(Vector2Int key)
-    {
-        var r = new Region
-        {
-            key = key,
-            ox = key.x * N,
-            oz = key.y * N,
-            roadKind = new byte[N * N],
-            riverMask = new bool[N * N],
-            occ = new bool[N * N],
-            roadZ = new int[N]
-        };
-        regions[key] = r;
-        SetCur(r);
-        Plan(r);
-        return r;
-    }
-
-    IEnumerator Worker()
-    {
-        // даємо VoxelWorld.SettleOnStart відпрацювати раніше за нас
-        for (int i = 0; i < 4; i++) yield return null;
-
-        while (true)
-        {
-            if (!UpdateRock())
-            {
-                yield return null;
-                continue;
-            }
-
-            float R = Mathf.Max(spawnRadius, rock.Radius * spawnRadiusInRockRadii) / vs;   // у вокселях
-
-            // 1. плануємо регіони, до яких камінь підійшов (по одному за раз)
-            bool madeRegion = false;
-            int cx0 = FloorDiv(Mathf.FloorToInt(rockV.x - R) + M, N), cx1 = FloorDiv(Mathf.FloorToInt(rockV.x + R) + M, N);
-            int cz0 = FloorDiv(Mathf.FloorToInt(rockV.y - R) + M, N), cz1 = FloorDiv(Mathf.FloorToInt(rockV.y + R) + M, N);
-            for (int cz = cz0; cz <= cz1 && !madeRegion; cz++)
-            for (int cx = cx0; cx <= cx1 && !madeRegion; cx++)
-            {
-                var key = new Vector2Int(cx, cz);
-                if (regions.ContainsKey(key)) continue;
-
-                // відстань від каменя до найближчої точки регіону
-                float px = Mathf.Clamp(rockV.x, key.x * N - M, key.x * N + M);
-                float pz = Mathf.Clamp(rockV.y, key.y * N - M, key.y * N + M);
-                float dx = px - rockV.x, dz = pz - rockV.y;
-                if (dx * dx + dz * dz > R * R) continue;
-
-                CreateRegion(key);
-                madeRegion = true;
-            }
-            if (madeRegion)
-            {
-                yield return null;
-                continue;
-            }
-
-            // 2. найближча до каменя ще не збудована плитка
-            Region bestReg = null;
-            int bestIdx = -1;
-            float bestD = float.MaxValue;
-            foreach (var reg in regions.Values)
-            {
-                for (int i = 0; i < reg.pending.Count; i++)
-                {
-                    Vector2 c = new Vector2(reg.ox + (reg.pending[i].x + 0.5f) * T - M, reg.oz + (reg.pending[i].y + 0.5f) * T - M);
-                    float d = (c - rockV).sqrMagnitude;
-                    if (d < bestD) { bestD = d; bestReg = reg; bestIdx = i; }
-                }
-            }
-            float reach = R + T;
-            if (bestReg == null || bestD > reach * reach)
-            {
-                yield return null;
-                continue;
-            }
-
-            Vector2Int tile = bestReg.pending[bestIdx];
-            bestReg.pending.RemoveAt(bestIdx);
-            SetCur(bestReg);
-            BuildTile(tile);
-
-            int idx = 0;
-            while (idx < ops.Count)
-            {
-                int end = Mathf.Min(ops.Count, idx + Mathf.Max(100, voxelsPerFrame));
-                for (; idx < end; idx++)
-                {
-                    VoxelOp op = ops[idx];
-                    // нічого не затираємо: деталі в генераторі завжди ставляться ПЕРШИМИ, а заливка потім
-                    if (world.GetVoxel(op.pos) == 0) world.SetVoxel(op.pos, op.id);
-                }
-                yield return null;
-            }
-            ops.Clear();
-            yield return null;
-        }
-    }
-
-    // Знаходить камінь у сцені й оновлює його позицію у світових вокселях. false, поки каменя немає
-    bool UpdateRock()
-    {
-        RockAbsorber[] all = FindObjectsByType<RockAbsorber>(FindObjectsSortMode.None);
-        RockAbsorber found = null;
-        if (all.Length == 1) found = all[0];
-        else if (all.Length > 1)
-        {
-            // під час переходу між сценами існує й заглушка нової сцени: беремо камінь активної сцени
-            Scene active = SceneManager.GetActiveScene();
-            found = all[0];
-            for (int i = 0; i < all.Length; i++)
-                if (all[i].gameObject.scene == active) { found = all[i]; break; }
-        }
-        if (found == null) return false;
-
-        if (found != rock)
-        {
-            rock = found;
-            haveStart = false;
-        }
-
-        Vector3 l = world.transform.InverseTransformPoint(rock.WorldCenter);
-        rockV = new Vector2(l.x / vs, l.z / vs);
-        if (!haveStart)
-        {
-            startV = rockV;
-            startClearV = rock.Radius * startClearInRockRadii / vs;
-            haveStart = true;
-        }
-        return true;
-    }
-
-    void BuildTile(Vector2Int tile)
+    void GenerateBlock(int bx, int bz)
     {
         ops.Clear();
-        if (jobs.TryGetValue(tile, out var list))
-            foreach (var job in list) job();
-        BuildTileBorder(tile);
-        BuildTileFlat(tile);
+        curDistrict = GetDistrict(bx, bz);
+        zone = ZoneFor(curDistrict);
+
+        int ox = bx * blockV;
+        int oz = bz * blockV;
+
+        BuildRoads(bx, bz, ox, oz);
+        BuildStreetLamps(bx, bz, ox, oz);
+        BuildStreetFurniture(bx, bz, ox, oz);
+
+        for (int lj = 0; lj < lotsPerSide; lj++)
+        for (int li = 0; li < lotsPerSide; li++)
+            BuildLot(bx, bz, li, lj, ox + roadV + li * lotV, oz + roadV + lj * lotV);
     }
 
-    // ---------- плоскі дороги й річка ----------
+    // ---------- дороги ----------
 
-    byte RoadColor(int kind, int x, int z)
+    // Колір вокселя дороги в клітинці кварталу (0 = не дорога).
+    // Вертикальна дорога займає lx < roadV, горизонтальна lz < roadV, їхній перетин це перехрестя.
+    byte RoadColor(int lx, int lz, int gx, int gz)
     {
-        if (kind == 3) return plankSet[(z & 1) == 0 ? 0 : 1];
-        if (kind == 1) return Hash01(x, 0, z) < 0.2f ? gravelSet[2] : gravelSet[Hash01(x, 1, z) < 0.5f ? 0 : 1];
-        return dirtSet[Hash01(x, 2, z) < 0.5f ? 0 : 1];
-    }
+        bool ns = lx < roadV;
+        bool ew = lz < roadV;
+        if (!ns && !ew) return 0;
 
-    byte WaterColor(int x, int z)
-    {
-        return Hash01(x, 3, z) < 0.12f ? cWaterLight : cWater;
-    }
+        bool asphaltB = Hash01(gx, 0, gz) < 0.2f;
+        byte asphalt = asphaltB ? cAsphaltB : cAsphaltA;
+        if (ns && ew) return asphalt;   // перехрестя без розмітки
 
-    // Один квад на клітинку (колір з палітри VoxelWorld, як у чанків) + перила моста
-    void BuildTileFlat(Vector2Int tile)
-    {
-        int x0 = tile.x * T - M, z0 = tile.y * T - M;
-        int x1 = Mathf.Min(x0 + T, M), z1 = Mathf.Min(z0 + T, M);
-        mVerts.Clear(); mNormals.Clear(); mUvs.Clear(); mTris.Clear();
-
-        for (int z = z0; z < z1; z++)
-        for (int x = x0; x < x1; x++)
+        int mid = roadV / 2;
+        if (ns)
         {
-            int i = I(x, z);
-            byte kind = roadKind[i];
-            byte id;
-            float y;
-            if (kind != 0)
-            {
-                id = RoadColor(kind, x, z);
-                y = roadHeight;
-            }
-            else if (riverMask[i])
-            {
-                id = WaterColor(x, z);
-                y = roadHeight * 0.5f;
-            }
-            else continue;
+            if (lx == 0 || lx == roadV - 1) return cCurb;
+            if (((lz >= roadV + 1 && lz < roadV + 3) || (lz >= blockV - 3 && lz < blockV - 1)) && lx > 0 && lx < roadV - 1 && (lx & 1) == 0) return cWhite;   // зебра
+            if ((lx == mid - 1 || lx == mid) && ((lz / 4) & 1) == 0) return cLine;
+        }
+        else
+        {
+            if (lz == 0 || lz == roadV - 1) return cCurb;
+            if (((lx >= roadV + 1 && lx < roadV + 3) || (lx >= blockV - 3 && lx < blockV - 1)) && lz > 0 && lz < roadV - 1 && (lz & 1) == 0) return cWhite;   // зебра
+            if ((lz == mid - 1 || lz == mid) && ((lx / 4) & 1) == 0) return cLine;
+        }
+        return asphalt;
+    }
 
-            if (kind == 3)
+    void BuildRoads(int bx, int bz, int ox, int oz)
+    {
+        if (roadMode == RoadMode.SolidVoxels)
+        {
+            for (int lz = 0; lz < blockV; lz++)
+            for (int lx = 0; lx < blockV; lx++)
             {
-                // перила по краях моста
-                if (!IsRoad(x + 1, z) || !IsRoad(x - 1, z) || !IsRoad(x, z + 1) || !IsRoad(x, z - 1))
-                {
-                    Add(x, 0, z, cRail);
-                    Add(x, 1, z, cRail);
-                }
+                byte id = RoadColor(lx, lz, ox + lx, oz + lz);
+                if (id != 0) Add(ox + lx, 0, oz + lz, id);
             }
+            return;
+        }
 
-            float fx0 = (x + curOx) * vs, fx1 = fx0 + vs, fz0 = (z + curOz) * vs, fz1 = fz0 + vs;
+        // плоский воксельний килим: один квад на клітинку (розмір vs), колір з палітри VoxelWorld (як у чанків)
+        mVerts.Clear(); mNormals.Clear(); mUvs.Clear(); mTris.Clear();
+        for (int lz = 0; lz < blockV; lz++)
+        for (int lx = 0; lx < blockV; lx++)
+        {
+            byte id = RoadColor(lx, lz, ox + lx, oz + lz);
+            if (id == 0) continue;
+
+            float x0 = (ox + lx) * vs, x1 = x0 + vs;
+            float z0 = (oz + lz) * vs, z1 = z0 + vs;
+            float y = roadHeight;
             Vector2 uv = new Vector2((id + 0.5f) / 256f, 0.5f);
+
             int s = mVerts.Count;
-            mVerts.Add(new Vector3(fx0, y, fz0));
-            mVerts.Add(new Vector3(fx0, y, fz1));
-            mVerts.Add(new Vector3(fx1, y, fz1));
-            mVerts.Add(new Vector3(fx1, y, fz0));
+            mVerts.Add(new Vector3(x0, y, z0));
+            mVerts.Add(new Vector3(x0, y, z1));
+            mVerts.Add(new Vector3(x1, y, z1));
+            mVerts.Add(new Vector3(x1, y, z0));
             for (int k = 0; k < 4; k++)
             {
                 mNormals.Add(Vector3.up);
@@ -823,1068 +725,1693 @@ public class VillageGenerator : MonoBehaviour
         }
         if (mVerts.Count == 0) return;
 
-        var mesh = new Mesh { name = "VillageFlat", indexFormat = IndexFormat.UInt32 };
+        var mesh = new Mesh { name = "RoadMesh", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
         mesh.SetVertices(mVerts);
         mesh.SetNormals(mNormals);
         mesh.SetUVs(0, mUvs);
         mesh.SetTriangles(mTris, 0);
         mesh.RecalculateBounds();
 
-        var go = new GameObject("Flat " + cur.key.x + "_" + cur.key.y + " " + tile.x + "_" + tile.y);
+        var go = new GameObject($"Road {bx}_{bz}");
         go.transform.SetParent(world.transform, false);
         go.AddComponent<MeshFilter>().sharedMesh = mesh;
         var rend = go.AddComponent<MeshRenderer>();
         rend.sharedMaterial = world.RuntimeMaterial;
-        rend.shadowCastingMode = ShadowCastingMode.Off;
+        rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
     }
 
-    bool IsRoad(int x, int z)
+    // ---------- вуличні ліхтарі ----------
+
+    void BuildStreetLamps(int bx, int bz, int ox, int oz)
     {
-        return InMap(x, z) && roadKind[I(x, z)] != 0;
-    }
-
-    // ---------- ліс-розділювач по всіх краях регіону ----------
-
-    void BuildTileBorder(Vector2Int tile)
-    {
-        int x0 = tile.x * T - M, z0 = tile.y * T - M;
-        int x1 = Mathf.Min(x0 + T, M), z1 = Mathf.Min(z0 + T, M);
-
-        // швидка відсічка: плитка цілком далеко від усіх чотирьох країв регіону
-        int minEdge = Mathf.Min(Mathf.Min(x0 + M, M - x1), Mathf.Min(z0 + M, M - z1));
-        if (minEdge > borderBand + 6) return;
-
-        const int step = 4;
-        int sx = x0 - Mod(x0, step), sz = z0 - Mod(z0, step);
-        for (int gz = sz; gz < z1; gz += step)
-        for (int gx = sx; gx < x1; gx += step)
+        for (int k = 0; k < lotsPerSide; k++)
         {
-            if (gx < x0 || gz < z0) continue;
-            int x = gx + (Hash(gx, 1, gz) & 3) - 1;
-            int z = gz + (Hash(gx, 2, gz) & 3) - 1;
-            if (!InMap(x, z)) continue;
+            // вздовж вертикальної дороги (вона ліворуч від кварталу), ліхтар тягнеться рукою над дорогою
+            int zz = oz + roadV + k * lotV + 3;
+            if (Hash01(bx, k + 11, bz) < streetLampChance && LampAllowed(ox + roadV, zz))
+                Lamp(ox + roadV, zz, -1, 0);
 
-            // відстань до найближчого краю регіону (з будь-якого з чотирьох боків)
-            int edge = Mathf.Min(Mathf.Min(x + M, M - 1 - x), Mathf.Min(z + M, M - 1 - z));
-            float band = borderBand + (Hash01(x / 6, 3, z / 6) - 0.5f) * 8f;
-            if (edge >= band) continue;
-            if (Hash01(x, 9, z) > forestDensity) continue;
-
-            int r = (Hash(x, 5, z) & 3) == 0 ? 3 : 2;
-            if (!TreeClear(x, z, r)) continue;
-            BuildTree(x, z, r, new System.Random(Hash(x, z, 77)), 0.45);
+            // вздовж горизонтальної дороги (вона під кварталом)
+            int xx = ox + roadV + k * lotV + 3;
+            if (Hash01(bx + 5, k + 23, bz) < streetLampChance && LampAllowed(xx, oz + roadV))
+                Lamp(xx, oz + roadV, 0, -1);
         }
     }
 
-    // =====================================================================================
-    // Малювання в координатах будівлі: lx вздовж фасаду, lz вглиб від фасаду (фасад біля lz = 0)
-    // facing: 0 = фасад дивиться на -z, 1 = на -x, 2 = на +z, 3 = на +x
-    // =====================================================================================
-
-    void SetT(int f, int ox, int oz, int w, int d)
+    bool LampAllowed(int x, int z)
     {
-        tF = f; tOx = ox; tOz = oz; tW = w; tD = d;
+        if (!haveStart) return true;
+        return Vector2.Distance(new Vector2(x * vs, z * vs), startLocal) >= 3f * ES;
     }
 
-    void LocalToWorld(int lx, int lz, out int x, out int z)
+    // Ліхтар: стовп, рука в бік (dx, dz) і лампа, що висить на кінці руки
+    void Lamp(int x, int z, int dx, int dz)
     {
-        switch (tF)
+        int h = Mathf.Max(14, V(4.5f));
+        Box(x, 0, z, 1, h, 1, cMetal);
+        Box(x - 1, 0, z - 1, 3, 2, 3, cConcrete);
+        for (int i = 1; i <= 3; i++) Box(x + dx * i, h - 1, z + dz * i, 1, 1, 1, cMetal);
+        Box(x + dx * 3, h - 3, z + dz * 3, 1, 2, 1, cLampLight);
+    }
+
+    // ---------- ділянка ----------
+
+    void BuildLot(int bx, int bz, int li, int lj, int lx0, int lz0)
+    {
+        var rng = new System.Random(Hash(seed ^ 0x2F6E2B1, bx * 16 + li, bz * 16 + lj));
+        double roll = rng.NextDouble();
+        taken.Clear();
+
+        // поруч зі стартом каменя лишаємо чисто
+        Vector2 lotCenter = new Vector2((lx0 + lotV * 0.5f) * vs, (lz0 + lotV * 0.5f) * vs);
+        if (haveStart && Vector2.Distance(lotCenter, startLocal) < startClearRadius * ES) return;
+
+        if (roll < zone.house)
         {
-            case 0: x = tOx + lx; z = tOz + lz; break;
-            case 1: x = tOx + lz; z = tOz + (tW - 1 - lx); break;
-            case 2: x = tOx + (tW - 1 - lx); z = tOz + (tD - 1 - lz); break;
-            default: x = tOx + (tD - 1 - lz); z = tOz + lx; break;
+            BuildHouseLot(rng, li, lj, lx0, lz0);
         }
-    }
-
-    void PH(int lx, int ly, int lz, byte id)
-    {
-        LocalToWorld(lx, lz, out int x, out int z);
-        Add(x, ly, z, id);
-    }
-
-    void PBox(int lx, int ly, int lz, int sx, int sy, int sz, byte id)
-    {
-        for (int y = 0; y < sy; y++)
-        for (int z = 0; z < sz; z++)
-        for (int x = 0; x < sx; x++)
-            PH(lx + x, ly + y, lz + z, id);
-    }
-
-    // Початок будівлі w x d всередині двору (rect) із відступом front від фасадної межі двору
-    static void HouseOrigin(RectInt r, int f, int w, int d, int front, out int ox, out int oz)
-    {
-        switch (f)
+        else if (roll < zone.house + zone.tree)
         {
-            case 0: ox = r.x + (r.width - w) / 2; oz = r.y + front; break;
-            case 2: ox = r.x + (r.width - w) / 2; oz = r.y + r.height - front - d; break;
-            case 1: ox = r.x + front; oz = r.y + (r.height - w) / 2; break;
-            default: ox = r.x + r.width - front - d; oz = r.y + (r.height - w) / 2; break;
+            int count = RI(rng, Mathf.Max(1, treesPerGroveMin), Mathf.Max(treesPerGroveMin, treesPerGroveMax)) + zone.groveBonus;
+            ScatterTrees(rng, lx0, lz0, count, 2);
         }
-    }
-
-    static RectInt FootRect(int f, int ox, int oz, int w, int d)
-    {
-        return (f & 1) == 0 ? new RectInt(ox, oz, w, d) : new RectInt(ox, oz, d, w);
-    }
-
-    // Скільки вокселів від фасадної межі двору до точки
-    static int DistFromFront(RectInt r, int f, int x, int z)
-    {
-        switch (f)
+        else if (roll < zone.house + zone.tree + zone.special)
         {
-            case 0: return z - r.y;
-            case 2: return r.yMax - 1 - z;
-            case 1: return x - r.x;
-            default: return r.xMax - 1 - x;
+            BuildSpecialLot(rng, lx0, lz0);
         }
+        // інакше ділянка порожня
     }
 
-    // Двосхилий дах. Гребінь іде вздовж lx (alongX) або вздовж lz. Склепіння порожнє, схили завтовшки 2 воксели
-    // (щоб шари трималися один за одного гранями й дах не відвалювався), фронтони кольору gable.
-    void GableRoof(int w, int d, int y0, bool alongX, byte gable, byte[] roofSet)
+    void BuildHouseLot(System.Random rng, int li, int lj, int lx0, int lz0)
     {
-        int across = alongX ? d : w;
-        int along = alongX ? w : d;
-        int lo = -1, hi = across;
-        for (int k = 0; ; k++)
+        bool fenced = rng.NextDouble() < zone.fence;
+        int margin = fenced ? 3 : 2;
+
+        // фасад дивиться на дорогу: -z для нижнього ряду, -x для лівого стовпчика
+        int facing;
+        if (lj == 0 && li != 0) facing = 0;
+        else if (li == 0 && lj != 0) facing = 1;
+        else facing = rng.Next(2);
+
+        // кількість поверхів залежить від району (центр до 4 поверхів)
+        int floors = 1;
+        while (floors < zone.maxFloors && rng.NextDouble() < zone.twoFloor) floors++;
+
+        int w = RI(rng, V(houseWidthMin), Mathf.Max(V(houseWidthMin), V(houseWidthMax)));
+        int d = RI(rng, V(houseDepthMin), Mathf.Max(V(houseDepthMin), V(houseDepthMax)));
+        int maxSide = lotV - 2 * (margin + 1);
+        w = Mathf.Min(w, maxSide);
+        d = Mathf.Min(d, maxSide);
+        if (w < 12 || d < 12) return;   // ділянка замала для будинку
+
+        int setbackMin = margin + 1;
+        int setbackMax = lotV - margin - 1 - d;
+        int setback = RI(rng, setbackMin, Mathf.Max(setbackMin, setbackMax));
+        int side = (lotV - w) / 2;   // будинок по центру вздовж фасаду, щоб двері були навпроти хвіртки
+
+        int ox, oz;
+        if (facing == 0) { ox = lx0 + side; oz = lz0 + setback; }
+        else { ox = lx0 + setback; oz = lz0 + side; }
+
+        RectInt footprint = BuildHouse(rng, ox, oz, facing, w, d, floors);
+        taken.Add(footprint);
+
+        if (fenced) BuildFence(lx0, lz0, facing);
+
+        int yardTrees = rng.Next(0, Mathf.Max(0, zone.yardTrees) + 1);
+        if (yardTrees > 0)
+            ScatterTrees(rng, lx0, lz0, yardTrees, margin);
+
+        int props = rng.Next(0, Mathf.Max(0, zone.props) + 1);
+        if (props > 0)
+            ScatterProps(rng, lx0, lz0, margin, props);
+
+        // доріжка від хвіртки до дверей (ставиться після дрібниць: вони її не затруть)
+        if (facing == 0)
         {
-            int a = lo + k, b = hi - k;
-            if (a > b) break;
-            for (int c = a; c <= b; c++)
-            {
-                bool slope = c <= a + 1 || c >= b - 1;
-                for (int s = -1; s <= along; s++)
-                {
-                    byte id;
-                    if (slope) id = Pick(roofSet, Hash(s, k, c));
-                    else if (s == 0 || s == along - 1) id = gable;
-                    else continue;
-                    if (alongX) PH(s, y0 + k, c, id);
-                    else PH(c, y0 + k, s, id);
-                }
-            }
-        }
-    }
-
-    // ---------- двір: город, хата, двоповерхова хата або комора ----------
-
-    void BuildYard(RectInt rect, int f, int kind)
-    {
-        var rng = new System.Random(Hash(seed ^ 0x1234, rect.x, rect.y));
-        int lateral = (f & 1) == 0 ? rect.width : rect.height;
-        int depthAvail = (f & 1) == 0 ? rect.height : rect.width;
-        const int front = 6;
-
-        RectInt hr = new RectInt(-100000, -100000, 1, 1);
-        var used = new List<RectInt>();
-
-        if (kind != 0)
-        {
-            int w, d;
-            if (kind == 3)
-            {
-                w = Mathf.Min(RI(rng, 14, 16), lateral - 4);
-                d = Mathf.Min(RI(rng, 10, 12), depthAvail - front - 2);
-            }
-            else
-            {
-                w = Mathf.Min(RI(rng, houseWidthMin, houseWidthMax), lateral - 4);
-                d = RI(rng, houseDepthMin, houseDepthMax);
-            }
-            HouseOrigin(rect, f, w, d, front, out int ox, out int oz);
-            SetT(f, ox, oz, w, d);
-
-            if (kind == 3) BuildBarn(rng, w, d);
-            else BuildHouseBody(rng, w, d, kind == 2 ? 2 : 1);
-
-            // доріжка від воріт до дверей
-            if (kind == 3)
-            {
-                int dc = w / 2;
-                for (int k = 1; k <= front; k++)
-                for (int dx = -2; dx <= 1; dx++)
-                    PH(dc + dx, 0, -k, cPath);
-            }
-            else
-            {
-                int dl = w / 2 - 1;
-                for (int k = 1; k <= front; k++)
-                {
-                    PH(dl, 0, -k, cPath);
-                    PH(dl + 1, 0, -k, cPath);
-                    // клумби вздовж доріжки
-                    if (Hash01(dl, k, 51) < 0.55f) PH(dl - 2, 0, -k, Pick(flowerColors, Hash(dl, k, 52)));
-                    if (Hash01(dl, k, 53) < 0.55f) PH(dl + 3, 0, -k, Pick(flowerColors, Hash(dl, k, 54)));
-                }
-            }
-            hr = FootRect(f, ox, oz, w, d);
+            int len = oz - (lz0 + 1);
+            if (len > 0) Tiles(ox + w / 2 - 3, lz0 + 1, 6, len, 0, 2, cPath, cPathB);
         }
         else
         {
-            // опудало посеред городу (першим: вже поставлене не перезаписується)
-            int scx = rect.x + rect.width / 2, scz = rect.y + rect.height / 2;
-            Scarecrow(scx, scz);
-            used.Add(new RectInt(scx - 3, scz - 3, 7, 7));
-            Garden(rect, rng);
+            int len = ox - (lx0 + 1);
+            if (len > 0) Tiles(lx0 + 1, oz + w / 2 - 3, len, 6, 0, 2, cPath, cPathB);
         }
 
-        if (rng.NextDouble() < fenceChance) Fence(rect, f);
+        if (rng.NextDouble() < mailboxChance) Mailbox(rng, lx0, lz0, facing);
+    }
 
-        // дрібниці: дрова, копиці, вулики, тварини, віз, будка
-        if (kind != 0 && yardExtrasMax > 0)
-            YardExtras(rect, f, hr, front, rng, used, rng.Next(1, yardExtrasMax + 1));
-
-        // дерева за хатою або збоку
-        int trees = kind != 0 ? rng.Next(0, treesPerYardMax + 1) : 1;
-        for (int n = 0, tries = 0; n < trees && tries < 12; tries++)
+    void Mailbox(System.Random rng, int lx0, int lz0, int facing)
+    {
+        byte c = rng.Next(2) == 0 ? cBlueToy : cRedToy;
+        int off = lotV / 2 + gateV / 2 + 2;
+        if (facing == 0)
         {
-            int x = rng.Next(rect.x + 3, rect.xMax - 3);
-            int z = rng.Next(rect.y + 3, rect.yMax - 3);
-            if (DistFromFront(rect, f, x, z) < front) continue;
-            if (x >= hr.x - 3 && x < hr.xMax + 3 && z >= hr.y - 3 && z < hr.yMax + 3) continue;
-            RectInt tr = new RectInt(x - 3, z - 3, 7, 7);
-            bool bad = false;
-            foreach (var u in used) if (tr.Overlaps(u)) { bad = true; break; }
-            if (bad) continue;
-            BuildTree(x, z, RI(rng, 2, 3), rng, 0.15);
-            n++;
+            Box(lx0 + off - 1, 5, lz0, 3, 2, 2, c);
+            Box(lx0 + off, 0, lz0, 1, 5, 1, cPost);
+        }
+        else
+        {
+            Box(lx0, 5, lz0 + off - 1, 2, 2, 3, c);
+            Box(lx0, 0, lz0 + off, 1, 5, 1, cPost);
         }
     }
 
-    void Fence(RectInt r, int f)
-    {
-        int gateX = r.x + r.width / 2, gateZ = r.y + r.height / 2;
-        for (int z = r.y; z < r.yMax; z++)
-        for (int x = r.x; x < r.xMax; x++)
-        {
-            if (x != r.x && x != r.xMax - 1 && z != r.y && z != r.yMax - 1) continue;
+    // ---------- будинок ----------
 
-            // ворота посередині фасадної межі
-            bool frontSide = f == 0 ? z == r.y : f == 2 ? z == r.yMax - 1 : f == 1 ? x == r.x : x == r.xMax - 1;
-            if (frontSide)
+    // Будуємо в локальних координатах (lx вздовж фасаду, lz вглиб, двері на lz = 0),
+    // а PlaceH повертає їх у світ залежно від того, куди дивиться фасад.
+    void PlaceH(int facing, int ox, int oz, int lx, int ly, int lz, byte id)
+    {
+        if (facing == 0) Add(ox + lx, ly, oz + lz, id);
+        else Add(ox + lz, ly, oz + lx, id);
+    }
+
+    bool IsInner(int lx, int lz, int w, int d, int t)
+    {
+        if (lx < t - 1 || lx > w - t || lz < t - 1 || lz > d - t) return false;
+        return lx == t - 1 || lx == w - t || lz == t - 1 || lz == d - t;
+    }
+
+    bool InStairHole(int lx, int lz)
+    {
+        return stairsOk && lx >= wallV && lx <= wallV + 2 && lz >= stairZs && lz <= stairZs + floorV - 3;
+    }
+
+    RectInt BuildHouse(System.Random rng, int ox, int oz, int facing, int w, int d, int floors)
+    {
+        int fh = floorV;
+        int H = floors * fh;
+        int t = wallV;
+        bool hollow = hollowHouses;
+
+        stairsOk = hollow && floors > 1 && (d - 2 * t) >= fh + 1;
+        stairZs = t + 1;
+
+        int wp = rng.Next(wallA.Length);
+        byte wA = wallA[wp], wB = wallB[wp];
+        int rp = rng.Next(roofA.Length);
+        byte rA = roofA[rp], rB = roofB[rp];
+
+        int doorL = w / 2 - doorHalf - 1;
+        int doorR = w / 2 + doorHalf + 1;
+
+        // тіло: стіни, а всередині суцільний заповнювач (або порожнеча з підлогою й перекриттям, якщо hollowHouses)
+        for (int ly = 0; ly < H; ly++)
+        for (int lz = 0; lz < d; lz++)
+        for (int lx = 0; lx < w; lx++)
+        {
+            bool edge = lx < t || lx >= w - t || lz < t || lz >= d - t;
+            if (!edge && hollow)
             {
-                int lat = (f & 1) == 0 ? Mathf.Abs(x - gateX) : Mathf.Abs(z - gateZ);
-                if (lat <= 1) continue;
+                bool slab = ly == 0 || (ly % fh == fh - 1 && ly < H - 1 && !InStairHole(lx, lz));
+                if (!slab) continue;
             }
 
-            if (((x + z) % 3 + 3) % 3 == 0)
+            byte id;
+            if (!edge)
             {
-                for (int y = 0; y < 3; y++) Add(x, y, z, cPost);
+                id = hollow ? ((((lx / 3) + (lz / 6)) & 1) == 0 ? cFloorA : cFloorB) : cInterior;
             }
             else
             {
-                Add(x, 0, z, cRail);
-                Add(x, 1, z, cRail);
+                id = ((lx / 4 + ly / 4) & 1) == 0 ? wA : wB;
+                if (ly < 2) id = cPlinth;
+                else if (floors > 1 && ly == fh) id = cTrim;
+                else if (hollow && t >= 2 && IsInner(lx, lz, w, d, t)) id = cInnerWall;
+
+                // двері на фасаді
+                if (lz < t && lx >= w / 2 - doorHalf && lx < w / 2 + doorHalf && ly < doorH)
+                {
+                    if (hollow)
+                    {
+                        // відкритий проріз з наличником
+                        if (ly == 0) id = cPlinth;
+                        else if (ly == doorH - 1 || lx == w / 2 - doorHalf || lx == w / 2 + doorHalf - 1) id = cTrim;
+                        else continue;
+                    }
+                    else if (lz == 0)
+                    {
+                        id = (lx == w / 2 - doorHalf || lx == w / 2 + doorHalf - 1 || ly == doorH - 1) ? cTrim : cDoor;
+                    }
+                }
+                else if (ly >= 2)
+                {
+                    // вікна проходять крізь усю товщину стіни
+                    int u = -1, len = 0;
+                    bool front = false;
+                    if (lz < t) { u = lx; len = w; front = true; }
+                    else if (lz >= d - t) { u = lx; len = w; }
+                    else if (lx < t) { u = lz; len = d; }
+                    else if (lx >= w - t) { u = lz; len = d; }
+
+                    if (u >= 0)
+                    {
+                        byte wc = WindowColor(u, len, ly, front, doorL, doorR);
+                        if (wc != 0) id = wc;
+                    }
+                }
+            }
+            PlaceH(facing, ox, oz, lx, ly, lz, id);
+        }
+
+        // дах (шанс плаского залежить від району)
+        bool flat = rng.NextDouble() < zone.flatRoof;
+        int roofLayers = 0;
+        bool ridgeX = w >= d;
+        int LA = ridgeX ? w : d;          // довжина гребеня
+        int across = ridgeX ? d : w;      // ширина схилів
+
+        if (flat)
+        {
+            for (int k = 0; k < 2; k++)
+            for (int lz = -1; lz <= d; lz++)
+            for (int lx = -1; lx <= w; lx++)
+                PlaceH(facing, ox, oz, lx, H + k, lz, ((lx / 2 + lz / 2 + k) & 1) == 0 ? rA : rB);
+
+            // бортик по краю
+            for (int lz = -1; lz <= d; lz++)
+            for (int lx = -1; lx <= w; lx++)
+            {
+                if (lx != -1 && lx != w && lz != -1 && lz != d) continue;
+                PlaceH(facing, ox, oz, lx, H + 2, lz, cPlinth);
+            }
+            roofLayers = 3;
+        }
+        else
+        {
+            // двосхилий дах: кожен шар вужчий на 1 воксель з кожного боку, свіс 1 воксель над стінами
+            for (int k = 0; ; k++)
+            {
+                int c0 = k - 1, c1 = across - k;
+                if (c0 > c1) break;
+                roofLayers++;
+
+                for (int a = 0; a < LA; a++)
+                for (int c = c0; c <= c1; c++)
+                {
+                    bool gable = a < t || a >= LA - t;   // торці дахів фарбуємо кольором стін
+                    byte id = gable
+                        ? (((a / 4 + (H + k) / 4) & 1) == 0 ? wA : wB)
+                        : (((a / 2 + k) & 1) == 0 ? rA : rB);
+                    if (ridgeX) PlaceH(facing, ox, oz, a, H + k, c, id);
+                    else PlaceH(facing, ox, oz, c, H + k, a, id);
+                }
+            }
+
+            // димар на схилі
+            if (rng.NextDouble() < chimneyChance)
+            {
+                int ca = LA / 4;
+                int cc = across / 4 + 1;
+                int top = H + roofLayers + 3;
+                for (int ly = H; ly < top; ly++)
+                for (int da = 0; da < 2; da++)
+                for (int dc = 0; dc < 2; dc++)
+                {
+                    int a = ca + da, c = cc + dc;
+                    if (ridgeX) PlaceH(facing, ox, oz, a, ly, c, cBrick);
+                    else PlaceH(facing, ox, oz, c, ly, a, cBrick);
+                }
+            }
+        }
+
+        // меблі, колони й сходи
+        if (hollow) BuildInterior(rng, facing, ox, oz, w, d, floors, H);
+
+        // зайнята площа разом зі свісом (у проєктних координатах), щоб дерева не росли крізь будинок
+        if (facing == 0) return new RectInt(ox - 1, oz - 1, w + 2, d + 2);
+        return new RectInt(ox - 1, oz - 1, d + 2, w + 2);
+    }
+
+    // Колір вікна у клітинці зовнішньої стіни (0 = не вікно).
+    // Вікна розставлено симетрично вздовж стіни, 5 вокселів завширшки, крок 10.
+    byte WindowColor(int u, int len, int ly, bool front, int doorL, int doorR)
+    {
+        int fh = floorV;
+        int vy = ly - (ly / fh) * fh;
+        if (vy < 4 || vy >= 9) return 0;
+
+        if (len < 13) return 0;
+        int n = (len - 13) / 10 + 1;      // скільки вікон вміщається, лишаючи по 4 вокселі від кутів
+        int span = n * 10 - 5;
+        int start0 = (len - span) / 2;
+
+        int rel = u - start0;
+        if (rel < 0 || rel >= span) return 0;
+        int wu = rel % 10;
+        if (wu >= 5) return 0;
+
+        // вікно, що торкається дверей, пропускаємо повністю
+        int k = rel / 10;
+        int ws = start0 + k * 10;
+        if (front && ws < doorR && ws + 5 > doorL) return 0;
+
+        int wv = vy - 4;
+        bool frame = wu == 0 || wu == 4 || wv == 0 || wv == 4;
+        return frame ? cFrame : cGlass;
+    }
+
+    // ---------- інтер'єр ----------
+
+    void BuildInterior(System.Random rng, int facing, int ox, int oz, int w, int d, int floors, int H)
+    {
+        int fh = floorV, t = wallV;
+        hFacing = facing; hOx = ox; hOz = oz;
+
+        ix0 = t; ix1 = w - t - 1;
+        iz0 = t; iz1 = d - t - 1;
+        int iw = ix1 - ix0 + 1, idp = iz1 - iz0 + 1;
+        if (iw < 6 || idp < 6) return;
+
+        int doorX0 = w / 2 - doorHalf, doorX1 = w / 2 + doorHalf - 1;
+
+        // колони: підпирають дах і перекриття, щоб вони не падали
+        pil.Clear();
+        int pitch = Mathf.Max(6, pillarSpacing);
+        int nx = Mathf.Max(1, Mathf.RoundToInt(iw / (float)pitch));
+        int nz = Mathf.Max(1, Mathf.RoundToInt(idp / (float)pitch));
+        for (int a = 0; a < nx; a++)
+        for (int c = 0; c < nz; c++)
+        {
+            int px = ix0 + (int)((a + 0.5f) * iw / nx) - 1;
+            int pz = iz0 + (int)((c + 0.5f) * idp / nz) - 1;
+            // не перекриваємо прохід від дверей
+            if (pz < iz0 + 10 && px + 1 >= doorX0 - 1 && px <= doorX1 + 1)
+                px = px < w / 2 ? doorX0 - 3 : doorX1 + 2;
+            // не лізьмо в сходи
+            if (stairsOk && px <= ix0 + 3 && pz + 1 >= stairZs && pz <= stairZs + fh - 2)
+                px = ix0 + 4;
+            px = Mathf.Clamp(px, ix0, ix1 - 1);
+            pz = Mathf.Clamp(pz, iz0, iz1 - 1);
+            pil.Add(new Vector2Int(px, pz));
+        }
+        for (int i = 0; i < pil.Count; i++)
+        for (int y = 1; y < H; y++)
+        for (int dx = 0; dx < 2; dx++)
+        for (int dz = 0; dz < 2; dz++)
+            PlaceH(facing, ox, oz, pil[i].x + dx, y, pil[i].y + dz, cPost);
+
+        // сходи вздовж лівої стіни
+        if (stairsOk)
+        {
+            for (int k = 0; k <= fh - 2; k++)
+            for (int lx = t; lx <= t + 2; lx++)
+            for (int y = 1; y <= 1 + k; y++)
+                PlaceH(facing, ox, oz, lx, y, stairZs + k, (k & 1) == 0 ? cPlank : cRail);
+        }
+
+        if (!furnishHouses || down > 1) return;   // при стисненні меблі розпливаються, тож їх немає
+
+        occ = new byte[w, d];
+
+        for (int f = 0; f < floors; f++)
+        {
+            int floorY = f == 0 ? 1 : f * fh;
+            int ceilY = f == floors - 1 ? H : (f + 1) * fh - 1;
+            int height = ceilY - floorY;
+
+            System.Array.Clear(occ, 0, occ.Length);
+
+            for (int i = 0; i < pil.Count; i++)
+            for (int dx = 0; dx < 2; dx++)
+            for (int dz = 0; dz < 2; dz++)
+                occ[pil[i].x + dx, pil[i].y + dz] = 1;
+
+            if (stairsOk)
+            {
+                for (int lx = t; lx <= t + 2; lx++)
+                for (int lz = stairZs; lz <= stairZs + fh - 2 && lz <= iz1; lz++)
+                    occ[lx, lz] = 1;
+            }
+
+            // перед дверима лишаємо прохід
+            if (f == 0)
+            {
+                for (int lx = Mathf.Max(ix0, doorX0 - 1); lx <= Mathf.Min(ix1, doorX1 + 1); lx++)
+                for (int lz = iz0; lz <= Mathf.Min(iz1, iz0 + 5); lz++)
+                    if (occ[lx, lz] == 0) occ[lx, lz] = 2;
+            }
+
+            int theme;
+            if (floors == 1) theme = rng.Next(Themes.Length);
+            else if (f == 0) theme = GroundThemes[rng.Next(GroundThemes.Length)];
+            else theme = UpperThemes[rng.Next(UpperThemes.Length)];
+
+            int[] list = Themes[theme];
+            for (int i = 0; i < list.Length; i++)
+            {
+                int kind = list[i];
+                bool optional = kind == 9 || kind == 10 || kind == 12 || kind == 14;
+                if (optional && rng.NextDouble() < 0.3) continue;
+                TryPlace(rng, kind, floorY, height, kind == 5);
+            }
+
+            // килим посередині (меблі його не затирають: вони вже стоять)
+            if (iw >= 12 && idp >= 12 && rng.NextDouble() < 0.75)
+            {
+                int rw = rng.Next(8, Mathf.Min(14, iw - 2) + 1);
+                int rh = rng.Next(8, Mathf.Min(14, idp - 2) + 1);
+                int rx = ix0 + (iw - rw) / 2, rz = iz0 + (idp - rh) / 2;
+                int rc = rng.Next(rugA.Length);
+                for (int z = rz; z < rz + rh; z++)
+                for (int x = rx; x < rx + rw; x++)
+                {
+                    if (occ[x, z] == 1) continue;
+                    bool border = x <= rx + 1 || x >= rx + rw - 2 || z <= rz + 1 || z >= rz + rh - 2;
+                    PlaceH(facing, ox, oz, x, floorY, z, border ? rugA[rc] : rugB[rc]);
+                }
             }
         }
     }
 
-    void Garden(RectInt r, System.Random rng)
+    bool RectFree(int x0, int z0, int sx, int sz, int gap)
     {
-        for (int z = r.y + 2; z < r.yMax - 2; z += 2)
+        for (int z = z0 - gap; z < z0 + sz + gap; z++)
+        for (int x = x0 - gap; x < x0 + sx + gap; x++)
         {
-            int kind = (Hash(r.x, z / 4, r.y) & 0x7fffffff) % 3;
-            for (int x = r.x + 2; x < r.xMax - 2; x++)
+            bool core = x >= x0 && x < x0 + sx && z >= z0 && z < z0 + sz;
+            bool outside = x < ix0 || x > ix1 || z < iz0 || z > iz1;
+            if (outside)
             {
-                if (kind == 0)
+                if (core) return false;
+                continue;
+            }
+            if (occ[x, z] != 0) return false;
+        }
+        return true;
+    }
+
+    bool TryPlace(System.Random rng, int kind, int floorY, int height, bool free)
+    {
+        int a = DimA[kind], b = DimB[kind];
+        int iw = ix1 - ix0 + 1, idp = iz1 - iz0 + 1;
+
+        for (int attempt = 0; attempt < 16; attempt++)
+        {
+            int s = rng.Next(4);
+            int sx, sz;
+            Foot(a, b, s, out sx, out sz);
+            if (sx > iw || sz > idp) continue;
+
+            int x0 = 0, z0 = 0;
+            if (free)
+            {
+                x0 = ix0 + rng.Next(iw - sx + 1);
+                z0 = iz0 + rng.Next(idp - sz + 1);
+            }
+            else
+            {
+                // спиною до стіни: s = 0 низька z, 1 висока z, 2 низька x, 3 висока x
+                switch (s)
                 {
-                    Add(x, 0, z, cCabbage);
-                    if (Hash01(x, z, 4) < 0.5f) Add(x, 1, z, cCabbage2);
-                }
-                else if (kind == 1)
-                {
-                    Add(x, 0, z, cLeaf);
-                    if (Hash01(x, z, 5) < 0.3f) Add(x, 1, z, cStem);
-                }
-                else
-                {
-                    Add(x, 0, z, cStem);
-                    Add(x, 1, z, cStem);
-                    if (Hash01(x, z, 6) < 0.6f)
-                    {
-                        Add(x, 2, z, cStem);
-                        Add(x, 3, z, cCorn);
-                    }
+                    case 0: z0 = iz0; x0 = ix0 + rng.Next(iw - sx + 1); break;
+                    case 1: z0 = iz1 - sz + 1; x0 = ix0 + rng.Next(iw - sx + 1); break;
+                    case 2: x0 = ix0; z0 = iz0 + rng.Next(idp - sz + 1); break;
+                    default: x0 = ix1 - sx + 1; z0 = iz0 + rng.Next(idp - sz + 1); break;
                 }
             }
+
+            if (!RectFree(x0, z0, sx, sz, free ? 1 : 0)) continue;
+
+            for (int z = z0; z < z0 + sz; z++)
+            for (int x = x0; x < x0 + sx; x++)
+                occ[x, z] = 1;
+
+            BeginRoom(x0, z0, a, b, s, floorY, height);
+            DrawFurniture(kind, rng);
+            return true;
+        }
+        return false;
+    }
+
+    static void Foot(int a, int b, int s, out int sx, out int sz)
+    {
+        if (s < 2) { sx = a; sz = b; }
+        else { sx = b; sz = a; }
+    }
+
+    // Предмет малюється в своїх координатах: u вздовж стіни (0..a-1), v від стіни вглиб (0..b-1), y угору.
+    void BeginRoom(int x0, int z0, int a, int b, int s, int y0, int h)
+    {
+        tFacing = hFacing; tOx = hOx; tOz = hOz;
+        tX0 = x0; tZ0 = z0; tA = a; tB = b; tS = s; tY0 = y0; tH = h;
+    }
+
+    void BeginAbs(int x0, int z0, int a, int b, int s)
+    {
+        tFacing = -1; tOx = 0; tOz = 0;
+        tX0 = x0; tZ0 = z0; tA = a; tB = b; tS = s; tY0 = 0; tH = 64;
+    }
+
+    void FPut(int u, int v, int y, byte c)
+    {
+        if (y < 0 || y >= tH) return;
+        int x, z;
+        switch (tS)
+        {
+            case 0: x = tX0 + u; z = tZ0 + v; break;
+            case 1: x = tX0 + u; z = tZ0 + (tB - 1 - v); break;
+            case 2: x = tX0 + v; z = tZ0 + u; break;
+            default: x = tX0 + (tB - 1 - v); z = tZ0 + u; break;
+        }
+        if (tFacing < 0) Add(x, tY0 + y, z, c);
+        else PlaceH(tFacing, tOx, tOz, x, tY0 + y, z, c);
+    }
+
+    void FBox(int u0, int v0, int y0, int su, int sv, int sy, byte c)
+    {
+        for (int y = 0; y < sy; y++)
+        for (int v = 0; v < sv; v++)
+        for (int u = 0; u < su; u++)
+            FPut(u0 + u, v0 + v, y0 + y, c);
+    }
+
+    // Деталі ставимо першими: вокселі, що вже стоять, не затираються.
+    void DrawFurniture(int kind, System.Random rng)
+    {
+        switch (kind)
+        {
+            case 0: // ліжко
+            {
+                byte bl = blanketColors[rng.Next(blanketColors.Length)];
+                FBox(0, 0, 2, 7, 1, 4, cWoodDark);       // узголів'я
+                FBox(1, 1, 3, 2, 2, 1, cWhite);          // подушки
+                FBox(4, 1, 3, 2, 2, 1, cWhite);
+                FBox(0, 4, 3, 7, 7, 1, bl);              // ковдра
+                FBox(0, 0, 2, 7, 11, 1, cSheet);         // матрац
+                FBox(0, 0, 0, 7, 11, 2, cWoodDark);      // рама
+                break;
+            }
+            case 1: // шафа
+                FBox(3, 2, 4, 1, 1, 3, cMetal);
+                FBox(5, 2, 4, 1, 1, 3, cMetal);
+                FBox(4, 2, 0, 1, 1, 11, cWoodDark);
+                FBox(0, 0, 0, 8, 3, 11, cWoodMid);
+                break;
+            case 2: // книжкова полиця
+                for (int u = 1; u < 8; u++)
+                for (int k = 0; k < 6; k++)
+                {
+                    int y = (k / 2) * 3 + 1 + (k & 1);
+                    if (Hash01(tX0 + u, tY0 + y, tZ0 + tS) < 0.8f)
+                        FPut(u, 1, y, bookColors[(int)(Hash01(u + tX0, y, tZ0 + 7) * bookColors.Length) % bookColors.Length]);
+                }
+                for (int y = 0; y < 10; y += 3) FBox(0, 0, y, 9, 2, 1, cWoodDark);
+                FBox(0, 0, 0, 1, 2, 10, cWoodDark);
+                FBox(8, 0, 0, 1, 2, 10, cWoodDark);
+                FBox(0, 0, 0, 9, 1, 10, cWoodDark);
+                break;
+            case 3: // диван
+            {
+                int sc = rng.Next(sofaA.Length);
+                FBox(1, 1, 2, 10, 4, 1, sofaB[sc]);      // подушки
+                FBox(0, 0, 2, 12, 1, 3, sofaA[sc]);      // спинка
+                FBox(0, 0, 2, 1, 5, 2, sofaA[sc]);       // бильця
+                FBox(11, 0, 2, 1, 5, 2, sofaA[sc]);
+                FBox(0, 0, 0, 12, 5, 2, sofaA[sc]);
+                break;
+            }
+            case 4: // телевізор на тумбі
+                FBox(2, 2, 4, 5, 1, 3, cScreen);
+                FBox(1, 1, 3, 7, 2, 5, cBlack);
+                FBox(0, 0, 0, 9, 3, 3, cWoodMid);
+                break;
+            case 5: // стіл зі стільцями
+                FPut(5, 4, 4, flowerColors[rng.Next(flowerColors.Length)]);
+                FBox(5, 4, 4, 1, 1, 1, cLeafG);
+                FBox(2, 2, 3, 7, 5, 1, cPlank);
+                FBox(2, 2, 0, 1, 1, 3, cWoodDark);
+                FBox(8, 2, 0, 1, 1, 3, cWoodDark);
+                FBox(2, 6, 0, 1, 1, 3, cWoodDark);
+                FBox(8, 6, 0, 1, 1, 3, cWoodDark);
+                FBox(0, 3, 0, 2, 2, 2, cSeat);
+                FBox(9, 3, 0, 2, 2, 2, cSeat);
+                FBox(4, 0, 0, 2, 2, 2, cSeat);
+                FBox(4, 7, 0, 2, 2, 2, cSeat);
+                break;
+            case 6: // письмовий стіл із монітором і кріслом
+                FBox(3, 2, 4, 3, 1, 3, cScreen);
+                FBox(3, 1, 4, 3, 1, 3, cBlack);
+                FBox(3, 3, 4, 3, 1, 1, cWhite);
+                FBox(0, 0, 3, 9, 4, 1, cPlank);
+                FBox(0, 0, 0, 1, 4, 3, cWoodDark);
+                FBox(8, 0, 0, 1, 4, 3, cWoodDark);
+                FBox(3, 6, 2, 3, 1, 3, cSeat);
+                FBox(3, 4, 1, 3, 3, 1, cSeat);
+                FBox(4, 5, 0, 1, 1, 1, cMetal);
+                break;
+            case 7: // кухонний блок
+                for (int u = 2; u < 14; u += 4) FPut(u, 3, 2, cMetal);
+                FBox(3, 1, 4, 4, 2, 1, cMetal);          // мийка
+                FBox(5, 0, 5, 1, 1, 2, cMetal);          // кран
+                FBox(9, 1, 4, 2, 2, 1, cBlack);          // конфорки
+                FBox(11, 1, 4, 2, 2, 1, cBlack);
+                FBox(0, 0, 4, 14, 4, 1, cCounter);
+                FBox(0, 0, 0, 14, 4, 4, cCabinet);
+                break;
+            case 8: // холодильник
+                FBox(0, 3, 6, 1, 1, 3, cMetal);
+                FBox(0, 3, 5, 4, 1, 1, cGray);
+                FBox(0, 0, 0, 4, 4, 11, cWhite);
+                break;
+            case 9: // рослина в горщику
+                FBox(0, 0, 4, 3, 3, 2, cLeafG);
+                FBox(1, 1, 2, 1, 1, 2, cWoodDark);
+                FBox(0, 0, 0, 3, 3, 2, cPot);
+                break;
+            case 10: // торшер
+                FBox(0, 0, 8, 3, 3, 2, cLampShade);
+                FBox(1, 1, 1, 1, 1, 7, cMetal);
+                FBox(0, 0, 0, 3, 3, 1, cMetal);
+                break;
+            case 11: // верстак з інструментами
+                FBox(2, 1, 6, 1, 1, 3, cMetal);
+                FBox(5, 1, 6, 1, 1, 2, cBrick);
+                FBox(8, 1, 7, 1, 1, 2, cLine);
+                FBox(1, 0, 5, 10, 1, 5, cPlank);         // дошка з інструментами
+                FBox(9, 3, 4, 2, 2, 2, cMetal);          // лещата
+                FBox(0, 0, 3, 12, 5, 1, cPlank);
+                FBox(0, 0, 0, 1, 5, 3, cWoodDark);
+                FBox(11, 0, 0, 1, 5, 3, cWoodDark);
+                break;
+            case 12: // ящики
+                FBox(0, 0, 0, 1, 1, 4, cWoodDark);
+                FBox(3, 0, 0, 1, 1, 4, cWoodDark);
+                FBox(0, 3, 0, 1, 1, 4, cWoodDark);
+                FBox(3, 3, 0, 1, 1, 4, cWoodDark);
+                if (rng.Next(2) == 0) FBox(1, 1, 4, 3, 3, 3, cPlank);
+                FBox(0, 0, 0, 4, 4, 4, cPlank);
+                break;
+            case 13: // камін
+                FBox(4, 1, 0, 2, 1, 2, cFire);
+                FBox(3, 1, 0, 4, 2, 3, cBlack);
+                FBox(0, 0, 6, 10, 3, 1, cWoodDark);
+                FBox(3, 0, 7, 4, 2, 8, cBrick);
+                FBox(0, 0, 0, 10, 3, 6, cBrick);
+                break;
+            case 14: // піаніно зі стільцем
+                FBox(1, 4, 4, 8, 1, 1, cWhite);
+                FBox(0, 4, 3, 10, 1, 1, cPiano);
+                FBox(4, 5, 0, 3, 2, 2, cSeat);
+                FBox(0, 0, 0, 10, 4, 6, cPiano);
+                break;
         }
     }
 
     // ---------- дрібниці двору ----------
 
-    // Розставляє кілька випадкових дрібниць у дворі, не заходячи на хату й на фасадну смугу
-    void YardExtras(RectInt rect, int f, RectInt hr, int front, System.Random rng, List<RectInt> used, int count)
+    bool Overlaps(int x0, int z0, int sx, int sz, int gap)
     {
-        int[] kw = { 5, 7, 6, 7, 6, 6, 4 };
-        int[] kd = { 3, 7, 3, 3, 4, 4, 4 };
-        RectInt hrBig = new RectInt(hr.x - 2, hr.y - 2, hr.width + 4, hr.height + 4);
+        for (int i = 0; i < taken.Count; i++)
+        {
+            RectInt r = taken[i];
+            if (x0 - gap < r.xMax && x0 + sx + gap > r.xMin && z0 - gap < r.yMax && z0 + sz + gap > r.yMin)
+                return true;
+        }
+        return false;
+    }
 
+    void ScatterProps(System.Random rng, int lx0, int lz0, int margin, int count)
+    {
         for (int n = 0; n < count; n++)
+        for (int attempt = 0; attempt < 10; attempt++)
         {
-            int kind = rng.Next(0, 7);   // 0 дрова, 1 копиця, 2 вулики, 3 корова, 4 свиня з курами, 5 віз, 6 будка
-            int sx = kw[kind], sz = kd[kind];
-            bool alongX = true;
-            if (kind == 3 && rng.Next(2) == 0) { alongX = false; sx = 3; sz = 7; }
+            int kind = rng.Next(PropA.Length);
+            int a = PropA[kind], b = PropB[kind];
+            int s = rng.Next(4);
+            int sx, sz;
+            Foot(a, b, s, out sx, out sz);
 
-            for (int tries = 0; tries < 12; tries++)
+            int minX = lx0 + margin + 1, maxX = lx0 + lotV - margin - 1 - sx;
+            int minZ = lz0 + margin + 1, maxZ = lz0 + lotV - margin - 1 - sz;
+            if (maxX < minX || maxZ < minZ) continue;
+
+            int x0 = rng.Next(minX, maxX + 1);
+            int z0 = rng.Next(minZ, maxZ + 1);
+            if (Overlaps(x0, z0, sx, sz, 1)) continue;
+
+            taken.Add(new RectInt(x0, z0, sx, sz));
+            BeginAbs(x0, z0, a, b, s);
+            DrawProp(kind, rng);
+            break;
+        }
+    }
+
+    void DrawProp(int kind, System.Random rng)
+    {
+        switch (kind)
+        {
+            case 0: // живопліт із квітами
             {
-                int lox = rect.x + 2, hix = rect.xMax - 2 - sx;
-                int loz = rect.y + 2, hiz = rect.yMax - 2 - sz;
-                if (hix < lox || hiz < loz) break;
-                int x = rng.Next(lox, hix + 1), z = rng.Next(loz, hiz + 1);
-
-                int dMin = Mathf.Min(
-                    Mathf.Min(DistFromFront(rect, f, x, z), DistFromFront(rect, f, x + sx - 1, z)),
-                    Mathf.Min(DistFromFront(rect, f, x, z + sz - 1), DistFromFront(rect, f, x + sx - 1, z + sz - 1)));
-                if (dMin < front) continue;
-
-                RectInt fp = new RectInt(x - 1, z - 1, sx + 2, sz + 2);
-                if (fp.Overlaps(hrBig)) continue;
-                bool bad = false;
-                foreach (var u in used) if (fp.Overlaps(u)) { bad = true; break; }
-                if (bad) continue;
-
-                used.Add(fp);
-                switch (kind)
-                {
-                    case 0: Woodpile(x, z); break;
-                    case 1: Haystack(x + 3, z + 3); break;
-                    case 2: Beehives(x, z); break;
-                    case 3: Cow(x, z, alongX); break;
-                    case 4: PigPen(x, z); break;
-                    case 5: Cart(x, z); break;
-                    default: Doghouse(x, z); break;
-                }
+                byte lA = leafSets[0][0], lB = leafSets[0][1];
+                for (int u = 0; u < 10; u++)
+                    if (Hash01(tX0 + u, 3, tZ0) < 0.18f)
+                        FPut(u, 2, 2, flowerColors[(int)(Hash01(u, tZ0, tX0) * flowerColors.Length) % flowerColors.Length]);
+                FBox(1, 0, 3, 8, 3, 1, lB);
+                FBox(0, 0, 0, 10, 3, 3, lA);
                 break;
             }
-        }
-    }
-
-    // Додає воксель у координатах предмета: a вздовж, b впоперек (alongX: a іде по x)
-    void AX(int ox, int oz, bool alongX, int a, int b, int y, byte id)
-    {
-        if (alongX) Add(ox + a, y, oz + b, id);
-        else Add(ox + b, y, oz + a, id);
-    }
-
-    void Woodpile(int x, int z)
-    {
-        for (int xx = 0; xx < 5; xx++)
-        for (int zz = 0; zz < 3; zz++)
-        {
-            int hgt = zz == 1 ? 3 : 2;
-            for (int y = 0; y < hgt; y++)
-                Add(x + xx, y, z + zz, (((xx + y) & 1) == 0) ? cLog : cLogB);
-        }
-    }
-
-    void Haystack(int cx, int cz)
-    {
-        for (int i = 0; i < 4; i++)
-            Disc(cx, cz, 3.2f * Mathf.Sqrt(1f - (i / 4f) * (i / 4f)), i, i + 1, i % 2 == 0 ? cStraw : cStraw2);
-    }
-
-    void Beehives(int x, int z)
-    {
-        for (int h = 0; h < 2; h++)
-        {
-            int bx = x + h * 3;
-            for (int dx = 0; dx < 2; dx++)
-            for (int dz = 0; dz < 2; dz++)
-            {
-                Add(bx + dx, 0, z + dz, cPost);
-                Add(bx + dx, 1, z + dz, cSun);
-                Add(bx + dx, 2, z + dz, cStraw2);
-                Add(bx + dx, 3, z + dz, cSail);
-            }
-        }
-    }
-
-    void Cow(int x, int z, bool ax)
-    {
-        for (int a = 1; a <= 4; a++)
-        for (int b = 0; b < 2; b++)
-        for (int y = 2; y <= 3; y++)
-        {
-            byte c = Hash01(x + a * 3, y + b, z) < 0.3f ? cCowB : cCowW;
-            AX(x, z, ax, a, b, y, c);
-        }
-        for (int b = 0; b < 2; b++)
-        for (int y = 0; y < 2; y++)
-        {
-            AX(x, z, ax, 1, b, y, cCowB);
-            AX(x, z, ax, 4, b, y, cCowB);
-        }
-        for (int b = 0; b < 2; b++)
-        {
-            AX(x, z, ax, 5, b, 3, cCowW);
-            AX(x, z, ax, 5, b, 4, cCowW);
-            AX(x, z, ax, 6, b, 3, cPink);
-        }
-        AX(x, z, ax, 5, 0, 5, cSail);
-        AX(x, z, ax, 5, 1, 5, cSail);
-        AX(x, z, ax, 0, 0, 3, cCowB);
-        AX(x, z, ax, 0, 0, 2, cCowB);
-    }
-
-    void PigPen(int x, int z)
-    {
-        // свиня
-        for (int a = 0; a < 3; a++)
-        for (int b = 0; b < 2; b++)
-        for (int y = 1; y <= 2; y++) Add(x + a, y, z + b, cPink);
-        for (int b = 0; b < 2; b++)
-        {
-            Add(x, 0, z + b, cPigDark);
-            Add(x + 2, 0, z + b, cPigDark);
-            Add(x + 3, 1, z + b, cPink);
-            Add(x + 3, 2, z + b, cPink);
-            Add(x + 4, 1, z + b, cPigDark);
-        }
-        // кури
-        int[] cxs = { x, x + 4 };
-        foreach (int cx in cxs)
-        {
-            Add(cx, 0, z + 3, cSail);
-            Add(cx + 1, 0, z + 3, cSail);
-            Add(cx + 1, 1, z + 3, cSail);
-            Add(cx + 1, 2, z + 3, cRed);
-        }
-    }
-
-    void Cart(int x, int z)
-    {
-        // колеса
-        int[] wz = { 0, 3 };
-        foreach (int dz in wz)
-        {
-            Add(x + 1, 0, z + dz, cPost);
-            Add(x + 1, 1, z + dz, cPost);
-            Add(x + 1, 2, z + dz, cPost);
-            Add(x, 1, z + dz, cPost);
-            Add(x + 2, 1, z + dz, cPost);
-        }
-        // кузов із сіном
-        for (int xx = 0; xx < 5; xx++)
-        for (int zz = 1; zz <= 2; zz++)
-        {
-            Add(x + xx, 1, z + zz, plankSet[(xx & 1) == 0 ? 0 : 1]);
-            Add(x + xx, 2, z + zz, cStraw);
-            if (xx > 0 && xx < 4) Add(x + xx, 3, z + zz, cStraw2);
-        }
-        // дишель
-        Add(x + 5, 1, z + 1, cPost);
-        Add(x + 5, 1, z + 2, cPost);
-    }
-
-    void Doghouse(int x, int z)
-    {
-        // вхід (першим)
-        for (int y = 0; y < 2; y++)
-        for (int dx = 1; dx <= 2; dx++) Add(x + dx, y, z, cDoor);
-        for (int y = 0; y < 3; y++)
-        for (int zz = 0; zz < 4; zz++)
-        for (int xx = 0; xx < 4; xx++)
-        {
-            if (xx != 0 && xx != 3 && zz != 0 && zz != 3) continue;
-            Add(x + xx, y, z + zz, cPost);
-        }
-        for (int zz = 0; zz < 4; zz++)
-        for (int xx = 0; xx < 4; xx++)
-            Add(x + xx, 3, z + zz, tileSet[(xx + zz) % 3]);
-        for (int zz = 0; zz < 4; zz++)
-        for (int xx = 1; xx <= 2; xx++)
-            Add(x + xx, 4, z + zz, tileSet[(xx + zz + 1) % 3]);
-    }
-
-    void Scarecrow(int x, int z)
-    {
-        byte shirt = shutterSet[2];
-        Add(x, 3, z, shirt);
-        Add(x, 2, z, shirt);
-        for (int y = 0; y < 2; y++) Add(x, y, z, cPost);
-        for (int a = 1; a <= 2; a++)
-        {
-            Add(x - a, 3, z, cRail);
-            Add(x + a, 3, z, cRail);
-        }
-        Add(x - 2, 2, z, cStraw);
-        Add(x + 2, 2, z, cStraw);
-        Add(x, 4, z, cStraw);
-        Add(x - 1, 5, z, cDoor);
-        Add(x, 5, z, cDoor);
-        Add(x + 1, 5, z, cDoor);
-        Add(x, 6, z, cDoor);
-    }
-
-    // ---------- хата ----------
-
-    void BuildHouseBody(System.Random rng, int w, int d, int floors)
-    {
-        int fh = Mathf.Max(4, wallHeight);
-        int wh = fh * floors;
-        bool thatched = rng.NextDouble() < thatchChance;
-        byte[] roofSet = thatched ? thatchSet : (rng.NextDouble() < 0.6 ? tileSet : shingleSet);
-        byte stripe = stripeSet[rng.Next(stripeSet.Length)];
-        byte shut = shutterSet[rng.Next(shutterSet.Length)];
-
-        // 1. деталі (двері, вікна, комин, балкон): вони ставляться першими, бо вже поставлене не перезаписується
-        int dl = w / 2 - 1;
-        for (int y = 1; y <= 3; y++)
-        {
-            PH(dl, y, 0, cDoor);
-            PH(dl + 1, y, 0, cDoor);
-        }
-        int[] wxs = { 2, w - 4 };
-        int sz = d / 2 - 1;
-        for (int fl = 0; fl < floors; fl++)
-        {
-            int yb = fl * fh;
-            foreach (int wx in wxs)
-            for (int y = yb + 2; y <= yb + 3; y++)
-            {
-                PH(wx, y, 0, cGlass);
-                PH(wx + 1, y, 0, cGlass);
-                PH(wx - 1, y, 0, shut);
-                PH(wx + 2, y, 0, shut);
-            }
-            for (int y = yb + 2; y <= yb + 3; y++)
-            {
-                PH(0, y, sz, cGlass); PH(0, y, sz + 1, cGlass);
-                PH(w - 1, y, sz, cGlass); PH(w - 1, y, sz + 1, cGlass);
-                PH(dl, y, d - 1, cGlass); PH(dl + 1, y, d - 1, cGlass);
-            }
-            // над входом на другому поверсі балконні двері
-            if (fl > 0)
-                for (int y = yb + 1; y <= yb + 3; y++)
-                {
-                    PH(dl, y, 0, cDoor);
-                    PH(dl + 1, y, 0, cDoor);
-                }
-        }
-        if (floors > 1)
-        {
-            // балкон: плита, перила, дві опори до землі
-            for (int lx = dl - 1; lx <= dl + 2; lx++)
-            for (int lz = -2; lz <= -1; lz++) PH(lx, fh, lz, cRail);
-            for (int lx = dl - 1; lx <= dl + 2; lx++) PH(lx, fh + 1, -2, cRail);
-            for (int y = 0; y < fh; y++)
-            {
-                PH(dl - 1, y, -2, cPost);
-                PH(dl + 2, y, -2, cPost);
-            }
-            PH(dl - 1, fh + 1, -1, cRail);
-            PH(dl + 2, fh + 1, -1, cRail);
-        }
-        if (rng.NextDouble() < chimneyChance)
-        {
-            int top = wh + (d + 2) / 2 + 1;
-            for (int y = wh; y <= top; y++)
-            for (int dx = 0; dx < 2; dx++)
-            for (int dz = 0; dz < 2; dz++)
-                PH(w - 4 + dx, y, d / 2 - 1 + dz, y == top ? cCap : cBrick);
-        }
-
-        // 2. стіни: знизу кольорова смуга, вище побілка (на двоповерхових ще пояс між поверхами)
-        for (int y = 0; y < wh; y++)
-        for (int lz = 0; lz < d; lz++)
-        for (int lx = 0; lx < w; lx++)
-        {
-            if (lx != 0 && lx != w - 1 && lz != 0 && lz != d - 1) continue;
-            bool band = floors > 1 && y == fh;
-            PH(lx, y, lz, (y < 2 || band) ? stripe : Pick(wallSet, Hash(lx, y, lz)));
-        }
-
-        // 3. дах (фронтони побілені) і 4. підлога
-        GableRoof(w, d, wh, true, wallSet[0], roofSet);
-        PBox(0, 0, 0, w, 1, d, cFloor);
-    }
-
-    // ---------- комора ----------
-
-    void BuildBarn(System.Random rng, int w, int d)
-    {
-        const int wh = 7;
-        int dc = w / 2;
-
-        // 1. деталі: хрестові розкоси, лиштва й ворота, віконце горища
-        for (int i = 0; i < 4; i++)
-        {
-            PH(dc - 2 + i, 1 + i, 0, cSail);
-            PH(dc + 1 - i, 1 + i, 0, cSail);
-        }
-        for (int y = 1; y <= 5; y++)
-        {
-            PH(dc - 3, y, 0, cSail);
-            PH(dc + 2, y, 0, cSail);
-        }
-        for (int lx = dc - 3; lx <= dc + 2; lx++) PH(lx, 5, 0, cSail);
-        for (int y = 1; y <= 4; y++)
-        for (int lx = dc - 2; lx <= dc + 1; lx++) PH(lx, y, 0, cDoor);
-        for (int y = wh + 1; y <= wh + 2; y++)
-        {
-            PH(dc - 1, y, 0, cDoor);
-            PH(dc, y, 0, cDoor);
-        }
-        PH(dc - 1, wh + 3, 0, cSail);
-        PH(dc, wh + 3, 0, cSail);
-        PH(0, 3, d / 2, cGlass);
-        PH(w - 1, 3, d / 2, cGlass);
-        PH(0, 3, d / 2 - 3, cGlass);
-        PH(w - 1, 3, d / 2 - 3, cGlass);
-
-        // 2. стіни: кам'яна основа, червоні дошки, білі кути
-        for (int y = 0; y < wh; y++)
-        for (int lz = 0; lz < d; lz++)
-        for (int lx = 0; lx < w; lx++)
-        {
-            if (lx != 0 && lx != w - 1 && lz != 0 && lz != d - 1) continue;
-            bool corner = (lx == 0 || lx == w - 1) && (lz == 0 || lz == d - 1);
-            byte id = y == 0 ? cStone : (corner ? cSail : Pick(barnSet, Hash(lx, y, lz)));
-            PH(lx, y, lz, id);
-        }
-
-        // 3. дах (гребінь уздовж lz, фронтон до воріт), підлога, сіно всередині
-        GableRoof(w, d, wh, false, barnSet[0], shingleSet);
-        PBox(0, 0, 0, w, 1, d, cFloor);
-        for (int y = 1; y <= 2; y++)
-            PBox(1, y, 3, w - 2, 1, d - 4, y == 1 ? cStraw : cStraw2);
-    }
-
-    // ---------- церква ----------
-
-    void BuildChurchYard(RectInt rect, int f)
-    {
-        var rng = new System.Random(Hash(seed ^ 0x5151, rect.x, rect.y));
-        const int w = 13, d = 17, wh = 6, front = 8;
-        HouseOrigin(rect, f, w, d, front, out int ox, out int oz);
-        SetT(f, ox, oz, w, d);
-
-        byte dome = domeSet[rng.Next(domeSet.Length)];
-
-        // деталі: двері й вікна
-        for (int y = 1; y <= 4; y++)
-        for (int lx = 5; lx <= 7; lx++) PH(lx, y, 0, cDoor);
-        foreach (int lz in new[] { 4, 5, 10, 11 })
-        for (int y = 2; y <= 4; y++)
-        {
-            PH(0, y, lz, cGlass);
-            PH(w - 1, y, lz, cGlass);
-        }
-
-        // баня: барабан із вікнами, півсфера, шпиль із хрестом
-        for (int y = 10; y <= 12; y++)
-        {
-            PH(5, y, 4, cGlass); PH(6, y, 4, cGlass); PH(7, y, 4, cGlass);
-            PH(5, y, 12, cGlass); PH(6, y, 12, cGlass); PH(7, y, 12, cGlass);
-            PH(2, y, 7, cGlass); PH(2, y, 8, cGlass); PH(2, y, 9, cGlass);
-            PH(10, y, 7, cGlass); PH(10, y, 8, cGlass); PH(10, y, 9, cGlass);
-        }
-        PBox(2, wh, 4, 9, 10, 9, cLog);
-        LocalToWorld(6, 8, out int dcx, out int dcz);
-        for (int i = 0; i < 7; i++)
-        {
-            float r = 4.6f * Mathf.Sqrt(1f - (i / 7f) * (i / 7f));
-            Disc(dcx, dcz, r, wh + 10 + i, wh + 11 + i, dome);
-        }
-        for (int y = wh + 17; y <= wh + 22; y++) PH(6, y, 8, cGold);
-        PH(5, wh + 20, 8, cGold);
-        PH(7, wh + 20, 8, cGold);
-
-        // стіни з колод
-        for (int y = 0; y < wh; y++)
-        for (int lz = 0; lz < d; lz++)
-        for (int lx = 0; lx < w; lx++)
-        {
-            if (lx != 0 && lx != w - 1 && lz != 0 && lz != d - 1) continue;
-            PH(lx, y, lz, y == 0 ? cStone : ((y & 1) == 0 ? cLog : cLogB));
-        }
-
-        GableRoof(w, d, wh, false, cLog, shingleSet);
-        PBox(0, 0, 0, w, 1, d, cFloor);
-
-        // доріжка від воріт до дверей
-        for (int k = 1; k <= front; k++)
-        {
-            PH(5, 0, -k, cPath); PH(6, 0, -k, cPath); PH(7, 0, -k, cPath);
-        }
-
-        // цвинтар по боках двору: горбки з дерев'яними хрестами
-        int[] gcols = { -6, -3, 15, 18 };
-        for (int gz = 2; gz <= 14; gz += 3)
-        foreach (int gx in gcols)
-        {
-            if (Hash01(gx, gz, 61) >= graveChance) continue;
-            PH(gx, 0, gz, cSoil);
-            PH(gx, 0, gz + 1, cSoil);
-            for (int y = 0; y < 4; y++) PH(gx, y, gz - 1, cLog);
-            PH(gx - 1, 2, gz - 1, cLog);
-            PH(gx + 1, 2, gz - 1, cLog);
-        }
-
-        Fence(rect, f);
-
-        RectInt hr = FootRect(f, ox, oz, w, d);
-        for (int n = 0, tries = 0; n < 3 && tries < 16; tries++)
-        {
-            int x = rng.Next(rect.x + 3, rect.xMax - 3);
-            int z = rng.Next(rect.y + 3, rect.yMax - 3);
-            if (DistFromFront(rect, f, x, z) < front) continue;
-            if (x >= hr.x - 3 && x < hr.xMax + 3 && z >= hr.y - 3 && z < hr.yMax + 3) continue;
-            BuildTree(x, z, 3, rng, 0.1);
-            n++;
-        }
-    }
-
-    // ---------- криниця ----------
-
-    void BuildWell(int cx, int cz)
-    {
-        Ring(cx, cz, 2.6f, 1.2f, 0, 2, cStone);
-        Disc(cx, cz, 1.2f, 0, 1, cWater);
-        for (int y = 0; y < 5; y++)
-        {
-            Add(cx - 3, y, cz, cPost);
-            Add(cx + 3, y, cz, cPost);
-        }
-        for (int x = cx - 3; x <= cx + 3; x++) Add(x, 5, cz, cPost);
-        Add(cx, 4, cz, cRail);
-        Add(cx, 3, cz, cRail);
-        Add(cx, 2, cz, cDoor);
-    }
-
-    // ---------- площа зі старим дубом ----------
-
-    void BuildOakSquare(RectInt r)
-    {
-        var rng = new System.Random(Hash(seed ^ 0x0a0a, r.x, r.y));
-        int cx = r.x + 7, cz = r.y + 7;
-
-        // дуб першим: стовбур має перевагу над гравієм
-        BuildTreeWith(cx, cz, 5, rng, false, leafSets[0], 2);
-
-        // лавки
-        Bench(cx - 1, cz - 7, true);
-        Bench(cx - 1, cz + 8, true);
-        Bench(cx - 7, cz - 1, false);
-        Bench(cx + 8, cz - 1, false);
-
-        // гравійний майданчик
-        for (int dz = -7; dz <= 8; dz++)
-        for (int dx = -7; dx <= 8; dx++)
-        {
-            float fx = dx - 0.5f, fz = dz - 0.5f;
-            if (fx * fx + fz * fz > 58f) continue;
-            int x = cx + dx, z = cz + dz;
-            Add(x, 0, z, Pick(gravelSet, Hash(x, 0, z)));
-        }
-    }
-
-    void Bench(int x, int z, bool alongX)
-    {
-        for (int i = 0; i < 3; i++)
-        {
-            int bx = alongX ? x + i : x;
-            int bz = alongX ? z : z + i;
-            Add(bx, 1, bz, plankSet[i & 1]);
-            if (i != 1) Add(bx, 0, bz, cPost);
-        }
-    }
-
-    // ---------- ліхтарний стовп ----------
-
-    void BuildPole(int x)
-    {
-        int z = RoadZAt(x) + hw + 1;
-        if (!Free(x, z)) return;
-        for (int y = 0; y < 8; y++) Add(x, y, z, cPost);
-        Add(x, 7, z - 1, cPost);
-        Add(x, 7, z - 2, cPost);
-        Add(x, 6, z - 2, cSun);
-    }
-
-    // ---------- вітряк ----------
-
-    void BuildWindmill(int cx, int cz)
-    {
-        // двері на південній стороні (першими: вже поставлене не перезаписується)
-        for (int y = 1; y <= 3; y++)
-        {
-            Add(cx, y, cz - 6, cDoor);
-            Add(cx + 1, y, cz - 6, cDoor);
-        }
-
-        // вежа: від r 6.5 унизу до 3.5 угорі; нижні 4 шари кам'яні
-        for (int y = 0; y < 16; y++)
-        {
-            float r = 6.5f - 3f * y / 15f;
-            Ring(cx, cz, r, r - 1.6f, y, y + 1, y < 4 ? cMillBase : cMillWall);
-        }
-        Disc(cx, cz, 6.5f, 0, 1, cFloor);
-
-        // дах-конус
-        for (int i = 0; i < 6; i++) Disc(cx, cz, 4.4f * (1f - i / 6f) + 0.6f, 16 + i, 17 + i, cMillRoof);
-
-        // вісь і лопаті (площина y-z обличчям до +x)
-        for (int x = cx + 3; x <= cx + 6; x++)
-        {
-            Add(x, 14, cz, cPost);
-            Add(x, 15, cz, cPost);
-        }
-        int bx = cx + 7, hy = 15, hz = cz;
-        for (int dy = -1; dy <= 1; dy++)
-        for (int dz = -1; dz <= 1; dz++) Add(bx, hy + dy, hz + dz, cPost);
-
-        const int len = 11;
-        for (int t = 2; t <= len; t++)
-        {
-            Add(bx, hy + t, hz, cPost);
-            Add(bx, hy - t, hz, cPost);
-            Add(bx, hy, hz + t, cPost);
-            Add(bx, hy, hz - t, cPost);
-            if (t < 4) continue;
-            for (int s = 1; s <= 2; s++)
-            {
-                Add(bx, hy + t, hz + s, cSail);   // вгору: полотно праворуч
-                Add(bx, hy - s, hz + t, cSail);   // праворуч: полотно знизу
-                Add(bx, hy - t, hz - s, cSail);   // вниз: полотно ліворуч
-                Add(bx, hy + s, hz - t, cSail);   // ліворуч: полотно зверху
-            }
-        }
-    }
-
-    // ---------- ділянки за селом ----------
-
-    // type: 0 пшениця, 1 соняшники, 2 лука, 3 сад, 4 гай, 5 ставок, 6 баштан
-    void BuildPlot(RectInt plot, int type)
-    {
-        var rng = new System.Random(Hash(seed ^ 0x777, plot.x, plot.y));
-        int inner = Inner;
-        int x0 = Mathf.Max(plot.x + 2, -inner), x1 = Mathf.Min(plot.xMax - 2, inner);
-        int z0 = Mathf.Max(plot.y + 2, -inner), z1 = Mathf.Min(plot.yMax - 2, inner);
-        if (x1 <= x0 || z1 <= z0) return;
-
-        // опудало на полях (першим: вже поставлене не перезаписується)
-        if ((type == 0 || type == 1 || type == 6) && rng.NextDouble() < 0.7)
-        {
-            int scx = rng.Next(x0 + 4, Mathf.Max(x0 + 5, x1 - 4));
-            int scz = rng.Next(z0 + 4, Mathf.Max(z0 + 5, z1 - 4));
-            if (TreeClear(scx, scz, 2)) Scarecrow(scx, scz);
-        }
-
-        switch (type)
-        {
-            case 0:
-                for (int z = z0; z < z1; z++)
-                for (int x = x0; x < x1; x++)
-                {
-                    if (!Free(x, z)) continue;
-                    byte row = wheatSet[((z / 2) & 1) == 0 ? 0 : 1];
-                    Add(x, 0, z, row);
-                    if (Hash01(x, 11, z) < 0.8f)
-                    {
-                        Add(x, 1, z, Pick(wheatSet, Hash(x, 12, z)));
-                        if (Hash01(x, 13, z) < 0.15f) Add(x, 2, z, row);
-                    }
-                }
-                // копиці сіна
-                for (int n = rng.Next(0, 3); n > 0; n--)
-                {
-                    int hx = rng.Next(x0 + 6, Mathf.Max(x0 + 7, x1 - 6)), hz = rng.Next(z0 + 6, Mathf.Max(z0 + 7, z1 - 6));
-                    if (!TreeClear(hx, hz, 3)) continue;
-                    for (int i = 0; i < 4; i++) Disc(hx, hz, 3.2f * Mathf.Sqrt(1f - (i / 4f) * (i / 4f)), i + 1, i + 2, i % 2 == 0 ? cStraw : cStraw2);
-                }
-                break;
-
             case 1:
-                for (int z = z0; z < z1; z++)
-                for (int x = x0; x < x1; x++)
-                {
-                    if (!Free(x, z)) continue;
-                    Add(x, 0, z, ((x + z) & 1) == 0 ? cSoil : cSoilDark);
-                    if (x % 3 != 0 || z % 3 != 0) continue;
-                    for (int y = 1; y <= 3; y++) Add(x, y, z, cStem);
-                    Add(x, 4, z, cSunCenter);
-                    Add(x + 1, 4, z, cSun); Add(x - 1, 4, z, cSun);
-                    Add(x, 4, z + 1, cSun); Add(x, 4, z - 1, cSun);
-                    Add(x, 5, z, cSun);
-                }
+                DrawFlowerBed();
                 break;
-
             case 2:
-                for (int z = z0; z < z1; z++)
-                for (int x = x0; x < x1; x++)
-                {
-                    if (!Free(x, z)) continue;
-                    if (Hash01(x, 21, z) < 0.045f) Add(x, 0, z, Pick(flowerColors, Hash(x, 22, z)));
-                }
+                DrawBench();
                 break;
-
-            case 3:
-                for (int z = z0 + 3; z < z1 - 2; z += 7)
-                for (int x = x0 + 3; x < x1 - 2; x += 7)
-                {
-                    int tx = x + rng.Next(-1, 2), tz = z + rng.Next(-1, 2);
-                    if (!TreeClear(tx, tz, 2)) continue;
-                    BuildOrchardTree(tx, tz, rng);
-                }
+            case 3: // собача будка
+                FBox(1, 4, 0, 3, 1, 3, cBlack);
+                FBox(1, 1, 5, 3, 3, 1, cRoofRed);
+                FBox(0, 0, 4, 5, 5, 1, cRoofRed);
+                FBox(0, 0, 0, 5, 5, 4, cWoodMid);
                 break;
-
+            case 4: // мангал
+                FBox(1, 1, 3, 1, 1, 1, cFire);
+                FBox(0, 0, 0, 1, 1, 3, cMetal);
+                FBox(2, 0, 0, 1, 1, 3, cMetal);
+                FBox(0, 2, 0, 1, 1, 3, cMetal);
+                FBox(2, 2, 0, 1, 1, 3, cMetal);
+                FBox(0, 0, 3, 3, 3, 2, cBlack);
+                break;
             case 5:
-            {
-                // ставок: вода, кам'яний бортик, очерет, качки
-                int pcx = (x0 + x1) / 2, pcz = (z0 + z1) / 2;
-                float prx = Mathf.Min(12f, (x1 - x0) / 2f - 4f);
-                float prz = Mathf.Min(9f, (z1 - z0) / 2f - 4f);
-                if (prx < 5f || prz < 4f) break;
-                int ex = Mathf.CeilToInt(prx + 3), ez = Mathf.CeilToInt(prz + 3);
-                for (int dz = -ez; dz <= ez; dz++)
-                for (int dx = -ex; dx <= ex; dx++)
-                {
-                    float nx = dx / prx, nz = dz / prz;
-                    float e = nx * nx + nz * nz;
-                    if (e > 1.9f) continue;
-                    int x = pcx + dx, z = pcz + dz;
-                    if (!Free(x, z)) continue;
-
-                    if (e <= 1f)
-                    {
-                        Add(x, 0, z, WaterColor(x, z));
-                        if (e < 0.5f && Hash01(x, 41, z) < 0.012f)
-                        {
-                            Add(x, 1, z, cSail);
-                            Add(x + 1, 1, z, cSail);
-                            Add(x + 1, 2, z, cSail);
-                            Add(x + 2, 1, z, cSun);
-                        }
-                    }
-                    else if (e <= 1.25f)
-                    {
-                        byte sc = Hash01(x, 42, z) < 0.5f ? cStone : cStone2;
-                        Add(x, 0, z, sc);
-                        if (Hash01(x, 43, z) < 0.7f) Add(x, 1, z, sc);
-                    }
-                    else
-                    {
-                        Add(x, 0, z, Pick(gravelSet, Hash(x, 44, z)));
-                        if (Hash01(x, 45, z) < 0.1f)
-                        {
-                            for (int y = 1; y <= 3; y++) Add(x, y, z, cStem);
-                            Add(x, 4, z, cSunCenter);
-                        }
-                    }
-                }
+                DrawCar(rng);
                 break;
-            }
-
-            case 6:
-            {
-                // баштан: ряди землі з гарбузами й динями
-                for (int z = z0; z < z1; z++)
-                for (int x = x0; x < x1; x++)
-                {
-                    if (!Free(x, z)) continue;
-                    Add(x, 0, z, ((x + z) & 1) == 0 ? cSoil : cSoilDark);
-                    if (x % 5 != 0 || z % 5 != 0) continue;
-                    if (Hash01(x, 71, z) < 0.15f) continue;
-                    if (!Free(x + 1, z) || !Free(x, z + 1) || !Free(x + 1, z + 1)) continue;
-                    byte fruit = Hash01(x, 72, z) < 0.6f ? cPumpkin : cMelon;
-                    for (int y = 1; y <= 2; y++)
-                    for (int dz = 0; dz < 2; dz++)
-                    for (int dx = 0; dx < 2; dx++)
-                        Add(x + dx, y, z + dz, fruit);
-                    Add(x, 3, z, cStem);
-                }
-                break;
-            }
-
-            default:
-                for (int z = z0 + 2; z < z1 - 1; z += 5)
-                for (int x = x0 + 2; x < x1 - 1; x += 5)
-                {
-                    if (rng.NextDouble() > 0.8) continue;
-                    int tx = x + rng.Next(-1, 2), tz = z + rng.Next(-1, 2);
-                    int r = rng.NextDouble() < 0.35 ? 3 : 2;
-                    if (!TreeClear(tx, tz, r)) continue;
-                    BuildTree(tx, tz, r, rng, 0.4);
-                }
+            case 6: // басейн
+                FBox(5, 3, 1, 3, 3, 1, cWhite);          // надувне коло
+                for (int u = 0; u < 14; u++)
+                for (int v = 0; v < 9; v++)
+                    if (u == 0 || u == 13 || v == 0 || v == 8)
+                    {
+                        FPut(u, v, 0, cStone);
+                        FPut(u, v, 1, cWhite);
+                    }
+                FBox(1, 1, 0, 12, 7, 1, cWater);
                 break;
         }
+    }
+
+    void DrawFlowerBed() // a=8, b=6
+    {
+        for (int u = 1; u < 7; u++)
+        for (int v = 1; v < 5; v++)
+        {
+            float h = Hash01(tX0 + u, tY0, tZ0 + v);
+            if (h >= 0.6f) continue;
+            FPut(u, v, 1, cLeafG);
+            FPut(u, v, 2, flowerColors[(int)(h / 0.6f * flowerColors.Length) % flowerColors.Length]);
+        }
+        FBox(1, 1, 0, 6, 4, 1, cSoil);
+        for (int u = 0; u < 8; u++)
+        for (int v = 0; v < 6; v++)
+            if (u == 0 || u == 7 || v == 0 || v == 5)
+            {
+                FPut(u, v, 0, cStone);
+                FPut(u, v, 1, cStone);
+            }
+    }
+
+    void DrawBench() // a=8, b=3, спинка біля v = 0
+    {
+        FBox(0, 0, 3, 8, 1, 3, cPlank);
+        FBox(0, 0, 2, 8, 3, 1, cPlank);
+        FBox(0, 0, 0, 1, 3, 2, cMetal);
+        FBox(7, 0, 0, 1, 3, 2, cMetal);
+    }
+
+    void BenchAt(int px, int pz, int s)
+    {
+        int sx, sz;
+        Foot(8, 3, s, out sx, out sz);
+        BeginAbs(px - sx / 2, pz - sz / 2, 8, 3, s);
+        DrawBench();
+    }
+
+    void DrawCar(System.Random rng) // a=16 (довжина), b=7 (ширина), перед біля u = 15
+    {
+        byte col = carColors[rng.Next(carColors.Length)];
+
+        FPut(15, 1, 2, cHeadLamp);
+        FPut(15, 5, 2, cHeadLamp);
+        FPut(0, 1, 2, cTail);
+        FPut(0, 5, 2, cTail);
+        FBox(15, 2, 1, 1, 3, 1, cBlack);                 // решітка
+        FBox(2, 0, 0, 3, 1, 3, cTire);                   // колеса
+        FBox(11, 0, 0, 3, 1, 3, cTire);
+        FBox(2, 6, 0, 3, 1, 3, cTire);
+        FBox(11, 6, 0, 3, 1, 3, cTire);
+
+        for (int u = 4; u <= 11; u++)
+        for (int v = 1; v <= 5; v++)
+        for (int y = 4; y <= 6; y++)
+        {
+            bool edge = u == 4 || u == 11 || v == 1 || v == 5;
+            FPut(u, v, y, (y == 6 || !edge) ? col : cGlassCar);
+        }
+        FBox(0, 0, 1, 16, 7, 3, col);
+    }
+
+    void PlaceCar(System.Random rng, int x, int z, int s)
+    {
+        BeginAbs(x, z, 16, 7, s);
+        DrawCar(rng);
+    }
+
+    // ---------- особливі ділянки ----------
+
+    void BuildSpecialLot(System.Random rng, int lx0, int lz0)
+    {
+        if (lotV < 40)
+        {
+            ScatterTrees(rng, lx0, lz0, RI(rng, 2, 4), 2);
+            return;
+        }
+
+        // вибір зі списку, характерного для району
+        int[] list = zone.specials;
+        int pick = list[rng.Next(list.Length)];
+        switch (pick)
+        {
+            case 0: BuildFountain(rng, lx0, lz0); break;
+            case 1: BuildPlayground(rng, lx0, lz0); break;
+            case 2: BuildPond(rng, lx0, lz0); break;
+            case 3: BuildFarm(rng, lx0, lz0); break;
+            case 4: BuildParking(rng, lx0, lz0); break;
+            case 5: BuildWaterTower(rng, lx0, lz0); break;
+            case 7: BuildPark(rng, lx0, lz0); break;
+            case 8: BuildFootballField(rng, lx0, lz0); break;
+            case 9: BuildGasStation(rng, lx0, lz0); break;
+            case 10: BuildSolarFarm(rng, lx0, lz0); break;
+            case 11: BuildWindFarm(rng, lx0, lz0); break;
+            default: BuildMarket(rng, lx0, lz0); break;
+        }
+    }
+
+    // Площа з фонтаном, лавками, ліхтарями й клумбами
+    void BuildFountain(System.Random rng, int lx0, int lz0)
+    {
+        int L = lotV;
+        int cx = lx0 + L / 2, cz = lz0 + L / 2;
+
+        Disc(cx, cz, 0.9f, 7, 13, cWaterLight);           // струмінь
+        Disc(cx, cz, 1.9f, 12, 13, cWaterLight);
+        Disc(cx, cz, 3f, 6, 7, cWater);                   // верхня чаша
+        Ring(cx, cz, 4.3f, 3f, 6, 8, cStone);
+        Disc(cx, cz, 4.3f, 5, 6, cStone);
+        Disc(cx, cz, 2.2f, 0, 5, cStone);                 // ніжка
+        Ring(cx, cz, 9.3f, 7.5f, 0, 3, cStone);           // басейн
+        Disc(cx, cz, 7.5f, 0, 2, cWater);
+
+        BenchAt(cx, cz + 13, 1);
+        BenchAt(cx, cz - 13, 0);
+        BenchAt(cx + 13, cz, 3);
+        BenchAt(cx - 13, cz, 2);
+
+        Lamp(cx - 16, cz - 16, 1, 0);
+        Lamp(cx + 16, cz + 16, -1, 0);
+
+        BeginAbs(cx + 9, cz + 9, 8, 6, 0);
+        DrawFlowerBed();
+        BeginAbs(cx - 17, cz - 15, 8, 6, 0);
+        DrawFlowerBed();
+
+        Tiles(lx0 + 1, lz0 + 1, L - 2, L - 2, 0, 4, cPaveA, cPaveB);
+    }
+
+    // Ігровий майданчик: пісочниця, гойдалки, гірка, балансир і карусель
+    void BuildPlayground(System.Random rng, int lx0, int lz0)
+    {
+        int L = lotV;
+
+        // пісочниця
+        int sx = lx0 + 3, sz = lz0 + 3;
+        Box(sx + 3, 1, sz + 3, 2, 2, 2, cRedToy);         // відерце
+        Box(sx + 1, 0, sz + 1, 10, 1, 10, cSand);
+        Frame(sx, sz, 12, 12, 0, 3, cWoodDark);
+
+        // гойдалки
+        int gx = lx0 + 20, gz = lz0 + 8;
+        for (int e = 0; e < 2; e++)
+        {
+            int x = gx + e * 15;
+            Box(x, 0, gz - 2, 1, 12, 1, cMetal);
+            Box(x, 0, gz + 2, 1, 12, 1, cMetal);
+            Box(x, 11, gz - 2, 1, 1, 5, cMetal);
+        }
+        Box(gx, 11, gz, 16, 1, 1, cMetal);
+        for (int k = 0; k < 2; k++)
+        {
+            int x = gx + 4 + k * 7;
+            Box(x - 1, 3, gz, 1, 8, 1, cMetal);
+            Box(x + 1, 3, gz, 1, 8, 1, cMetal);
+            Box(x - 1, 2, gz - 1, 3, 1, 3, k == 0 ? cRedToy : cBlueToy);
+        }
+
+        // гірка: вежа, драбина й схил
+        int px = lx0 + 4, pz = lz0 + 22;
+        Box(px, 0, pz, 1, 8, 1, cMetal);
+        Box(px + 3, 0, pz, 1, 8, 1, cMetal);
+        Box(px, 0, pz + 3, 1, 8, 1, cMetal);
+        Box(px + 3, 0, pz + 3, 1, 8, 1, cMetal);
+        Box(px, 8, pz, 4, 1, 4, cYellowToy);
+        Frame(px, pz, 4, 4, 9, 11, cMetal);
+        Box(px - 1, 0, pz, 1, 8, 1, cMetal);
+        Box(px - 1, 0, pz + 3, 1, 8, 1, cMetal);
+        for (int k = 1; k < 8; k += 2) Box(px - 1, k, pz, 1, 1, 4, cMetal);
+        for (int i = 0; i < 10; i++)
+        {
+            int x = px + 4 + i;
+            int y = 8 - (i * 8) / 10;
+            Box(x, y, pz + 1, 1, 1, 2, cSlide);
+            Box(x, y, pz, 1, 2, 1, cMetal);
+            Box(x, y, pz + 3, 1, 2, 1, cMetal);
+            if (i == 4 || i == 9) Box(x, 0, pz + 1, 1, y, 2, cMetal);
+        }
+
+        // балансир
+        int ex = lx0 + 22, ez = lz0 + 26;
+        Box(ex + 1, 4, ez, 1, 2, 1, cMetal);
+        Box(ex + 10, 4, ez, 1, 2, 1, cMetal);
+        Box(ex, 3, ez, 12, 1, 2, cYellowToy);
+        Box(ex + 5, 0, ez, 2, 3, 2, cMetal);
+
+        // карусель
+        int mx = lx0 + 31, mz = lz0 + 33;
+        Box(mx, 3, mz, 1, 3, 1, cMetal);
+        Ring(mx, mz, 4f, 3.3f, 3, 4, cBlueToy);
+        Disc(mx, mz, 4f, 2, 3, cRedToy);
+        Disc(mx, mz, 1.4f, 0, 2, cMetal);
+
+        Box(lx0 + 1, 0, lz0 + 1, L - 2, 1, L - 2, cPlayfloor);
+    }
+
+    // Ставок із каменистим берегом, пристанню, очеретом і лататтям
+    void BuildPond(System.Random rng, int lx0, int lz0)
+    {
+        int L = lotV;
+        int cx = lx0 + L / 2, cz = lz0 + L / 2;
+        float rb = Mathf.Min(L / 2 - 4, 14f);
+        float noiseX = Hash01(lx0, 1, lz0) * 100f;
+        float noiseZ = Hash01(lx0, 2, lz0) * 100f;
+
+        // пристань
+        int dockX = cx - (int)rb - 3;
+        int dockLen = (int)rb + 1;
+        for (int i = 0; i < dockLen; i += 4)
+        {
+            Box(dockX + i, 0, cz - 1, 1, 1, 1, cWoodDark);
+            Box(dockX + i, 0, cz + 1, 1, 1, 1, cWoodDark);
+        }
+        Box(dockX + dockLen - 1, 2, cz - 1, 1, 3, 1, cWoodDark);
+        Box(dockX + dockLen - 1, 2, cz + 1, 1, 3, 1, cWoodDark);
+        Box(dockX, 1, cz - 1, dockLen, 1, 3, cPlank);
+
+        for (int z = lz0 + 1; z < lz0 + L - 1; z++)
+        for (int x = lx0 + 1; x < lx0 + L - 1; x++)
+        {
+            float dx = x - cx, dz = z - cz;
+            float dist = Mathf.Sqrt(dx * dx + dz * dz);
+            float edge = rb + (Mathf.PerlinNoise(x * 0.17f + noiseX, z * 0.17f + noiseZ) - 0.5f) * 8f;
+
+            if (dist <= edge - 1.5f)
+            {
+                Add(x, 0, z, dist < edge - 5f ? cWaterDeep : cWater);
+                if (dist < edge - 3f && Hash01(x, 7, z) < 0.025f) Add(x, 1, z, cLily);
+            }
+            else if (dist <= edge)
+            {
+                int h = 1 + (Hash01(x, 3, z) < 0.35f ? 1 : 0);
+                byte c = Hash01(x, 5, z) < 0.5f ? cStone : cStone2;
+                for (int y = 0; y < h; y++) Add(x, y, z, c);
+                if (Hash01(x, 9, z) < 0.07f)
+                    Box(x, h, z, 1, 3 + (int)(Hash01(x, 11, z) * 4f), 1, cReed);
+            }
+            else if (dist <= edge + 2f && Hash01(x, 13, z) < 0.25f)
+            {
+                Add(x, 0, z, cSand);
+            }
+        }
+
+        // валуни по кутках
+        Boulder(lx0 + 5, lz0 + 5, 3.5f);
+        Boulder(lx0 + L - 7, lz0 + 6, 3f);
+        Boulder(lx0 + L - 6, lz0 + L - 7, 3.8f);
+    }
+
+    void Boulder(int x, int z, float r)
+    {
+        Disc(x, z, r - 1.2f, 2, 3, cStone);
+        Disc(x, z, r, 0, 2, cStone2);
+    }
+
+    // Город: грядки з різними культурами, колодязь, опудало й стоги
+    void BuildFarm(System.Random rng, int lx0, int lz0)
+    {
+        int L = lotV;
+
+        for (int r = 0; r < 4; r++)
+        {
+            int bz = lz0 + 3 + r * 8;
+            if (bz + 6 > lz0 + L - 1) break;
+            CropBed(rng, lx0 + 3, bz, 24, rng.Next(5));
+        }
+
+        // колодязь
+        int wx = lx0 + 36, wz = lz0 + 8;
+        Box(wx, 7, wz, 1, 3, 1, cMetal);                  // мотузка
+        Box(wx, 5, wz, 2, 2, 2, cWoodDark);               // відро
+        Box(wx - 3, 4, wz, 1, 7, 1, cWoodDark);           // стійки
+        Box(wx + 3, 4, wz, 1, 7, 1, cWoodDark);
+        Box(wx - 3, 10, wz, 7, 1, 1, cWoodDark);          // балка
+        Box(wx - 3, 12, wz - 1, 7, 1, 3, cRoofRed);       // дашок
+        Box(wx - 4, 11, wz - 2, 9, 1, 5, cRoofRed);
+        Disc(wx, wz, 2.4f, 0, 2, cWater);
+        Ring(wx, wz, 3.6f, 2.4f, 0, 4, cStone);
+
+        // опудало
+        int sx = lx0 + 36, sz = lz0 + 24;
+        Box(sx - 1, 13, sz - 1, 3, 2, 3, cHat);
+        Box(sx - 2, 12, sz - 2, 5, 1, 5, cHat);
+        Box(sx - 1, 9, sz - 1, 3, 3, 3, cStraw);
+        Box(sx - 3, 7, sz, 7, 1, 1, cWoodDark);
+        Box(sx - 1, 5, sz - 1, 3, 4, 3, cShirt);
+        Box(sx, 0, sz, 1, 10, 1, cWoodDark);
+
+        // стоги
+        for (int y = 0; y < 4; y++)
+        {
+            byte c = (y & 1) == 0 ? cHay : cHayB;
+            Box(lx0 + 34, y, lz0 + 32, 6, 1, 4, c);
+            Box(lx0 + 35, 4 + y, lz0 + 32, 4, 1, 4, c);
+        }
+
+        Box(lx0 + 1, 0, lz0 + 1, L - 2, 1, L - 2, cDirt);
+    }
+
+    void CropBed(System.Random rng, int bx, int bz, int len, int crop)
+    {
+        int step = (crop == 1 || crop == 3 || crop == 4) ? 3 : 2;
+        for (int i = 1; i < len - 1; i += step)
+        {
+            int x = bx + i;
+            for (int r = 0; r < 2; r++)
+            {
+                int z = bz + 1 + r * 2;
+                if (crop == 0)
+                {
+                    Box(x, 2, z, 1, 1, 1, cLeafG);
+                    Box(x, 1, z, 1, 1, 1, cOrange);
+                }
+                else if (crop == 1)
+                {
+                    Box(x, 1, bz + r * 2, 2, 2, 2, cCabbage);
+                }
+                else if (crop == 2)
+                {
+                    Box(x, 4, z, 1, 2, 1, cCorn);
+                    Box(x, 1, z, 1, 6, 1, cLeafG);
+                    Box(x, 7, z, 1, 1, 1, cStraw);
+                }
+                else if (crop == 3)
+                {
+                    Box(x, 1, bz + r * 2, 2, 2, 2, cPumpkin);
+                }
+                else
+                {
+                    Box(x, 6, z, 1, 1, 1, cSoilDark);
+                    Box(x, 1, z, 1, 5, 1, cLeafG);
+                    Box(x - 1, 6, z - 1, 3, 1, 3, cSun);
+                }
+            }
+        }
+        Box(bx, 0, bz, len, 1, 5, cSoil);
+        Frame(bx - 1, bz - 1, len + 2, 7, 0, 2, cWoodDark);
+    }
+
+    // Парковка з розміткою, машинами й ліхтарями
+    void BuildParking(System.Random rng, int lx0, int lz0)
+    {
+        int L = lotV;
+        int spaces = Mathf.Max(2, (L - 8) / 9);
+        int startX = lx0 + (L - spaces * 9) / 2;
+        int zA = lz0 + 3;
+        int zB = lz0 + L - 3 - 16;
+
+        Lamp(lx0 + 2, lz0 + L / 2, 1, 0);
+        Lamp(lx0 + L - 3, lz0 + L / 2, -1, 0);
+
+        for (int i = 0; i < spaces; i++)
+        {
+            int x = startX + i * 9 + 1;
+            if (rng.NextDouble() < 0.7) PlaceCar(rng, x, zA, 2);
+            if (rng.NextDouble() < 0.7) PlaceCar(rng, x, zB, 2);
+        }
+        for (int i = 0; i <= spaces; i++)
+        {
+            Box(startX + i * 9, 0, zA, 1, 1, 18, cWhite);
+            Box(startX + i * 9, 0, zB - 2, 1, 1, 18, cWhite);
+        }
+        Tiles(lx0 + 1, lz0 + 1, L - 2, L - 2, 0, 6, cAsphaltA, cAsphaltB);
+    }
+
+    // Водонапірна вежа з баком, драбиною й розкосами
+    void BuildWaterTower(System.Random rng, int lx0, int lz0)
+    {
+        int L = lotV;
+        int cx = lx0 + L / 2, cz = lz0 + L / 2;
+        int legH = 24;
+
+        // драбина
+        Box(cx + 7, 0, cz - 1, 1, legH + 2, 1, cMetal);
+        Box(cx + 7, 0, cz + 1, 1, legH + 2, 1, cMetal);
+        for (int y = 0; y < legH + 2; y += 2) Box(cx + 7, y, cz - 1, 1, 1, 3, cMetal);
+
+        // бак
+        Box(cx, legH + 22, cz, 1, 1, 1, cRedToy);         // сигнальний вогник
+        Box(cx, legH + 19, cz, 1, 3, 1, cMetal);          // антена
+        for (int k = 0; k <= 6; k++)
+            Disc(cx, cz, 7.4f - k * 1.1f, legH + 12 + k, legH + 13 + k, cTankB);
+        for (int y = legH + 1; y < legH + 12; y++)
+            Ring(cx, cz, 7.4f, 6.2f, y, y + 1, (((y - legH) / 4) & 1) == 0 ? cTankA : cTankB);
+        Ring(cx, cz, 8.6f, 7.4f, legH, legH + 1, cMetal);
+        Disc(cx, cz, 7.4f, legH, legH + 1, cTankB);
+
+        // ноги, пояси й розкоси
+        Box(cx - 6, 0, cz - 6, 2, legH, 2, cMetal);
+        Box(cx + 5, 0, cz - 6, 2, legH, 2, cMetal);
+        Box(cx - 6, 0, cz + 5, 2, legH, 2, cMetal);
+        Box(cx + 5, 0, cz + 5, 2, legH, 2, cMetal);
+        Frame(cx - 6, cz - 6, 13, 13, 8, 9, cMetal);
+        Frame(cx - 6, cz - 6, 13, 13, 16, 17, cMetal);
+        for (int i = 0; i <= 8; i++)
+        {
+            int y = 8 + i;
+            int x1 = cx - 4 + i, x2 = cx + 4 - i;
+            Box(x1, y, cz - 6, 1, 1, 1, cMetal);
+            Box(x2, y, cz - 6, 1, 1, 1, cMetal);
+            Box(x1, y, cz + 6, 1, 1, 1, cMetal);
+            Box(x2, y, cz + 6, 1, 1, 1, cMetal);
+            int z1 = cz - 4 + i, z2 = cz + 4 - i;
+            Box(cx - 6, y, z1, 1, 1, 1, cMetal);
+            Box(cx - 6, y, z2, 1, 1, 1, cMetal);
+            Box(cx + 6, y, z1, 1, 1, 1, cMetal);
+            Box(cx + 6, y, z2, 1, 1, 1, cMetal);
+        }
+
+        Box(cx - 9, 0, cz - 9, 19, 1, 19, cConcrete);
+    }
+
+    // Ярмарок: чотири прилавки з тентами й товаром та ящики посередині
+    void BuildMarket(System.Random rng, int lx0, int lz0)
+    {
+        int L = lotV;
+        int xL = lx0 + 3, xR = lx0 + L - 3 - 14;
+        int zA = lz0 + 3, zB = lz0 + L - 3 - 10;
+
+        if (rng.NextDouble() < 0.85) { BeginAbs(xL, zA, 14, 10, 0); DrawStall(rng); }
+        if (rng.NextDouble() < 0.85) { BeginAbs(xR, zA, 14, 10, 0); DrawStall(rng); }
+        if (rng.NextDouble() < 0.85) { BeginAbs(xL, zB, 14, 10, 1); DrawStall(rng); }
+        if (rng.NextDouble() < 0.85) { BeginAbs(xR, zB, 14, 10, 1); DrawStall(rng); }
+
+        BeginAbs(lx0 + L / 2 - 8, lz0 + L / 2 - 2, 4, 4, 0);
+        DrawFurniture(12, rng);
+        BeginAbs(lx0 + L / 2 + 5, lz0 + L / 2 - 2, 4, 4, 0);
+        DrawFurniture(12, rng);
+        Lamp(lx0 + L / 2, lz0 + L / 2, 0, 1);
+
+        Tiles(lx0 + 1, lz0 + 1, L - 2, L - 2, 0, 4, cPaveA, cPaveB);
+    }
+
+    void DrawStall(System.Random rng) // a=14, b=10, прилавок із фасадом біля v = 9
+    {
+        int k = rng.Next(awA.Length);
+        byte aA = awA[k], aB = awB[k];
+
+        // стійки
+        FBox(0, 0, 0, 1, 1, 10, cWoodDark);
+        FBox(13, 0, 0, 1, 1, 10, cWoodDark);
+        FBox(0, 9, 0, 1, 1, 10, cWoodDark);
+        FBox(13, 9, 0, 1, 1, 10, cWoodDark);
+        FBox(6, 0, 0, 1, 1, 10, cWoodDark);
+        FBox(6, 9, 0, 1, 1, 10, cWoodDark);
+
+        // товар на прилавку й на задній полиці
+        for (int u = 1; u < 13; u += 3)
+        {
+            FBox(u, 7, 4, 2, 2, 2, goodsColors[rng.Next(goodsColors.Length)]);
+            FBox(u, 0, 3, 2, 2, 2, goodsColors[rng.Next(goodsColors.Length)]);
+        }
+        FBox(1, 0, 0, 12, 2, 3, cWoodDark);
+        FBox(0, 7, 0, 14, 2, 4, cPlank);
+
+        // тканина ззаду, навіс і підзор
+        FBox(0, 0, 5, 14, 1, 5, aB);
+        for (int u = 0; u < 14; u++)
+        {
+            byte c = ((u / 2) & 1) == 0 ? aA : aB;
+            FPut(u, 9, 9, c);
+            FPut(u, 9, 8, c);
+            for (int v = 0; v < 10; v++) FPut(u, v, 10, c);
+        }
+    }
+
+    // ---------- вулична інфраструктура ----------
+
+    // Світлофор на куті перехрестя й автобусна зупинка біля горизонтальної дороги (ставляться ДО ділянок)
+    void BuildStreetFurniture(int bx, int bz, int ox, int oz)
+    {
+        if (curDistrict == District.Farm) return;
+
+        int tx = ox + roadV, tz = oz + roadV;
+        if (Hash01(bx + 3, 71, bz) < 0.7f && LampAllowed(tx, tz))
+            TrafficLight(tx, tz);
+
+        int sx = ox + roadV + 5;
+        if (curDistrict != District.Park && Hash01(bx, 72, bz + 9) < 0.45f && LampAllowed(sx, tz))
+            BusStop(sx, tz);
+    }
+
+    // Світлофор: стовп, дві руки над дорогою (в бік -x і -z) і вогні на кінцях
+    void TrafficLight(int x, int z)
+    {
+        Add(x - 3, 9, z, cRedToy);
+        Add(x - 3, 8, z, cYellowToy);
+        Add(x - 3, 7, z, cLeafG);
+        Add(x, 9, z - 3, cRedToy);
+        Add(x, 8, z - 3, cYellowToy);
+        Add(x, 7, z - 3, cLeafG);
+        Box(x - 3, 10, z, 4, 1, 1, cMetal);
+        Box(x, 10, z - 3, 1, 1, 4, cMetal);
+        Box(x, 0, z, 1, 11, 1, cMetal);
+        Box(x - 1, 0, z - 1, 3, 1, 3, cConcrete);
+    }
+
+    // Автобусна зупинка: скляна задня стінка, дах, лавка й знак
+    void BusStop(int x, int z)
+    {
+        Box(x, 0, z, 1, 6, 1, cMetal);
+        Box(x + 7, 0, z, 1, 6, 1, cMetal);
+        Box(x, 0, z + 2, 1, 6, 1, cMetal);
+        Box(x + 7, 0, z + 2, 1, 6, 1, cMetal);
+        Box(x + 2, 0, z + 1, 1, 1, 1, cMetal);
+        Box(x + 5, 0, z + 1, 1, 1, 1, cMetal);
+        Box(x + 2, 1, z + 1, 4, 1, 1, cPlank);
+        Box(x + 9, 0, z, 1, 9, 1, cMetal);
+        Box(x + 8, 9, z, 3, 3, 1, cBlueToy);
+        Box(x + 1, 1, z + 2, 6, 4, 1, cGlass);
+        Box(x, 6, z, 8, 1, 3, cRoofRed);
+        Box(x, 0, z, 8, 1, 3, cPaveA);
+    }
+
+    // ---------- нові особливі ділянки ----------
+
+    // Парк: алеї хрестом, газон із квітами, ставок або альтанка в центрі, лавки, ліхтарі й багато дерев
+    void BuildPark(System.Random rng, int lx0, int lz0)
+    {
+        int L = lotV;
+        int cx = lx0 + L / 2, cz = lz0 + L / 2;
+
+        // центр: ставок або альтанка (першими)
+        if (rng.NextDouble() < 0.5)
+        {
+            for (int n = 0; n < 3; n++)
+                Add(cx + rng.Next(-3, 4), 1, cz + rng.Next(-3, 4), cLily);
+            Ring(cx, cz, 6f, 4.5f, 0, 2, cStone);
+            Disc(cx, cz, 4.5f, 0, 1, cWater);
+        }
+        else
+        {
+            for (int a = -3; a <= 3; a += 6)
+            for (int b = -3; b <= 3; b += 6)
+                Box(cx + a, 0, cz + b, 1, 7, 1, cWoodDark);
+            for (int i = 0; i < 4; i++)
+                Box(cx - 4 + i, 7 + i, cz - 4 + i, 9 - 2 * i, 1, 9 - 2 * i, cRoofRed);
+            Disc(cx, cz, 4.5f, 0, 1, cPlank);
+        }
+
+        // що вже зайняте, туди дерева не лізуть
+        taken.Add(new RectInt(cx - 7, cz - 7, 14, 14));
+        taken.Add(new RectInt(cx - 3, lz0, 6, L));
+        taken.Add(new RectInt(lx0, cz - 3, L, 6));
+
+        Lamp(cx - 6, cz - 6, 1, 0);
+        Lamp(cx + 6, cz + 6, -1, 0);
+        Lamp(cx - 6, cz + 6, 1, 0);
+        Lamp(cx + 6, cz - 6, -1, 0);
+
+        BenchAt(cx - 11, cz + 5, 1);
+        BenchAt(cx + 11, cz - 5, 0);
+        BenchAt(cx + 5, cz + 11, 3);
+        BenchAt(cx - 5, cz - 11, 2);
+
+        int[] bxs = { lx0 + 4, lx0 + L - 12, lx0 + 4, lx0 + L - 12 };
+        int[] bzs = { lz0 + 4, lz0 + 4, lz0 + L - 10, lz0 + L - 10 };
+        for (int i = 0; i < 4; i++)
+        {
+            BeginAbs(bxs[i], bzs[i], 8, 6, 0);
+            DrawFlowerBed();
+            taken.Add(new RectInt(bxs[i], bzs[i], 8, 6));
+        }
+
+        ScatterTrees(rng, lx0, lz0, RI(rng, 6, 10), 3);
+
+        // алеї, потім газон із квітами
+        Tiles(cx - 3, lz0 + 1, 6, L - 2, 0, 2, cPaveA, cPaveB);
+        Tiles(lx0 + 1, cz - 3, L - 2, 6, 0, 2, cPaveA, cPaveB);
+        for (int z = lz0 + 1; z < lz0 + L - 1; z++)
+        for (int x = lx0 + 1; x < lx0 + L - 1; x++)
+        {
+            bool onPath = (x >= cx - 3 && x < cx + 3) || (z >= cz - 3 && z < cz + 3);
+            if (!onPath && Hash01(x, 43, z) < 0.04f)
+                Add(x, 1, z, flowerColors[(int)(Hash01(x, 44, z) * flowerColors.Length) % flowerColors.Length]);
+            Add(x, 0, z, Hash01(x, 41, z) < 0.5f ? cLawnA : cLawnB);
+        }
+    }
+
+    // Футбольне поле: смугастий газон, розмітка, ворота, трибуна й прожектори
+    void BuildFootballField(System.Random rng, int lx0, int lz0)
+    {
+        int L = lotV;
+        int pw = L - 14, ph = L - 22;
+        if (ph < 16)
+        {
+            ScatterTrees(rng, lx0, lz0, 3, 2);
+            return;
+        }
+        int px = lx0 + (L - pw) / 2, pz = lz0 + (L - ph) / 2;
+        int zc = pz + ph / 2;
+
+        // ворота
+        for (int e = 0; e < 2; e++)
+        {
+            int gx = e == 0 ? px - 1 : px + pw;
+            Box(gx, 0, zc - 4, 1, 5, 1, cWhite);
+            Box(gx, 0, zc + 4, 1, 5, 1, cWhite);
+            Box(gx, 5, zc - 4, 1, 1, 9, cWhite);
+        }
+
+        // прожектори по кутах
+        int[] mx = { px - 2, px + pw + 1 };
+        int[] mz = { pz - 2, pz + ph + 1 };
+        for (int a = 0; a < 2; a++)
+        for (int b = 0; b < 2; b++)
+        {
+            Box(mx[a] - 1, 16, mz[b] - 1, 3, 1, 3, cLampLight);
+            Box(mx[a], 0, mz[b], 1, 16, 1, cMetal);
+        }
+
+        // трибуна уздовж нижньої довгої сторони
+        for (int i = 0; i < 4; i++)
+            Box(px + 2, 0, pz - 3 - i, pw - 4, i + 1, 1, (i & 1) == 0 ? cBlueToy : cRedToy);
+
+        // розмітка
+        Frame(px, pz, pw, ph, 0, 1, cWhite);
+        Box(px + pw / 2, 0, pz, 1, 1, ph, cWhite);
+        Ring(px + pw / 2, zc, 5f, 4f, 0, 1, cWhite);
+        Frame(px, zc - 8, 8, 17, 0, 1, cWhite);
+        Frame(px + pw - 8, zc - 8, 8, 17, 0, 1, cWhite);
+
+        // газон смугами, навколо плитка
+        for (int z = pz; z < pz + ph; z++)
+        for (int x = px; x < px + pw; x++)
+            Add(x, 0, z, (((x - px) / 4) & 1) == 0 ? cFieldA : cFieldB);
+        Tiles(lx0 + 1, lz0 + 1, L - 2, L - 2, 0, 4, cPaveA, cPaveB);
+    }
+
+    // Заправка: навіс на колонах, дві колонки, магазин із вітриною, знак-стела й машина
+    void BuildGasStation(System.Random rng, int lx0, int lz0)
+    {
+        int L = lotV;
+        int cx = lx0 + L / 2, cz = lz0 + L / 2 - 4;
+
+        // знак-стела
+        Box(lx0 + 3, 0, lz0 + 3, 1, 14, 1, cMetal);
+        Box(lx0 + 1, 14, lz0 + 3, 5, 3, 1, cYellowToy);
+
+        // машина біля колонки
+        if (rng.NextDouble() < 0.7) PlaceCar(rng, cx - 8, cz + 2, 0);
+
+        // колонки: екран, корпус, острівець
+        for (int e = 0; e < 2; e++)
+        {
+            int x = e == 0 ? cx - 6 : cx + 4;
+            Box(x, 3, cz - 2, 2, 1, 1, cScreen);
+            Box(x, 1, cz - 1, 2, 4, 2, cRedToy);
+            Box(x - 1, 0, cz - 2, 4, 1, 4, cConcrete);
+        }
+
+        // навіс: колони, смуга, дах
+        Box(cx - 12, 0, cz - 10, 1, 9, 1, cMetal);
+        Box(cx + 11, 0, cz - 10, 1, 9, 1, cMetal);
+        Box(cx - 12, 0, cz + 5, 1, 9, 1, cMetal);
+        Box(cx + 11, 0, cz + 5, 1, 9, 1, cMetal);
+        Frame(cx - 13, cz - 11, 26, 17, 9, 11, cRedToy);
+        Box(cx - 13, 9, cz - 11, 26, 1, 17, cWhite);
+
+        // магазин: вітрина, стіни з дверним прорізом, дах, колони всередині
+        int sx = cx - 10, sz = lz0 + L - 15;
+        Box(sx + 2, 2, sz, 7, 3, 1, cGlass);
+        Box(sx + 11, 2, sz, 7, 3, 1, cGlass);
+        for (int y = 0; y < 7; y++)
+        for (int z = 0; z < 9; z++)
+        for (int x = 0; x < 20; x++)
+        {
+            if (x != 0 && x != 19 && z != 0 && z != 8) continue;
+            if (z == 0 && x >= 9 && x <= 10 && y < 5) continue;
+            Add(sx + x, y, sz + z, ((x / 4 + y / 4) & 1) == 0 ? cWhite : cPaveA);
+        }
+        Box(sx - 1, 7, sz - 1, 22, 1, 11, cRoofRed);
+        Box(sx + 6, 1, sz + 4, 1, 6, 1, cMetal);
+        Box(sx + 13, 1, sz + 4, 1, 6, 1, cMetal);
+        Box(sx, 0, sz, 20, 1, 9, cPaveB);
+
+        Tiles(lx0 + 1, lz0 + 1, L - 2, L - 2, 0, 6, cAsphaltA, cAsphaltB);
+    }
+
+    // Сонячна ферма: ряди похилих панелей, трансформаторна будка
+    void BuildSolarFarm(System.Random rng, int lx0, int lz0)
+    {
+        int L = lotV;
+
+        // будка першою
+        Box(lx0 + L - 9, 0, lz0 + L - 9, 5, 4, 5, cConcrete);
+        Box(lx0 + L - 10, 4, lz0 + L - 10, 7, 1, 7, cMetal);
+
+        for (int z = lz0 + 4; z + 3 < lz0 + L - 3; z += 6)
+        for (int x = lx0 + 4; x + 8 < lx0 + L - 3; x += 10)
+        {
+            Box(x + 1, 0, z, 1, 1, 1, cMetal);
+            Box(x + 6, 0, z, 1, 1, 1, cMetal);
+            Box(x + 1, 0, z + 2, 1, 3, 1, cMetal);
+            Box(x + 6, 0, z + 2, 1, 3, 1, cMetal);
+            Box(x, 1, z, 8, 1, 1, cSolarB);
+            Box(x, 2, z + 1, 8, 1, 1, cSolar);
+            Box(x, 3, z + 2, 8, 1, 1, cSolarB);
+        }
+
+        Tiles(lx0 + 1, lz0 + 1, L - 2, L - 2, 0, 6, cDirt, cPathB);
+    }
+
+    // Вітряки: дві турбіни з тришарпатим ротором
+    void BuildWindFarm(System.Random rng, int lx0, int lz0)
+    {
+        int L = lotV;
+        const int H = 30;
+        for (int t = 0; t < 2; t++)
+        {
+            int cx = lx0 + (t == 0 ? L / 3 : 2 * L / 3);
+            int cz = lz0 + L / 2 + (t == 0 ? -4 : 4);
+            int hubZ = cz - 3;
+
+            // лопаті першими
+            float a0 = (float)rng.NextDouble() * 6.2832f;
+            for (int k = 0; k < 3; k++)
+            {
+                float a = a0 + k * 2.0944f;
+                for (int r = 2; r <= 13; r++)
+                {
+                    int wx = cx + Mathf.RoundToInt(Mathf.Cos(a) * r);
+                    int wy = H + Mathf.RoundToInt(Mathf.Sin(a) * r);
+                    Add(wx, wy, hubZ, cWhite);
+                    if (r < 8) Add(wx, wy + 1, hubZ, cWhite);
+                }
+            }
+
+            // ротор, гондола, вежа, основа
+            Box(cx - 1, H - 1, hubZ, 3, 3, 1, cGray);
+            Box(cx - 1, H - 1, cz - 2, 3, 3, 5, cWhite);
+            for (int y = 0; y < H - 1; y++)
+                Disc(cx, cz, Mathf.Max(1.2f, 2.4f - y * 0.04f), y, y + 1, cWhite);
+            Disc(cx, cz, 4.5f, 0, 1, cConcrete);
+        }
+    }
+
+    // ---------- паркан ----------
+
+    void BuildFence(int lx0, int lz0, int facing)
+    {
+        int f = 1;                           // відступ від краю ділянки
+        int x0 = lx0 + f, x1 = lx0 + lotV - 1 - f;
+        int z0 = lz0 + f, z1 = lz0 + lotV - 1 - f;
+        int len = x1 - x0 + 1;
+        int mid = len / 2;
+
+        for (int i = 0; i < len; i++)
+        {
+            bool gap = facing == 0 && Mathf.Abs(i - mid) < gateV / 2;   // хвіртка на фасаді (-z)
+            FenceCell(x0 + i, z0, i, len, gap);
+            FenceCell(x0 + i, z1, i, len, false);
+        }
+        for (int i = 1; i < len - 1; i++)
+        {
+            bool gap = facing == 1 && Mathf.Abs(i - mid) < gateV / 2;   // хвіртка на фасаді (-x)
+            FenceCell(x0, z0 + i, i, len, gap);
+            FenceCell(x1, z0 + i, i, len, false);
+        }
+    }
+
+    void FenceCell(int x, int z, int i, int len, bool gap)
+    {
+        if (gap) return;
+
+        bool post = (i % 3 == 0) || i == len - 1;
+        if (post)
+        {
+            for (int y = 0; y <= fenceV; y++) Add(x, y, z, cPost);
+            return;
+        }
+
+        // рейки йдуть суцільно між стовпами, дошки через одну (рейки ставимо першими, їх дошки не затруть)
+        Add(x, 1, z, cRail);
+        Add(x, fenceV - 2, z, cRail);
+        if ((i & 1) == 0)
+            for (int y = 0; y <= fenceV - 2; y++) Add(x, y, z, cPlank);
     }
 
     // ---------- дерева ----------
 
-    // Яблуня з червоними плодами (набір кольорів leafSets[2])
-    void BuildOrchardTree(int gx, int gz, System.Random rng)
+    // Дерева не перекривають усе, що вже є в taken (будинок, дрібниці). Самі додаються в taken.
+    void ScatterTrees(System.Random rng, int lx0, int lz0, int count, int margin)
     {
-        BuildTreeWith(gx, gz, 2, rng, false, leafSets[2]);
+        var placed = new List<Vector3Int>();   // (x, радіус, z)
+        int baseCount = taken.Count;
+
+        for (int n = 0; n < count; n++)
+        for (int attempt = 0; attempt < 10; attempt++)
+        {
+            int r = V(RF(rng, crownRadiusMin, crownRadiusMax));
+            int rMax = (lotV - 2 * margin - 4) / 2;
+            r = Mathf.Min(r, rMax);
+            if (r < 3) return;
+
+            int minC = margin + r;
+            int maxC = lotV - margin - r - 2;
+            int px = lx0 + RI(rng, minC, maxC);
+            int pz = lz0 + RI(rng, minC, maxC);
+
+            bool ok = true;
+            for (int i = 0; ok && i < baseCount; i++)
+            {
+                RectInt a = taken[i];
+                if (px + r > a.xMin && px - r < a.xMax && pz + r > a.yMin && pz - r < a.yMax) ok = false;
+            }
+            for (int i = 0; ok && i < placed.Count; i++)
+            {
+                float dx = placed[i].x - px, dz = placed[i].z - pz;
+                float min = (placed[i].y + r) * 0.8f;
+                if (dx * dx + dz * dz < min * min) ok = false;
+            }
+            if (!ok) continue;
+
+            BuildTree(rng, px, pz, r);
+            placed.Add(new Vector3Int(px, r, pz));
+            taken.Add(new RectInt(px - r, pz - r, 2 * r + 2, 2 * r + 2));
+            break;
+        }
     }
 
-    void BuildTree(int gx, int gz, int r, System.Random rng, double pineChance)
+    void BuildTree(System.Random rng, int gx, int gz, int r)
     {
+        int trunkH = V(RF(rng, trunkHeightMin, trunkHeightMax));
         bool pine = rng.NextDouble() < pineChance;
-        BuildTreeWith(gx, gz, r, rng, pine, leafSets[rng.Next(2)]);
-    }
 
-    void BuildTreeWith(int gx, int gz, int r, System.Random rng, bool pine, byte[] leaves, int extraH = 0)
-    {
-        int trunkH = RI(rng, 3, 5) + (r >= 3 ? 1 : 0) + extraH;
-        int tw = r >= 3 ? 2 : 1;
-        int crownTop = pine ? trunkH + r * 2 : trunkH + r;
-        int trunkTop = pine ? crownTop - 2 : trunkH;
+        // крона: листяна куля або ялина-конус
+        int crownTop = pine ? trunkH + r + r / 2 : trunkH + r;
+        int trunkTop = pine ? crownTop - 3 : trunkH;
 
         for (int y = 0; y < trunkTop; y++)
-        for (int dx = 0; dx < tw; dx++)
-        for (int dz = 0; dz < tw; dz++)
-            Add(gx + dx, y, gz + dz, ((y / 2) & 1) == 0 ? cBarkA : cBarkB);
+        for (int dx = 0; dx < 2; dx++)
+        for (int dz = 0; dz < 2; dz++)
+            Add(gx + dx, y, gz + dz, ((y / 3) & 1) == 0 ? cBarkA : cBarkB);
 
-        float cx = gx + tw * 0.5f, cz = gz + tw * 0.5f;
+        float cx = gx + 1f, cz = gz + 1f;
 
         if (pine)
         {
-            int baseY = 2;
+            byte[] set = pineSet;
+            int baseY = Mathf.Max(3, V(1f));
             for (int y = baseY; y <= crownTop; y++)
             {
                 float t = (y - baseY) / (float)Mathf.Max(1, crownTop - baseY);
-                float rad = (r + 0.5f) * (1f - t) + 0.4f;
+                float rad = r * (1f - t) + 0.4f;
                 int ri = Mathf.CeilToInt(rad);
-                for (int dz = -ri; dz <= ri + tw; dz++)
-                for (int dx = -ri; dx <= ri + tw; dx++)
+                for (int dz = -ri; dz <= ri + 1; dz++)
+                for (int dx = -ri; dx <= ri + 1; dx++)
                 {
                     float fx = gx + dx + 0.5f - cx, fz = gz + dz + 0.5f - cz;
                     if (fx * fx + fz * fz > rad * rad) continue;
                     int x = gx + dx, z = gz + dz;
-                    Add(x, y, z, Pick(pineSet, Hash(x, y, z)));
+                    Add(x, y, z, set[(int)(Hash01(x, y, z) * set.Length) % set.Length]);
                 }
             }
             return;
         }
 
+        byte[] leaves = leafSets[rng.Next(leafSets.Length)];
         float cy = trunkH + r * 0.3f;
-        float ry = r * 0.9f;
+        float ry = r * 0.85f;
         int y0 = Mathf.FloorToInt(cy - ry), y1 = Mathf.CeilToInt(cy + ry);
+
         for (int y = Mathf.Max(0, y0); y <= y1; y++)
-        for (int dz = -r; dz <= r + tw; dz++)
-        for (int dx = -r; dx <= r + tw; dx++)
+        for (int dz = -r; dz <= r + 1; dz++)
+        for (int dx = -r; dx <= r + 1; dx++)
         {
             int x = gx + dx, z = gz + dz;
-            float nx = (x + 0.5f - cx) / (r + 0.3f);
+            float nx = (x + 0.5f - cx) / r;
             float ny = (y + 0.5f - cy) / ry;
-            float nz = (z + 0.5f - cz) / (r + 0.3f);
-            if (nx * nx + ny * ny + nz * nz > 1f - Hash01(x, y, z) * 0.35f) continue;
+            float nz = (z + 0.5f - cz) / r;
+            float dist = nx * nx + ny * ny + nz * nz;
+            if (dist > 1f - Hash01(x, y, z) * 0.35f) continue;   // нерівний край крони
 
+            // верх світліший, низ темніший
             int shade = ny > 0.35f ? 1 : (ny < -0.35f ? 2 : 0);
             if (Hash01(x + 7, y, z) < 0.25f) shade = (shade + 1) % 3;
             Add(x, y, z, leaves[shade]);
         }
     }
 
-    // ---------- примітиви ----------
+    // ---------- допоміжне ----------
 
+    // Додає проєктний воксель; у світ він потрапляє як куб scaleF^3 (див. ApplyOp)
     void Add(int x, int y, int z, byte id)
     {
-        ops.Add(new VoxelOp { pos = new Vector3Int(x + curOx, y, z + curOz), id = id });
+        ops.Add(new VoxelOp { pos = new Vector3Int(x, y, z), id = id });
+    }
+
+    void Box(int x, int y, int z, int sx, int sy, int sz, byte id)
+    {
+        for (int yy = 0; yy < sy; yy++)
+        for (int zz = 0; zz < sz; zz++)
+        for (int xx = 0; xx < sx; xx++)
+            Add(x + xx, y + yy, z + zz, id);
+    }
+
+    // Лише периметр прямокутника, шарами від y0 до y1 (не включно)
+    void Frame(int x, int z, int sx, int sz, int y0, int y1, byte id)
+    {
+        for (int y = y0; y < y1; y++)
+        for (int zz = 0; zz < sz; zz++)
+        for (int xx = 0; xx < sx; xx++)
+            if (xx == 0 || xx == sx - 1 || zz == 0 || zz == sz - 1)
+                Add(x + xx, y, z + zz, id);
     }
 
     // Суцільний диск від y0 до y1 (не включно)
@@ -1912,16 +2439,23 @@ public class VillageGenerator : MonoBehaviour
         }
     }
 
-    static int Mod(int a, int m)
+    // Плоский шаховий настил один воксель завтовшки
+    void Tiles(int x, int z, int sx, int sz, int y, int tile, byte a, byte b)
     {
-        int r = a % m;
-        return r < 0 ? r + m : r;
+        for (int zz = 0; zz < sz; zz++)
+        for (int xx = 0; xx < sx; xx++)
+            Add(x + xx, y, z + zz, (((xx / tile) + (zz / tile)) & 1) == 0 ? a : b);
     }
 
     static int RI(System.Random rng, int min, int maxInclusive)
     {
         if (maxInclusive < min) return min;
         return rng.Next(min, maxInclusive + 1);
+    }
+
+    static float RF(System.Random rng, float a, float b)
+    {
+        return a + (float)rng.NextDouble() * (b - a);
     }
 
     static int Hash(int a, int b, int c)
