@@ -9,9 +9,14 @@ using UnityEngine.SceneManagement;
 // Сучасні міста: хмарочоси, асфальт, ліхтарі (див. CountryGenerator.Modern.cs).
 // Навколо кожного острова є малі острівці з пальмами й маяками та об'єкти в морі (див. CountryGenerator.Sea.cs).
 //
-// НЕЗРУЙНІВНИЙ ҐРУНТ: суша це не вокселі, а меш із MeshCollider (по одному на плитку), тож камінь
-// його не ламає й не всмоктує. Усе, що стоїть НА землі (будинки, дерева, поля), лишається вокселями
-// і руйнується. Вимкнути можна галочкою Unbreakable Ground (тоді суша знову з вокселів).
+// РУЙНІВНИЙ ҐРУНТ: суша це вокселі (суцільні колонки від моря до висоти землі), тож камінь
+// ламає й землю, і все, що стоїть на ній (будинки, дерева, поля).
+//
+// МАСШТАБ (Downscale): як і на 3 рівні, «проєктний воксель» острова менший за справжній воксель світу
+// у Downscale разів (розмір проєктного вокселя = world.voxelSize / Downscale). Усе планування, ґрунт,
+// позиція каменя й радіуси стрімінгу рахуються в проєктних вокселях, а при розстановці кожні
+// Downscale x Downscale x Downscale проєктних вокселів зливаються в одну клітинку світу.
+// Став Downscale БІЛЬШЕ, ніж у Tier3CityGenerator, щоб 4 рівень здавався дрібнішим за 3.
 //
 // Як це працює:
 //  * Світ поділений на великі клітини (Island Spacing). У кожній клітині з імовірністю Island Chance
@@ -27,7 +32,7 @@ using UnityEngine.SceneManagement;
 //  * ЯКЩО КАМЕНЯ НА СЦЕНІ НЕМАЄ, через Rock Wait Seconds острови будуються навколо камери.
 //
 // Підлога (море) має бути на y = 0 (SeaGroundGenerator), VoxelWorld на (0,0,0) з масштабом 1.
-// Усі розміри тут у ВОКСЕЛЯХ, тому все масштабується разом із world.voxelSize.
+// Усі розміри тут у ПРОЄКТНИХ ВОКСЕЛЯХ, тому все масштабується разом із world.voxelSize і Downscale.
 // Значення з Inspector на старті обмежуються розумними мінімумами (Sanitize).
 // Корисно натиснути ⋮ біля компонента -> Reset, щоб підтягнулися нові значення за замовчуванням.
 public partial class CountryGenerator : MonoBehaviour
@@ -39,9 +44,11 @@ public partial class CountryGenerator : MonoBehaviour
     [Tooltip("Нова випадкова карта при кожному запуску")]
     public bool randomSeedEachRun = false;
 
-    [Header("Фундамент")]
-    [Tooltip("Суша це меш із колайдером, який камінь не може зламати. Вимкни, щоб суша знову була з вокселів")]
-    public bool unbreakableGround = true;
+    [Header("Масштаб")]
+    [Tooltip("Стиснення, як на 3 рівні: 1 = як було, 2 = острови вдвічі дрібніші, 3 = утричі. " +
+             "Став БІЛЬШЕ, ніж Downscale у Tier3CityGenerator, щоб 4 рівень здавався дрібнішим за 3. " +
+             "Деталі будівель стають грубішими, зате вокселів набагато менше")]
+    [Range(1, 6)] public int downscale = 3;
 
     [Header("Діагностика")]
     [Tooltip("Писати в консоль, що відбувається (камінь, плитки, матеріал)")]
@@ -56,12 +63,12 @@ public partial class CountryGenerator : MonoBehaviour
     public float spawnRadiusInRockRadii = 80f;
     [Tooltip("Навколо стартової позиції каменя нічого не ставиться (в радіусах каменя). Дороги лишаються")]
     public float startClearInRockRadii = 3f;
-    [Tooltip("Скільки вокселів ставити за кадр")]
+    [Tooltip("Скільки проєктних вокселів обробляти за кадр")]
     public int voxelsPerFrame = 12000;
     [Tooltip("Сторона плитки, яка будується за раз")]
     public int tileSize = 48;
 
-    [Header("Острови (у вокселях)")]
+    [Header("Острови (у проєктних вокселях)")]
     [Tooltip("Відстань між центрами острівних клітин. Більше = більше моря між островами")]
     public int islandSpacing = 900;
     [Tooltip("Імовірність острова в клітині. Острів у клітині (0,0) є завжди: з нього стартує камінь")]
@@ -167,7 +174,7 @@ public partial class CountryGenerator : MonoBehaviour
 
     struct VoxelOp
     {
-        public Vector3Int pos;
+        public Vector3Int pos;   // проєктні координати, під час розстановки діляться на downscale
         public byte id;
     }
 
@@ -205,16 +212,11 @@ public partial class CountryGenerator : MonoBehaviour
     readonly Dictionary<Vector2Int, List<System.Action>> jobs = new Dictionary<Vector2Int, List<System.Action>>();
     readonly HashSet<Vector2Int> built = new HashSet<Vector2Int>();
 
-    // буфери меша землі
-    readonly List<Vector3> gVerts = new List<Vector3>();
-    readonly List<Vector3> gNormals = new List<Vector3>();
-    readonly List<Vector2> gUvs = new List<Vector2>();
-    readonly List<int> gTris = new List<int>();
-
     Island cur;        // острів, який планується просто зараз
     Island lastIsl;    // кеш останнього знайденого острова
 
-    float vs;
+    float vs;          // розмір ПРОЄКТНОГО вокселя в метрах = world.voxelSize / dn
+    int dn = 1;        // стиснення (з downscale)
     int T, sp;
 
     // Якщо >= 0, усі Add() цього об'єкта піднімаються на цю висоту. Інакше береться висота землі під кожним вокселем
@@ -222,7 +224,7 @@ public partial class CountryGenerator : MonoBehaviour
 
     RockAbsorber rock;
     bool haveStart;
-    Vector2 rockV, startV, spawnV;     // rockV це позиція ФОКУСА (камінь або камера) у вокселях
+    Vector2 rockV, startV, spawnV;     // rockV це позиція ФОКУСА (камінь або камера) у проєктних вокселях
     float startClearV;
     bool idle;
     Vector2 idlePos;
@@ -261,6 +263,8 @@ public partial class CountryGenerator : MonoBehaviour
         }
     }
     public int TileVoxels => T;
+    // Стиснення, з яким працює генератор (для інших скриптів)
+    public int Downscale => dn;
     // Світ нескінченний; число залишено для сумісності зі старими скриптами
     public int MapRadiusVoxels => 1000000;
 
@@ -278,8 +282,7 @@ public partial class CountryGenerator : MonoBehaviour
 
         if (randomSeedEachRun) seed = Random.Range(1, 1000000);
 
-        vs = world.voxelSize;
-        if (vs <= 0f)
+        if (world.voxelSize <= 0f)
         {
             Debug.LogError("[CountryGenerator] world.voxelSize <= 0, генерація зупинена", this);
             enabled = false;
@@ -287,6 +290,8 @@ public partial class CountryGenerator : MonoBehaviour
         }
 
         Sanitize();
+        dn = Mathf.Max(1, downscale);
+        vs = world.voxelSize / dn;   // розмір проєктного вокселя в метрах
         T = Mathf.Max(16, tileSize);
         sp = Mathf.Max(400, islandSpacing);
 
@@ -297,10 +302,10 @@ public partial class CountryGenerator : MonoBehaviour
         Ensure(start);
 
         if (debugLog)
-            Debug.Log("[CountryGenerator] Старт: seed=" + seed + ", voxelSize=" + vs + ", tile=" + T + ", spacing=" + sp +
+            Debug.Log("[CountryGenerator] Старт: seed=" + seed + ", voxelSize=" + world.voxelSize + ", downscale=" + dn +
+                      ", проєктний воксель=" + vs + ", tile=" + T + ", spacing=" + sp +
                       ", стартовий острів R=" + start.R + " centre=(" + start.cx + "," + start.cz + ")" +
-                      ", точка старту (вокселі)=" + spawnV + ", світова=" + StartPoint +
-                      ", незруйновний ґрунт=" + unbreakableGround, this);
+                      ", точка старту (вокселі)=" + spawnV + ", світова=" + StartPoint, this);
 
         StartCoroutine(Worker());
     }
@@ -308,6 +313,7 @@ public partial class CountryGenerator : MonoBehaviour
     // Застарілі або нульові значення в Inspector не повинні ламати генерацію
     void Sanitize()
     {
+        downscale = Mathf.Clamp(downscale, 1, 6);
         islandSpacing = Mathf.Max(islandSpacing, 400);
         islandRadiusMin = Mathf.Max(islandRadiusMin, 60);
         islandRadiusMax = Mathf.Max(islandRadiusMax, islandRadiusMin);
@@ -1231,7 +1237,7 @@ public partial class CountryGenerator : MonoBehaviour
                 continue;
             }
 
-            float Rv = Mathf.Max(spawnRadius, focusRadius * spawnRadiusInRockRadii) / vs;   // у вокселях
+            float Rv = Mathf.Max(spawnRadius, focusRadius * spawnRadiusInRockRadii) / vs;   // у проєктних вокселях
             if (!FindNearestTile(Rv + T, out Vector2Int tile))
             {
                 if (debugLog && !idle)
@@ -1253,10 +1259,14 @@ public partial class CountryGenerator : MonoBehaviour
                 for (; idx < end; idx++)
                 {
                     VoxelOp op = ops[idx];
-                    // нічого не затираємо: деталі завжди ставляться ПЕРШИМИ, а земля потім
-                    if (world.GetVoxel(op.pos) == 0)
+                    // проєктний воксель потрапляє в клітинку світу, що його містить.
+                    // Нічого не затираємо: деталі завжди ставляться ПЕРШИМИ, а земля потім
+                    var p = dn == 1
+                        ? op.pos
+                        : new Vector3Int(FloorDiv(op.pos.x, dn), FloorDiv(op.pos.y, dn), FloorDiv(op.pos.z, dn));
+                    if (world.GetVoxel(p) == 0)
                     {
-                        world.SetVoxel(op.pos, op.id);
+                        world.SetVoxel(p, op.id);
                         dbgVoxels++;
                     }
                 }
@@ -1386,7 +1396,7 @@ public partial class CountryGenerator : MonoBehaviour
                       ", плиток усього=" + dbgTiles + ", вокселів поставлено=" + dbgVoxels);
     }
 
-    // ---------- рельєфна суша ----------
+    // ---------- рельєфна суша (вокселі, камінь її ламає) ----------
 
     byte RoadColor(int kind, int x, int z)
     {
@@ -1425,15 +1435,6 @@ public partial class CountryGenerator : MonoBehaviour
         return Hash01(x, y + 17, z) < 0.5f ? cStone2 : cStone;
     }
 
-    // Суша плитки: або незруйновний меш із колайдером, або вокселі (якщо Unbreakable Ground вимкнено)
-    void BuildTileGround(Vector2Int tile)
-    {
-        for (int k = 0; k < tmpNear.Count; k++) Ensure(tmpNear[k]);
-
-        if (unbreakableGround) BuildTileGroundMesh(tile);
-        else BuildTileGroundVoxels(tile);
-    }
-
     Island FindTileIsland(int x, int z)
     {
         for (int k = 0; k < tmpNear.Count; k++)
@@ -1444,9 +1445,12 @@ public partial class CountryGenerator : MonoBehaviour
         return null;
     }
 
-    // Вокселі землі: суцільна колонка від y = 0 до висоти землі (камінь їх ламає)
-    void BuildTileGroundVoxels(Vector2Int tile)
+    // Вокселі землі: суцільна колонка від y = 0 до висоти землі.
+    // Деталі (будинки, дерева) вже стоять у черзі раніше, а Worker не затирає зайняті клітинки
+    void BuildTileGround(Vector2Int tile)
     {
+        for (int k = 0; k < tmpNear.Count; k++) Ensure(tmpNear[k]);
+
         int x0 = tile.x * T, z0 = tile.y * T;
         int x1 = x0 + T, z1 = z0 + T;
 
@@ -1465,108 +1469,6 @@ public partial class CountryGenerator : MonoBehaviour
             for (int y = h - 2; y >= 0; y--)
                 AddAbs(x, y, z, GroundLayerColor(x, y, z, h, beach));
         }
-    }
-
-    // Незруйновний ґрунт: меш (верхні грані колонок + бічні грані там, де сусід нижчий) і MeshCollider.
-    // Вокселі ґрунту не створюються, тож камінь їх не вибиває й не всмоктує.
-    // Будівлі й рослини стоять на ньому вокселями (перший воксель на y = висота землі)
-    void BuildTileGroundMesh(Vector2Int tile)
-    {
-        int x0 = tile.x * T, z0 = tile.y * T;
-        int x1 = x0 + T, z1 = z0 + T;
-
-        gVerts.Clear(); gNormals.Clear(); gUvs.Clear(); gTris.Clear();
-
-        for (int z = z0; z < z1; z++)
-        for (int x = x0; x < x1; x++)
-        {
-            Island s = FindTileIsland(x, z);
-            if (s == null || s.land == null || s.hgt == null) continue;
-            int i = (x - s.ox) + s.S * (z - s.oz);
-            if (!s.land[i]) continue;
-
-            int h = s.hgt[i];
-            bool beach = s.dist[i] <= beachWidth;
-
-            // верх
-            float yt = h * vs;
-            float fx0 = x * vs, fx1 = (x + 1) * vs, fz0 = z * vs, fz1 = (z + 1) * vs;
-            GQuad(new Vector3(fx0, yt, fz0), new Vector3(fx0, yt, fz1),
-                  new Vector3(fx1, yt, fz1), new Vector3(fx1, yt, fz0),
-                  Vector3.up, GroundTopColor(s, i, x, z, h, beach));
-
-            // боки: там, де сусідня колонка нижча (або це море чи озеро)
-            for (int d = 0; d < 4; d++)
-            {
-                int dx = d == 0 ? 1 : d == 1 ? -1 : 0;
-                int dz = d == 2 ? 1 : d == 3 ? -1 : 0;
-                int nh = GroundH(x + dx, z + dz);
-                if (nh >= h) continue;
-
-                for (int y = nh; y < h; y++)
-                {
-                    byte id = (y == h - 1)
-                        ? (beach ? sandSet[Hash01(x, y, z) < 0.5f ? 0 : 1] : GroundTopColor(s, i, x, z, h, beach))
-                        : GroundLayerColor(x, y, z, h, beach);
-
-                    float ya = y * vs, yb = (y + 1) * vs;
-                    Vector3 a, b, c, e;
-                    Vector3 n;
-                    if (dx != 0)
-                    {
-                        float px = (dx > 0 ? x + 1 : x) * vs;
-                        a = new Vector3(px, ya, fz0); b = new Vector3(px, yb, fz0);
-                        c = new Vector3(px, yb, fz1); e = new Vector3(px, ya, fz1);
-                        n = new Vector3(dx, 0f, 0f);
-                    }
-                    else
-                    {
-                        float pz = (dz > 0 ? z + 1 : z) * vs;
-                        a = new Vector3(fx0, ya, pz); b = new Vector3(fx0, yb, pz);
-                        c = new Vector3(fx1, yb, pz); e = new Vector3(fx1, ya, pz);
-                        n = new Vector3(0f, 0f, dz);
-                    }
-                    GQuad(a, b, c, e, n, id);
-                }
-            }
-        }
-
-        if (gVerts.Count == 0) return;
-
-        var mesh = new Mesh { name = "GroundMesh", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
-        mesh.SetVertices(gVerts);
-        mesh.SetNormals(gNormals);
-        mesh.SetUVs(0, gUvs);
-        mesh.SetTriangles(gTris, 0);
-        mesh.RecalculateBounds();
-
-        var go = new GameObject("Ground " + tile.x + "_" + tile.y);
-        go.layer = world.gameObject.layer;
-        go.transform.SetParent(world.transform, false);
-        go.AddComponent<MeshFilter>().sharedMesh = mesh;
-        var rend = go.AddComponent<MeshRenderer>();
-        rend.sharedMaterial = world.RuntimeMaterial;
-        var col = go.AddComponent<MeshCollider>();
-        col.sharedMesh = mesh;
-    }
-
-    // Додає квад; порядок вершин сам підлаштовується під нормаль, щоб грань дивилась назовні
-    void GQuad(Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 n, byte id)
-    {
-        if (Vector3.Dot(Vector3.Cross(b - a, c - a), n) < 0f)
-        {
-            Vector3 t = b; b = d; d = t;
-        }
-        Vector2 uv = new Vector2((id + 0.5f) / 256f, 0.5f);
-        int s = gVerts.Count;
-        gVerts.Add(a); gVerts.Add(b); gVerts.Add(c); gVerts.Add(d);
-        for (int k = 0; k < 4; k++)
-        {
-            gNormals.Add(n);
-            gUvs.Add(uv);
-        }
-        gTris.Add(s); gTris.Add(s + 1); gTris.Add(s + 2);
-        gTris.Add(s); gTris.Add(s + 2); gTris.Add(s + 3);
     }
 
     // =====================================================================================
@@ -2105,7 +2007,7 @@ public partial class CountryGenerator : MonoBehaviour
 
     // ---------- примітиви ----------
 
-    // Абсолютна висота (вокселі від моря)
+    // Абсолютна висота (проєктні вокселі від моря)
     void AddAbs(int x, int y, int z, byte id)
     {
         ops.Add(new VoxelOp { pos = new Vector3Int(x, y, z), id = id });
