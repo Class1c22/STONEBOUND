@@ -5,10 +5,13 @@ using UnityEngine.SceneManagement;
 
 // Нескінченний процедурний архіпелаг для 4 рівня. Землею є МОРЕ (SeaGroundGenerator), а острови
 // генеруються самі, скільки б камінь не пливув. Кожен острів має свій берег, озера й ставки, пляж,
-// столицю із замком або місто, десятки сіл (колодязь чи вітряк у центрі), дороги з хуторами й деревами,
-// двори, городи, поля з парканами, луки, ліси з підліском і валунами.
-// Частина островів сучасні королівства (див. CountryGenerator.Modern.cs): хмарочоси, асфальт, ліхтарі.
+// мегаполіс або місто (замків і сіл більше немає), дороги, двори, поля з парканами, луки, ліси.
+// Сучасні міста: хмарочоси, асфальт, ліхтарі (див. CountryGenerator.Modern.cs).
 // Навколо кожного острова є малі острівці з пальмами й маяками та об'єкти в морі (див. CountryGenerator.Sea.cs).
+//
+// НЕЗРУЙНІВНИЙ ҐРУНТ: суша це не вокселі, а меш із MeshCollider (по одному на плитку), тож камінь
+// його не ламає й не всмоктує. Усе, що стоїть НА землі (будинки, дерева, поля), лишається вокселями
+// і руйнується. Вимкнути можна галочкою Unbreakable Ground (тоді суша знову з вокселів).
 //
 // Як це працює:
 //  * Світ поділений на великі клітини (Island Spacing). У кожній клітині з імовірністю Island Chance
@@ -16,20 +19,17 @@ using UnityEngine.SceneManagement;
 //    Усе виводиться із Seed: ту саму карту дає те саме значення, а Random Seed Each Run дає нову.
 //  * Острів плануватиметься (суша, висоти, озера, міста, дороги) тоді, коли фокус (камінь) наближається до нього.
 //    Далекі острови вивантажуються з пам'яті (Max Loaded Islands) і при поверненні плануються так само.
-//  * Суша це РЕЛЬЄФНІ ВОКСЕЛЬНІ колонки від моря (y = 0) до висоти землі: пагорби, схили, скелі.
-//    Озера це діри в суші, крізь які видно море. Усе це справжні вокселі, і камінь ламає їх.
-//  * Міста й села стоять на рівних майданчиках, рельєф плавно наростає навколо них.
+//  * Суша це рельєфні колонки від моря (y = 0) до висоти землі: пагорби, схили, скелі.
+//    Озера це діри в суші, крізь які видно море.
+//  * Міста стоять на рівних майданчиках, рельєф плавно наростає навколо них.
 //  * Плитки будуються лише поблизу фокуса, найближчі першими, по кадрах (Voxels Per Frame).
 //  * Камінь на старті переноситься на суцільну сушу острова біля початку координат.
-//  * ЯКЩО КАМЕНЯ НА СЦЕНІ НЕМАЄ, через Rock Wait Seconds острови будуються навколо камери,
-//    щоб карта не лишалася порожньою.
+//  * ЯКЩО КАМЕНЯ НА СЦЕНІ НЕМАЄ, через Rock Wait Seconds острови будуються навколо камери.
 //
 // Підлога (море) має бути на y = 0 (SeaGroundGenerator), VoxelWorld на (0,0,0) з масштабом 1.
 // Усі розміри тут у ВОКСЕЛЯХ, тому все масштабується разом із world.voxelSize.
-// ЩОБ УСЕ БУЛО ДРІБНІШИМ: зменш voxelSize у VoxelWorld і збільш Island Spacing та радіуси островів.
-//
-// Значення з Inspector на старті обмежуються розумними мінімумами (Sanitize), тож застарілі нулі
-// більше не ламають генерацію. Усе одно корисно натиснути ⋮ біля компонента -> Reset.
+// Значення з Inspector на старті обмежуються розумними мінімумами (Sanitize).
+// Корисно натиснути ⋮ біля компонента -> Reset, щоб підтягнулися нові значення за замовчуванням.
 public partial class CountryGenerator : MonoBehaviour
 {
     [Header("Зв'язки")]
@@ -38,6 +38,10 @@ public partial class CountryGenerator : MonoBehaviour
     public int seed = 4004;
     [Tooltip("Нова випадкова карта при кожному запуску")]
     public bool randomSeedEachRun = false;
+
+    [Header("Фундамент")]
+    [Tooltip("Суша це меш із колайдером, який камінь не може зламати. Вимкни, щоб суша знову була з вокселів")]
+    public bool unbreakableGround = true;
 
     [Header("Діагностика")]
     [Tooltip("Писати в консоль, що відбувається (камінь, плитки, матеріал)")]
@@ -107,11 +111,11 @@ public partial class CountryGenerator : MonoBehaviour
     public int cliffDrop = 3;
 
     [Header("Міста (у вокселях)")]
-    [Tooltip("Одне місто на стільки вокселів площі острова")]
+    [Tooltip("Одне велике місто на стільки вокселів площі острова")]
     public int voxelsPerTown = 60000;
-    [Tooltip("Одне село на стільки вокселів площі острова")]
+    [Tooltip("Одне мале місто (колишнє село) на стільки вокселів площі острова")]
     public int voxelsPerVillage = 9000;
-    [Tooltip("Острів із таким радіусом і більше отримує столицю із замком")]
+    [Tooltip("Острів із таким радіусом і більше отримує столицю-мегаполіс")]
     public int capitalMinIslandRadius = 220;
     public int cityRadiusMin = 22;
     public int cityRadiusMax = 32;
@@ -122,20 +126,20 @@ public partial class CountryGenerator : MonoBehaviour
     [Tooltip("Як часто вулиці перетинаються поперек")]
     public int crossStreetSpacing = 26;
 
-    [Header("Села")]
+    [Header("Малі міста")]
     public int villageRadiusMin = 9;
     public int villageRadiusMax = 14;
     public int villageSpacing = 40;
-    [Tooltip("Шанс, що в центрі села вітряк (інакше колодязь)")]
+    [Tooltip("Шанс вітряка серед полів (у містах вітряків немає)")]
     [Range(0f, 1f)] public float windmillChance = 0.15f;
 
-    [Header("Хатки (у вокселях)")]
+    [Header("Будинки (у вокселях)")]
     public int houseWidthMin = 3;
     public int houseWidthMax = 4;
     public int houseDepthMin = 3;
     public int houseDepthMax = 3;
     public int houseWallHeight = 2;
-    [Tooltip("Проміжок між хатками в ряду (вокселі)")]
+    [Tooltip("Проміжок між будинками в ряду (вокселі)")]
     public int houseGap = 1;
     [Range(0f, 1f)] public float houseChance = 0.95f;
     [Range(0f, 1f)] public float tallHouseChance = 0.25f;
@@ -149,7 +153,7 @@ public partial class CountryGenerator : MonoBehaviour
     [Range(0f, 1f)] public float treeDensity = 0.9f;
     [Tooltip("Шанс паркану навколо поля чи городу")]
     [Range(0f, 1f)] public float fenceChance = 0.6f;
-    [Tooltip("Скільки зелені (кущі, дерева, квіти) у дворах міст і сіл")]
+    [Tooltip("Скільки зелені (кущі, дерева, квіти) у дворах міст")]
     [Range(0f, 1f)] public float gardenDensity = 0.8f;
 
     [Header("Дороги")]
@@ -171,7 +175,7 @@ public partial class CountryGenerator : MonoBehaviour
     {
         public int cx, cz, r;
         public bool capital;
-        public bool village;
+        public bool village;   // мале місто
     }
 
     class Island
@@ -200,6 +204,12 @@ public partial class CountryGenerator : MonoBehaviour
     readonly List<Island> tmpNear = new List<Island>();
     readonly Dictionary<Vector2Int, List<System.Action>> jobs = new Dictionary<Vector2Int, List<System.Action>>();
     readonly HashSet<Vector2Int> built = new HashSet<Vector2Int>();
+
+    // буфери меша землі
+    readonly List<Vector3> gVerts = new List<Vector3>();
+    readonly List<Vector3> gNormals = new List<Vector3>();
+    readonly List<Vector2> gUvs = new List<Vector2>();
+    readonly List<int> gTris = new List<int>();
 
     Island cur;        // острів, який планується просто зараз
     Island lastIsl;    // кеш останнього знайденого острова
@@ -289,7 +299,8 @@ public partial class CountryGenerator : MonoBehaviour
         if (debugLog)
             Debug.Log("[CountryGenerator] Старт: seed=" + seed + ", voxelSize=" + vs + ", tile=" + T + ", spacing=" + sp +
                       ", стартовий острів R=" + start.R + " centre=(" + start.cx + "," + start.cz + ")" +
-                      ", точка старту (вокселі)=" + spawnV + ", світова=" + StartPoint, this);
+                      ", точка старту (вокселі)=" + spawnV + ", світова=" + StartPoint +
+                      ", незруйновний ґрунт=" + unbreakableGround, this);
 
         StartCoroutine(Worker());
     }
@@ -433,7 +444,7 @@ public partial class CountryGenerator : MonoBehaviour
             s.bx = 100f + (float)rng.NextDouble() * 1000f;
             s.bz = 100f + (float)rng.NextDouble() * 1000f;
             s.colorIdx = rng.Next(0, 6);
-            s.modern = !isSpawn && rng.NextDouble() < modernChance;
+            s.modern = rng.NextDouble() < modernChance;   // за замовчуванням усі острови з містами
         }
         regions[key] = s;
         return s;
@@ -625,7 +636,7 @@ public partial class CountryGenerator : MonoBehaviour
         if (s.isSpawn) ComputeSpawn(s);
         PlanIsletsAndSea(s, islets);        // острівці, маяки, буї, човни
 
-        // 3. міста й села
+        // 3. міста (великі й малі)
         float area = Mathf.PI * R * R;
         int towns = Mathf.Max(0, Mathf.RoundToInt(area / Mathf.Max(1000f, voxelsPerTown)));
         int villages = Mathf.Max(1, Mathf.RoundToInt(area / Mathf.Max(500f, voxelsPerVillage)));
@@ -661,7 +672,7 @@ public partial class CountryGenerator : MonoBehaviour
         // 3.5. рельєф: висоти землі (міста лишаються на рівних майданчиках)
         ComputeHeights(s);
 
-        // 4. дороги між поселеннями, хутори й дерева вздовж узбіч
+        // 4. дороги між містами, хутори й дерева вздовж узбіч
         for (int k = 1; k < s.cities.Count; k++)
         {
             int best = 0;
@@ -676,7 +687,7 @@ public partial class CountryGenerator : MonoBehaviour
                       new Vector2(s.cities[k].cx, s.cities[k].cz), rng, s.colorIdx);
         }
 
-        // 5. вулиці, хатки й двори
+        // 5. вулиці, будинки й двори
         foreach (var cy in s.cities)
             PlanCity(cy, rng);
 
@@ -718,14 +729,14 @@ public partial class CountryGenerator : MonoBehaviour
             int landCount = 0;
             for (int i = 0; i < s.land.Length; i++) if (s.land[i]) landCount++;
             Debug.Log("[CountryGenerator] Заплановано острів " + s.region + ": R=" + s.R + ", суші=" + landCount +
-                      " вокселів, поселень=" + s.cities.Count + ", острівців=" + islets.Count + (s.modern ? ", сучасний" : ""));
+                      " вокселів, міст=" + s.cities.Count + ", острівців=" + islets.Count + (s.modern ? ", сучасний" : ""));
         }
 
         EvictFar(s);
     }
 
     // Висоти землі: пляж 1, рівнина baseHeight, пагорби до baseHeight + hillHeight.
-    // Міста й села (разом із запасом) рівні, рельєф плавно наростає за їхніми межами й від берега
+    // Міста (разом із запасом) рівні, рельєф плавно наростає за їхніми межами й від берега
     void ComputeHeights(Island s)
     {
         int S = s.S;
@@ -910,7 +921,7 @@ public partial class CountryGenerator : MonoBehaviour
             if (s.land[i] && s.dist[i] == 0) s.dist[i] = 65535;
     }
 
-    // Дорога з вигином між двома поселеннями (лише по суші). Уздовж неї стають хутори й дерева
+    // Дорога з вигином між двома містами (лише по суші). Уздовж неї стають хутори й дерева
     void CarveRoad(Vector2 a, Vector2 b, System.Random rng, int cid)
     {
         float len = Vector2.Distance(a, b);
@@ -958,7 +969,7 @@ public partial class CountryGenerator : MonoBehaviour
 
     void PlaceRoadsideHouse(Vector2Int p, Vector2 dir, int sd, int rw, System.Random rng, int cid)
     {
-        if (cur.modern) return;   // на сучасних островах немає солом'яних хуторів
+        if (cur.modern) return;   // на островах із містами немає солом'яних хуторів
 
         int w = RI(rng, houseWidthMin, houseWidthMax);
         int d = RI(rng, houseDepthMin, houseDepthMax);
@@ -992,7 +1003,9 @@ public partial class CountryGenerator : MonoBehaviour
         BuildTinyTree(tx, tz, 1, rng, rng.NextDouble() < 0.3, leafSets[rng.Next(2)]);
     }
 
-    // Вулиці міста й рядки хаток уздовж них. Столиця отримує замок, місто вежу, село колодязь чи вітряк
+    // Вулиці міста й рядки будинків уздовж них.
+    // Сучасні острови (за замовчуванням усі) йдуть у PlanModernCity. Нижче лише запасний
+    // середньовічний варіант на випадок modernChance < 1: замок, вежа, колодязь чи вітряк.
     void PlanCity(City cy, System.Random rng)
     {
         if (cur.modern) { PlanModernCity(cy, rng); return; }
@@ -1373,7 +1386,7 @@ public partial class CountryGenerator : MonoBehaviour
                       ", плиток усього=" + dbgTiles + ", вокселів поставлено=" + dbgVoxels);
     }
 
-    // ---------- рельєфна суша: вокселі землі ----------
+    // ---------- рельєфна суша ----------
 
     byte RoadColor(int kind, int x, int z)
     {
@@ -1381,75 +1394,179 @@ public partial class CountryGenerator : MonoBehaviour
         return dirtSet[Hash01(x, 2, z) < 0.5f ? 0 : 1];
     }
 
-    // Для кожної клітинки суші ставить суцільну колонку вокселів від y = 0 до висоти землі.
-    // Зверху трава, пляж або дорога, під нею ґрунт, ще нижче камінь. Круті схили стають скелями.
-    // Озера й море це просто відсутність колонок: крізь них видно море SeaGroundGenerator
+    // Колір верху колонки: дорога, пісок пляжу, скеля на крутому схилі або трава
+    byte GroundTopColor(Island s, int i, int x, int z, int h, bool beach)
+    {
+        byte kind = s.road[i];
+        if (kind != 0)
+            return s.modern ? ModernRoadColor(kind, x, z) : RoadColor(kind, x, z);
+        if (beach)
+            return sandSet[Hash01(x, 4, z) < 0.5f ? 0 : 1];
+
+        bool cliff = false;
+        if (h > baseHeight + 2)
+        {
+            int lo = Mathf.Min(Mathf.Min(GroundH(x + 1, z), GroundH(x - 1, z)),
+                               Mathf.Min(GroundH(x, z + 1), GroundH(x, z - 1)));
+            cliff = h - lo >= cliffDrop;
+        }
+        if (cliff)
+            return Hash01(x, 7, z) < 0.5f ? cStone : cStone2;
+
+        float r = Hash01(x, 5, z);
+        return r < 0.12f ? cGroundDirt : (r < 0.55f ? cGroundA : cGroundB);
+    }
+
+    // Колір нижніх шарів: ґрунт (або пісок на пляжі), далі камінь
+    byte GroundLayerColor(int x, int y, int z, int h, bool beach)
+    {
+        if (y >= h - 1 - soilLayers)
+            return beach ? sandSet[Hash01(x, y, z) < 0.5f ? 0 : 1] : dirtSet[Hash01(x, y + 9, z) < 0.5f ? 0 : 1];
+        return Hash01(x, y + 17, z) < 0.5f ? cStone2 : cStone;
+    }
+
+    // Суша плитки: або незруйновний меш із колайдером, або вокселі (якщо Unbreakable Ground вимкнено)
     void BuildTileGround(Vector2Int tile)
     {
         for (int k = 0; k < tmpNear.Count; k++) Ensure(tmpNear[k]);
 
+        if (unbreakableGround) BuildTileGroundMesh(tile);
+        else BuildTileGroundVoxels(tile);
+    }
+
+    Island FindTileIsland(int x, int z)
+    {
+        for (int k = 0; k < tmpNear.Count; k++)
+        {
+            Island c = tmpNear[k];
+            if (x >= c.ox && x < c.ox + c.S && z >= c.oz && z < c.oz + c.S) return c;
+        }
+        return null;
+    }
+
+    // Вокселі землі: суцільна колонка від y = 0 до висоти землі (камінь їх ламає)
+    void BuildTileGroundVoxels(Vector2Int tile)
+    {
         int x0 = tile.x * T, z0 = tile.y * T;
         int x1 = x0 + T, z1 = z0 + T;
 
         for (int z = z0; z < z1; z++)
         for (int x = x0; x < x1; x++)
         {
-            Island s = null;
-            for (int k = 0; k < tmpNear.Count; k++)
-            {
-                Island c = tmpNear[k];
-                if (x >= c.ox && x < c.ox + c.S && z >= c.oz && z < c.oz + c.S) { s = c; break; }
-            }
+            Island s = FindTileIsland(x, z);
             if (s == null || s.land == null || s.hgt == null) continue;
             int i = (x - s.ox) + s.S * (z - s.oz);
             if (!s.land[i]) continue;
 
             int h = s.hgt[i];
-            byte kind = s.road[i];
             bool beach = s.dist[i] <= beachWidth;
 
-            // верхній воксель
-            byte top;
-            if (kind != 0)
-            {
-                top = s.modern ? ModernRoadColor(kind, x, z) : RoadColor(kind, x, z);
-            }
-            else if (beach)
-            {
-                top = sandSet[Hash01(x, 4, z) < 0.5f ? 0 : 1];
-            }
-            else
-            {
-                bool cliff = false;
-                if (h > baseHeight + 2)
-                {
-                    int lo = Mathf.Min(Mathf.Min(GroundH(x + 1, z), GroundH(x - 1, z)),
-                                       Mathf.Min(GroundH(x, z + 1), GroundH(x, z - 1)));
-                    cliff = h - lo >= cliffDrop;
-                }
-                if (cliff)
-                {
-                    top = Hash01(x, 7, z) < 0.5f ? cStone : cStone2;
-                }
-                else
-                {
-                    float r = Hash01(x, 5, z);
-                    top = r < 0.12f ? cGroundDirt : (r < 0.55f ? cGroundA : cGroundB);
-                }
-            }
-            AddAbs(x, h - 1, z, top);
-
-            // нижні шари: ґрунт (або пісок на пляжі), далі камінь
+            AddAbs(x, h - 1, z, GroundTopColor(s, i, x, z, h, beach));
             for (int y = h - 2; y >= 0; y--)
+                AddAbs(x, y, z, GroundLayerColor(x, y, z, h, beach));
+        }
+    }
+
+    // Незруйновний ґрунт: меш (верхні грані колонок + бічні грані там, де сусід нижчий) і MeshCollider.
+    // Вокселі ґрунту не створюються, тож камінь їх не вибиває й не всмоктує.
+    // Будівлі й рослини стоять на ньому вокселями (перший воксель на y = висота землі)
+    void BuildTileGroundMesh(Vector2Int tile)
+    {
+        int x0 = tile.x * T, z0 = tile.y * T;
+        int x1 = x0 + T, z1 = z0 + T;
+
+        gVerts.Clear(); gNormals.Clear(); gUvs.Clear(); gTris.Clear();
+
+        for (int z = z0; z < z1; z++)
+        for (int x = x0; x < x1; x++)
+        {
+            Island s = FindTileIsland(x, z);
+            if (s == null || s.land == null || s.hgt == null) continue;
+            int i = (x - s.ox) + s.S * (z - s.oz);
+            if (!s.land[i]) continue;
+
+            int h = s.hgt[i];
+            bool beach = s.dist[i] <= beachWidth;
+
+            // верх
+            float yt = h * vs;
+            float fx0 = x * vs, fx1 = (x + 1) * vs, fz0 = z * vs, fz1 = (z + 1) * vs;
+            GQuad(new Vector3(fx0, yt, fz0), new Vector3(fx0, yt, fz1),
+                  new Vector3(fx1, yt, fz1), new Vector3(fx1, yt, fz0),
+                  Vector3.up, GroundTopColor(s, i, x, z, h, beach));
+
+            // боки: там, де сусідня колонка нижча (або це море чи озеро)
+            for (int d = 0; d < 4; d++)
             {
-                byte id;
-                if (y >= h - 1 - soilLayers)
-                    id = beach ? sandSet[Hash01(x, y, z) < 0.5f ? 0 : 1] : dirtSet[Hash01(x, y + 9, z) < 0.5f ? 0 : 1];
-                else
-                    id = Hash01(x, y + 17, z) < 0.5f ? cStone2 : cStone;
-                AddAbs(x, y, z, id);
+                int dx = d == 0 ? 1 : d == 1 ? -1 : 0;
+                int dz = d == 2 ? 1 : d == 3 ? -1 : 0;
+                int nh = GroundH(x + dx, z + dz);
+                if (nh >= h) continue;
+
+                for (int y = nh; y < h; y++)
+                {
+                    byte id = (y == h - 1)
+                        ? (beach ? sandSet[Hash01(x, y, z) < 0.5f ? 0 : 1] : GroundTopColor(s, i, x, z, h, beach))
+                        : GroundLayerColor(x, y, z, h, beach);
+
+                    float ya = y * vs, yb = (y + 1) * vs;
+                    Vector3 a, b, c, e;
+                    Vector3 n;
+                    if (dx != 0)
+                    {
+                        float px = (dx > 0 ? x + 1 : x) * vs;
+                        a = new Vector3(px, ya, fz0); b = new Vector3(px, yb, fz0);
+                        c = new Vector3(px, yb, fz1); e = new Vector3(px, ya, fz1);
+                        n = new Vector3(dx, 0f, 0f);
+                    }
+                    else
+                    {
+                        float pz = (dz > 0 ? z + 1 : z) * vs;
+                        a = new Vector3(fx0, ya, pz); b = new Vector3(fx0, yb, pz);
+                        c = new Vector3(fx1, yb, pz); e = new Vector3(fx1, ya, pz);
+                        n = new Vector3(0f, 0f, dz);
+                    }
+                    GQuad(a, b, c, e, n, id);
+                }
             }
         }
+
+        if (gVerts.Count == 0) return;
+
+        var mesh = new Mesh { name = "GroundMesh", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+        mesh.SetVertices(gVerts);
+        mesh.SetNormals(gNormals);
+        mesh.SetUVs(0, gUvs);
+        mesh.SetTriangles(gTris, 0);
+        mesh.RecalculateBounds();
+
+        var go = new GameObject("Ground " + tile.x + "_" + tile.y);
+        go.layer = world.gameObject.layer;
+        go.transform.SetParent(world.transform, false);
+        go.AddComponent<MeshFilter>().sharedMesh = mesh;
+        var rend = go.AddComponent<MeshRenderer>();
+        rend.sharedMaterial = world.RuntimeMaterial;
+        var col = go.AddComponent<MeshCollider>();
+        col.sharedMesh = mesh;
+    }
+
+    // Додає квад; порядок вершин сам підлаштовується під нормаль, щоб грань дивилась назовні
+    void GQuad(Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 n, byte id)
+    {
+        if (Vector3.Dot(Vector3.Cross(b - a, c - a), n) < 0f)
+        {
+            Vector3 t = b; b = d; d = t;
+        }
+        Vector2 uv = new Vector2((id + 0.5f) / 256f, 0.5f);
+        int s = gVerts.Count;
+        gVerts.Add(a); gVerts.Add(b); gVerts.Add(c); gVerts.Add(d);
+        for (int k = 0; k < 4; k++)
+        {
+            gNormals.Add(n);
+            gUvs.Add(uv);
+        }
+        gTris.Add(s); gTris.Add(s + 1); gTris.Add(s + 2);
+        gTris.Add(s); gTris.Add(s + 2); gTris.Add(s + 3);
     }
 
     // =====================================================================================
@@ -1535,7 +1652,7 @@ public partial class CountryGenerator : MonoBehaviour
         }
     }
 
-    // ---------- крихітна хатка ----------
+    // ---------- крихітна хатка (хутори вздовж доріг і запасний варіант) ----------
 
     void BuildHouse(int f, int ox, int oz, int w, int d, int cIdx)
     {
@@ -1578,7 +1695,7 @@ public partial class CountryGenerator : MonoBehaviour
         PBox(0, 0, 0, w, 1, d, cFloor);
     }
 
-    // ---------- замок у столиці ----------
+    // ---------- замок (запасний варіант при modernChance < 1) ----------
 
     void BuildCastle(int cx, int cz, int cIdx)
     {
@@ -1627,7 +1744,7 @@ public partial class CountryGenerator : MonoBehaviour
         PBox(0, 0, 0, S, 1, S, cFloor);
     }
 
-    // ---------- вежа в звичайному місті ----------
+    // ---------- вежа (запасний варіант) ----------
 
     void BuildTower(int cx, int cz, int cIdx)
     {
@@ -1660,7 +1777,7 @@ public partial class CountryGenerator : MonoBehaviour
         PBox(0, 0, 0, S, 1, S, cFloor);
     }
 
-    // ---------- колодязь у селі ----------
+    // ---------- колодязь (запасний варіант) ----------
 
     void BuildWell(int cx, int cz, int cIdx)
     {
@@ -1685,7 +1802,7 @@ public partial class CountryGenerator : MonoBehaviour
         }
     }
 
-    // ---------- вітряк у селі ----------
+    // ---------- вітряк (серед полів) ----------
 
     void BuildWindmill(int cx, int cz, int cIdx)
     {
@@ -1759,7 +1876,7 @@ public partial class CountryGenerator : MonoBehaviour
         }
     }
 
-    // ---------- ділянки між поселеннями ----------
+    // ---------- ділянки між містами ----------
 
     // type: 0 пшениця, 1 соняшники, 2 лука, 3 сад, 4 ліс, 5 город
     void BuildPlot(RectInt plot, int type)

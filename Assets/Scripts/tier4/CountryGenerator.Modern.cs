@@ -1,13 +1,14 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-// Сучасні королівства для CountryGenerator: мегаполіси, хмарочоси, асфальт, ліхтарі, передмістя.
-// Поклади поруч із CountryGenerator.cs (клас став partial).
+// Сучасні королівства для CountryGenerator: мегаполіси, хмарочоси, асфальт, ліхтарі.
+// Тепер замків і сіл немає: столиця це мегаполіс, місто це місто, а колишні села це малі міста з вежею.
+// Поклади поруч із CountryGenerator.cs (клас partial).
 public partial class CountryGenerator
 {
     [Header("Сучасні королівства")]
-    [Tooltip("Імовірність, що острів сучасний (стартовий острів завжди середньовічний)")]
-    [Range(0f, 1f)] public float modernChance = 0.5f;
+    [Tooltip("Імовірність, що острів сучасний. 1 = усі острови з містами, замків і сіл немає")]
+    [Range(0f, 1f)] public float modernChance = 1f;
     public int modernWidthMin = 5;
     public int modernWidthMax = 8;
     public int modernDepthMin = 5;
@@ -16,7 +17,7 @@ public partial class CountryGenerator
     public int capitalTowerHeight = 36;
     [Tooltip("Висота центральної вежі звичайного міста")]
     public int townTowerHeight = 22;
-    [Tooltip("Максимальна висота кварталів у центрі столиці. У місті ~60%, у селі низькі будинки")]
+    [Tooltip("Максимальна висота кварталів у центрі столиці. У місті ~60%, у малому місті ~40%")]
     public int downtownMaxHeight = 20;
     [Tooltip("Крок ліхтарів уздовж вулиць")]
     public int lampSpacing = 9;
@@ -50,24 +51,24 @@ public partial class CountryGenerator
         int rowSp = rw + 2 * (modernDepthMax + 2);
         int rr = cy.r;
 
-        // центральна споруда
+        // центральна споруда: мегахмарочос, вежа міста або мала вежа малого міста
         if (cy.capital)
         {
             MarkOcc(new RectInt(cy.cx - 12, cy.cz - 12, 24, 24));
             int ccx = cy.cx, ccz = cy.cz;
-            AddJob(ccx, ccz, () => BuildSkyscraper(ccx, ccz, cid, true));
+            AddJob(ccx, ccz, () => BuildSkyscraper(ccx, ccz, cid, true, false));
         }
         else if (!cy.village)
         {
             MarkOcc(new RectInt(cy.cx - 5, cy.cz - 5, 10, 10));
             int tcx = cy.cx, tcz = cy.cz;
-            AddJob(tcx, tcz, () => BuildSkyscraper(tcx, tcz, cid, false));
+            AddJob(tcx, tcz, () => BuildSkyscraper(tcx, tcz, cid, false, false));
         }
         else
         {
-            MarkOcc(new RectInt(cy.cx - 4, cy.cz - 4, 8, 8));
+            MarkOcc(new RectInt(cy.cx - 5, cy.cz - 5, 10, 10));
             int vcx = cy.cx, vcz = cy.cz;
-            AddJob(vcx, vcz, () => BuildFountain(vcx, vcz));
+            AddJob(vcx, vcz, () => BuildSkyscraper(vcx, vcz, cid, false, true));
         }
 
         int K = rr / rowSp;
@@ -135,13 +136,9 @@ public partial class CountryGenerator
                         // висота: вища ближче до центру
                         float ddx = ox + w * 0.5f - cy.cx, ddz = oz + d * 0.5f - cy.cz;
                         float t01 = Mathf.Clamp01(Mathf.Sqrt(ddx * ddx + ddz * ddz) / Mathf.Max(1, rr));
-                        int h;
-                        if (cy.village) h = RI(rng, 3, 4);
-                        else
-                        {
-                            float maxH = cy.capital ? downtownMaxHeight : downtownMaxHeight * 0.6f;
-                            h = Mathf.Max(4, Mathf.RoundToInt(maxH * Mathf.Pow(1f - t01, 1.2f)) + rng.Next(0, 4));
-                        }
+                        float maxH = cy.capital ? downtownMaxHeight
+                                   : (cy.village ? downtownMaxHeight * 0.4f : downtownMaxHeight * 0.6f);
+                        int h = Mathf.Max(4, Mathf.RoundToInt(maxH * Mathf.Pow(1f - t01, 1.2f)) + rng.Next(0, 4));
 
                         int hox = ox, hoz = oz, hf = f, hw = w, hd = d, hh = h;
                         AddJob(ox + w / 2, oz + d / 2, () => BuildModernBuilding(hf, hox, hoz, hw, hd, hh, cid));
@@ -237,15 +234,16 @@ public partial class CountryGenerator
         PBox(lo, y1, lo, hi - lo + 1, 1, hi - lo + 1, mRoof);
     }
 
-    // Хмарочос: подіум, основна вежа, верхній ярус, антена з прапором королівства
-    void BuildSkyscraper(int cx, int cz, int cIdx, bool capital)
+    // Хмарочос: подіум, основна вежа, верхній ярус, антена з прапором королівства.
+    // small = мала вежа центру малого міста (колишнього села)
+    void BuildSkyscraper(int cx, int cz, int cIdx, bool capital, bool small)
     {
-        int S = capital ? 15 : 9;
+        int S = capital ? 15 : (small ? 7 : 9);
         SetT(0, cx - S / 2, cz - S / 2, S, S);
-        int H = capital ? capitalTowerHeight : townTowerHeight;
-        int podH = capital ? 6 : 4;
+        int H = capital ? capitalTowerHeight : (small ? Mathf.Max(8, townTowerHeight * 6 / 10) : townTowerHeight);
+        int podH = capital ? 6 : (small ? 3 : 4);
         int topIns = capital ? 4 : 3;
-        int topH = capital ? 10 : 6;
+        int topH = capital ? 10 : (small ? 3 : 6);
         int mid = S / 2;
         byte flag = flagSet[cIdx % flagSet.Length];
 
@@ -270,7 +268,7 @@ public partial class CountryGenerator
         PBox(0, 0, 0, S, 1, S, cFloor);
     }
 
-    // Фонтан у центрі сучасного села
+    // Фонтан (більше не використовується містами, лишився про запас)
     void BuildFountain(int cx, int cz)
     {
         Disc(cx, cz, 1.6f, 1, 2, cWater);
