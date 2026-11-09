@@ -12695,6 +12695,11 @@ MonoBehaviour:
   coverDuration: 1.5
   coverLead: 1
   holdClosed: 0.2
+  waitAnimator: {fileID: 222801954}
+  waitTrigger: loadingwait
+  waitDelay: 1.5
+  waitForPlanet: 1
+  planetTimeout: 180
   revealAnimator: {fileID: 222801954}
   revealTrigger: loadingrev
   revealDuration: 0.5
