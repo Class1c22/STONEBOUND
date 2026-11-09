@@ -12553,11 +12553,14 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::VoxelDestroyer
   world: {fileID: 843798773}
   minImpactSpeed: 5
+  speedKeep: 0.85
+  hitCooldown: 0.05
+  strictRockRadius: 1
+  radiusScale: 1.03
+  voxelPadding: 3
   baseRadius: 0.8
   radiusPerSpeed: 0.06
   maxRadius: 4
-  speedKeep: 0.85
-  hitCooldown: 0.05
 --- !u!114 &2032603337
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -12604,7 +12607,7 @@ MonoBehaviour:
   - name: "\u0421\u043A\u0435\u043B\u044F"
     radiusRatio: 3
     speedMultiplier: 1.3
-    forceMultiplier: 1.5
+    forceMultiplier: 1
     destroyRadiusMultiplier: 1
     absorbCostMultiplier: 1
   - name: "\u0413\u043E\u0440\u0430"
