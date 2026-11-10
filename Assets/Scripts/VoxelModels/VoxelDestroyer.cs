@@ -167,7 +167,7 @@ public class VoxelDestroyer : MonoBehaviour
         // враховуємо тільки швидкість У стіну (по нормалі). Дотик збоку чи ковзання вздовж стіни
         // нічого не ламає, навіть якщо камінь їде швидко
         float impact = Mathf.Abs(Vector3.Dot(lastVelocity, cp.normal));
-        float sizeRatio = absorber != null ? Mathf.Max(1f, absorber.SizeRatio) : 1f;
+        float sizeRatio = absorber != null ? Mathf.Max(1f, absorber.ScaleFromOriginal) : 1f;
         impact *= Mathf.Pow(sizeRatio, sizeBreakExponent);   // великий камінь ламає і з меншою швидкістю
         if (impact < minImpactSpeed) return;
         lastHitTime = Time.time;

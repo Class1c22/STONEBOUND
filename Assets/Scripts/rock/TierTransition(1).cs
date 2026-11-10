@@ -495,6 +495,9 @@ public class TierTransition : MonoBehaviour
         VoxelWorld world = null;
         if (spawn != null)
         {
+            // розмір каменя на цьому рівні задає Level Scale заглушки (до розрахунку позиції, бо від радіуса залежить висота)
+            r.SetBaseScale(spawn.levelScale);
+
             var d = spawn.GetComponent<VoxelDestroyer>();
             if (d != null) world = d.world;
 
