@@ -14,7 +14,7 @@ OcclusionCullingSettings:
 RenderSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 10
-  m_Fog: 1
+  m_Fog: 0
   m_FogColor: {r: 0.5, g: 0.5, b: 0.5, a: 1}
   m_FogMode: 3
   m_FogDensity: 0.01
@@ -502,6 +502,7 @@ MonoBehaviour:
   maxDebrisPerHit: 120
   debrisScale: 0.9
   debrisSpread: 4
+  maxRebuildMs: 6
   voxelGround: 1
   groundDebrisChance: 0.3
   groundOverhang: 2
@@ -567,44 +568,57 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::VillageGenerator
   world: {fileID: 843798773}
   seed: 3003
+  houseToRockHeight: 0.25
+  manualScale: 0
+  maxScale: 4
+  downscale: 2
   spawnRadius: 150
   spawnRadiusInRockRadii: 80
-  startClearInRockRadii: 6
   voxelsPerFrame: 6000
-  mapRadius: 150
-  tileSize: 48
-  borderBand: 22
-  forestDensity: 0.92
-  mainRoadWidth: 6
-  laneWidth: 4
-  roadCurve: 14
-  roadWave: 0.035
+  scanInterval: 0.3
+  startClearRadius: 12
+  blockSize: 28
+  roadWidth: 5
+  lotsPerSide: 2
+  roadMode: 0
   roadHeight: 0.03
-  laneCount: 6
-  laneLengthMin: 28
-  laneLengthMax: 50
-  river: 1
-  riverWidth: 12
-  villageHalfLength: 100
-  yardWidthMin: 20
-  yardWidthMax: 26
-  yardDepth: 22
+  streetLampChance: 0.7
   houseChance: 0.85
+  treeLotChance: 0.15
+  specialLotChance: 0.25
+  fenceChance: 0.8
+  treesPerYardMax: 2
+  propsPerYardMax: 2
+  mailboxChance: 0.7
+  treesPerGroveMin: 2
+  treesPerGroveMax: 5
+  useDistricts: 1
+  districtBlocks: 4
+  districtWarp: 0.35
+  wResidential: 4
+  wDowntown: 2
+  wPark: 3
+  wFarm: 1.5
+  wIndustrial: 1.5
   houseWidthMin: 10
   houseWidthMax: 13
   houseDepthMin: 7
   houseDepthMax: 9
-  wallHeight: 5
-  thatchChance: 0.5
+  floorHeight: 3
+  wallThickness: 0.5
+  twoFloorChance: 0.35
+  flatRoofChance: 0.2
   chimneyChance: 0.6
-  fenceChance: 0.8
-  treesPerYardMax: 2
-  twoStoryChance: 0.18
-  barnChance: 0.12
-  yardExtrasMax: 3
-  graveChance: 0.55
-  poleSpacing: 28
-  plotSize: 48
+  hollowHouses: 1
+  pillarSpacing: 10
+  furnishHouses: 1
+  trunkHeightMin: 3.5
+  trunkHeightMax: 5.5
+  crownRadiusMin: 1.6
+  crownRadiusMax: 2.4
+  pineChance: 0.3
+  fenceHeight: 1.2
+  gateWidth: 2
 --- !u!1 &1365930387
 GameObject:
   m_ObjectHideFlags: 0
