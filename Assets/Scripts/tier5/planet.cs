@@ -751,20 +751,30 @@ public class PlanetGenerator : MonoBehaviour
         {
             Rigidbody p = pieceBodies[i];
             if (p == null) { pieceBodies.RemoveAt(i); continue; }   // уламок всмоктало/знищено
-
-            p.useGravity = false;                                    // прибираємо глобальну гравітацію Unity
-            if (p.isKinematic) continue;
-
-            Vector3 to = center - p.worldCenterOfMass;
-            float dist = to.magnitude;
-            if (dist < 0.01f || dist > maxD) continue;
-
-            p.AddForce(to / dist * g, ForceMode.Acceleration);
-
-            // у воді уламки теж сповільнюються
-            if (pieceWaterDrag > 0f && dist < waterR)
-                p.AddForce(-p.linearVelocity * pieceWaterDrag, ForceMode.Acceleration);
+            PullToCenter(p, center, waterR, maxD, g);
         }
+
+        // дрібні уламки від ударів (пул VoxelWorld): теж падають до центру планети, а не вниз по -Y
+        Rigidbody[] debris = world.DebrisBodies;
+        if (debris != null)
+            for (int i = 0; i < debris.Length; i++)
+                if (debris[i] != null) PullToCenter(debris[i], center, waterR, maxD, g);
+    }
+
+    void PullToCenter(Rigidbody p, Vector3 center, float waterR, float maxD, float g)
+    {
+        p.useGravity = false;                                        // прибираємо глобальну гравітацію Unity
+        if (p.isKinematic) return;
+
+        Vector3 to = center - p.worldCenterOfMass;
+        float dist = to.magnitude;
+        if (dist < 0.01f || dist > maxD) return;
+
+        p.AddForce(to / dist * g, ForceMode.Acceleration);
+
+        // у воді уламки теж сповільнюються
+        if (pieceWaterDrag > 0f && dist < waterR)
+            p.AddForce(-p.linearVelocity * pieceWaterDrag, ForceMode.Acceleration);
     }
 
     // ---------- екран завантаження ----------

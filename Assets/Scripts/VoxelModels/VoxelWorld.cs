@@ -56,6 +56,12 @@ public class VoxelWorld : MonoBehaviour
     public float debrisScale = 0.9f;
     public float debrisSpread = 4f;
 
+    [Header("Продуктивність")]
+    [Tooltip("Скільки мілісекунд на кадр можна витратити на перебудову чанків, зачеплених руйнуванням. " +
+             "Решта чанків добудується в наступних кадрах (удар розтягується на кілька кадрів замість одного стрибка). " +
+             "Завжди перебудовується хоча б один чанк за кадр. 0 = усе одразу, як раніше")]
+    public float maxRebuildMs = 6f;
+
     [Header("Ґрунт (воксельна земля)")]
     [Tooltip("Вмикається автоматично, коли MountainMapGenerator насипає воксельну землю нижче y = 0. " +
              "Тоді вокселі з y < 0 це земля, а не споруда: вони не беруть участі в перевірці обвалу, " +
@@ -76,8 +82,16 @@ public class VoxelWorld : MonoBehaviour
 
     readonly Dictionary<Vector3Int, VoxelChunk> chunks = new Dictionary<Vector3Int, VoxelChunk>();
     readonly HashSet<VoxelChunk> dirty = new HashSet<VoxelChunk>();
+    // чанки, які зачепило руйнування: перебудовуються з бюджетом часу на кадр, щоб не було просідання FPS
+    readonly HashSet<VoxelChunk> dirtySpread = new HashSet<VoxelChunk>();
+    readonly List<VoxelChunk> rebuildBuf = new List<VoxelChunk>();
+    Vector3 lastDestroyCenter;
+    readonly List<Vector3Int> removedGridBuf = new List<Vector3Int>();
+    readonly List<Vector3Int> seedGridBuf = new List<Vector3Int>();
     readonly List<GameObject> pieces = new List<GameObject>();
     Rigidbody[] debrisPool;
+    // Пул уламків (елементи можуть бути null). Потрібен PlanetGenerator, щоб притягувати уламки до центру планети
+    public Rigidbody[] DebrisBodies => debrisPool;
     int debrisIndex;
     Material debrisMaterial;
     MaterialPropertyBlock debrisBlock;
@@ -208,50 +222,101 @@ public class VoxelWorld : MonoBehaviour
         float r = worldRadius / voxelSize;
         float r2 = r * r;
 
-        Vector3Int min = new Vector3Int(Mathf.FloorToInt(c.x - r), Mathf.FloorToInt(c.y - r), Mathf.FloorToInt(c.z - r));
-        Vector3Int max = new Vector3Int(Mathf.FloorToInt(c.x + r), Mathf.FloorToInt(c.y + r), Mathf.FloorToInt(c.z + r));
+        int minX = Mathf.FloorToInt(c.x - r), maxX = Mathf.FloorToInt(c.x + r);
+        int minY = Mathf.FloorToInt(c.y - r), maxY = Mathf.FloorToInt(c.y + r);
+        int minZ = Mathf.FloorToInt(c.z - r), maxZ = Mathf.FloorToInt(c.z + r);
+
+        Matrix4x4 toWorld = transform.localToWorldMatrix;
+        lastDestroyCenter = worldCenter;
+
+        // Вокселі, що можуть межувати з ЦІЛИМ вокселем (лише вони потрібні для перевірки обвалу):
+        // сусід на відстані 1 лишається цілим, тільки якщо центр цього вокселя далі за r - 1 від центра кулі
+        float inner = r - 1.01f;
+        float inner2 = inner > 0f ? inner * inner : -1f;
 
         int count = 0;
-        var removedGrid = new List<Vector3Int>();
-        for (int z = min.z; z <= max.z; z++)
-        for (int y = min.y; y <= max.y; y++)
-        for (int x = min.x; x <= max.x; x++)
+        var removedGrid = removedGridBuf;
+        var seeds = seedGridBuf;
+        removedGrid.Clear();
+        seeds.Clear();
+
+        Vector3Int cachedCC = default;
+        VoxelChunk cachedChunk = null;
+        bool haveCache = false, cacheMarked = false;
+
+        for (int z = minZ; z <= maxZ; z++)
         {
-            Vector3 center = new Vector3(x + 0.5f, y + 0.5f, z + 0.5f);
-            if ((center - c).sqrMagnitude > r2) continue;
-
-            Vector3Int g = new Vector3Int(x, y, z);
-            Vector3Int cc = ToChunkCoord(g);
-            if (!chunks.TryGetValue(cc, out VoxelChunk chunk)) continue;
-
-            Vector3Int l = g - cc * ChunkSize;
-            byte id = chunk.Get(l.x, l.y, l.z);
-            if (id == 0) continue;
-
-            chunk.Set(l.x, l.y, l.z, 0);
-            dirty.Add(chunk);
-            count++;
-            removedGrid.Add(g);
-
-            if (removed != null)
-                removed.Add(new RemovedVoxel { position = transform.TransformPoint(center * voxelSize), id = id });
-
-            // якщо воксель на краю чанка, відкриваються грані сусіднього чанка
-            for (int i = 0; i < 6; i++)
+            float dz = z + 0.5f - c.z;
+            float rz = r2 - dz * dz;
+            if (rz < 0f) continue;
+            for (int y = minY; y <= maxY; y++)
             {
-                Vector3Int ncc = ToChunkCoord(g + Dirs[i]);
-                if (ncc != cc && chunks.TryGetValue(ncc, out VoxelChunk neighbor))
-                    dirty.Add(neighbor);
+                float dy = y + 0.5f - c.y;
+                float rzy = rz - dy * dy;
+                if (rzy < 0f) continue;
+
+                // діапазон x усередині кулі на цьому рядку (замість перебору всього куба)
+                float w = Mathf.Sqrt(rzy);
+                int x0 = Mathf.CeilToInt(c.x - 0.5f - w);
+                int x1 = Mathf.FloorToInt(c.x - 0.5f + w);
+
+                for (int x = x0; x <= x1; x++)
+                {
+                    Vector3Int g = new Vector3Int(x, y, z);
+                    Vector3Int cc = ToChunkCoord(g);
+                    if (!haveCache || cc != cachedCC)
+                    {
+                        haveCache = true;
+                        cachedCC = cc;
+                        cacheMarked = false;
+                        chunks.TryGetValue(cc, out cachedChunk);
+                    }
+                    if (cachedChunk == null) continue;
+
+                    Vector3Int l = g - cc * ChunkSize;
+                    byte id = cachedChunk.Get(l.x, l.y, l.z);
+                    if (id == 0) continue;
+
+                    cachedChunk.Set(l.x, l.y, l.z, 0);
+                    if (!cacheMarked) { dirtySpread.Add(cachedChunk); cacheMarked = true; }
+                    count++;
+                    removedGrid.Add(g);
+
+                    float dx = x + 0.5f - c.x;
+                    if (dx * dx + dy * dy + dz * dz > inner2) seeds.Add(g);
+
+                    if (removed != null)
+                        removed.Add(new RemovedVoxel
+                        {
+                            position = toWorld.MultiplyPoint3x4(new Vector3(x + 0.5f, y + 0.5f, z + 0.5f) * voxelSize),
+                            id = id
+                        });
+
+                    // якщо воксель на краю чанка, відкриваються грані сусіднього чанка
+                    // (внутрішні вокселі, а це майже всі, пропускаємо одразу)
+                    if (l.x != 0 && l.y != 0 && l.z != 0 &&
+                        l.x != ChunkSize - 1 && l.y != ChunkSize - 1 && l.z != ChunkSize - 1) continue;
+                    for (int i = 0; i < 6; i++)
+                    {
+                        Vector3Int ncc = ToChunkCoord(g + Dirs[i]);
+                        if (ncc != cc && chunks.TryGetValue(ncc, out VoxelChunk neighbor))
+                            dirtySpread.Add(neighbor);
+                    }
+                }
             }
         }
 
         // спочатку осипається земля без опори: її вокселі додаються до removedGrid,
         // щоб споруди над ними теж перевірилися на обвал
         if (detachFloating && voxelGround && count > 0)
+        {
+            int before = removedGrid.Count;
             CollapseGround(removedGrid);
+            for (int i = before; i < removedGrid.Count; i++) seeds.Add(removedGrid[i]);
+        }
 
         if (detachFloating && count > 0)
-            DetachFloating(removedGrid);
+            DetachFloating(seeds, removedGrid);
 
         return count;
     }
@@ -261,16 +326,20 @@ public class VoxelWorld : MonoBehaviour
     // Перевіряє, чи тримаються вокселі біля місця руйнування, з урахуванням гравітації.
     // Опора йде від землі (y = 0): вгору вона передається без втрат, а вбік і вниз
     // згасає за maxOverhang вокселів. Групи, що втратили опору через це руйнування, падають.
-    void DetachFloating(List<Vector3Int> removedGrid)
+    void DetachFloating(List<Vector3Int> seeds, List<Vector3Int> allRemoved)
     {
-        // 1. збираємо всі вокселі, пов'язані з місцем руйнування
+        // 1. збираємо вокселі споруди, пов'язані з місцем руйнування.
+        //    Воксель-опора (земля, y = 0) додається в набір, але крізь нього не йдемо: інакше обхід
+        //    розтікався б по всій підлозі / дорогах світу (до maxPieceVoxels вокселів на КОЖЕН удар).
+        //    Результат той самий: опора від кореня все одно береться з самого кореня.
         var after = new HashSet<Vector3Int>();
         var queue = new Queue<Vector3Int>();
-        foreach (var g in removedGrid)
+        foreach (var g in seeds)
             for (int i = 0; i < 6; i++)
             {
                 Vector3Int n = g + Dirs[i];
                 if (IsGroundCell(n) || GetVoxel(n) == 0 || !after.Add(n)) continue;
+                if (IsRoot(n)) continue;
 
                 queue.Enqueue(n);
                 while (queue.Count > 0)
@@ -279,18 +348,23 @@ public class VoxelWorld : MonoBehaviour
                     for (int j = 0; j < 6; j++)
                     {
                         Vector3Int m = p + Dirs[j];
-                        if (!IsGroundCell(m) && GetVoxel(m) != 0 && after.Add(m)) queue.Enqueue(m);
+                        if (IsGroundCell(m) || GetVoxel(m) == 0 || !after.Add(m)) continue;
+                        if (!IsRoot(m)) queue.Enqueue(m);
                     }
                     if (after.Count > maxPieceVoxels) return;   // надто велика споруда, не перевіряємо
                 }
             }
         if (after.Count == 0) return;
 
-        // 2. опора до руйнування (з видаленими вокселями) і після
-        var before = new HashSet<Vector3Int>(after);
-        foreach (var g in removedGrid) before.Add(g);
-
-        var supportBefore = ComputeSupport(before);
+        // 2. опора після руйнування. Опора ДО руйнування потрібна лише коли fallEvenIfAlreadyFloating вимкнено,
+        //    тож за замовчуванням другий розрахунок і копія набору не робляться
+        Dictionary<Vector3Int, int> supportBefore = null;
+        if (!fallEvenIfAlreadyFloating)
+        {
+            var before = new HashSet<Vector3Int>(after);
+            foreach (var g in allRemoved) before.Add(g);
+            supportBefore = ComputeSupport(before);
+        }
         var supportAfter = ComputeSupport(after);
 
         // 3. вокселі, що тепер висять у повітрі
@@ -313,7 +387,7 @@ public class VoxelWorld : MonoBehaviour
             while (queue.Count > 0)
             {
                 Vector3Int p = queue.Dequeue();
-                if (supportBefore[p] >= 0) lostSupport = true;
+                if (supportBefore != null && supportBefore[p] >= 0) lostSupport = true;
                 for (int j = 0; j < 6; j++)
                 {
                     Vector3Int m = p + Dirs[j];
@@ -408,6 +482,9 @@ public class VoxelWorld : MonoBehaviour
 
     // Клітинка належить воксельній землі (нижче y = 0), якщо земля увімкнена
     bool IsGroundCell(Vector3Int g) => voxelGround && g.y < 0;
+
+    // Корінь опори: така сама умова, як у ComputeSupport
+    bool IsRoot(Vector3Int g) => g.y < 0 || (g.y == 0 && (!voxelGround || GetVoxel(g + Vector3Int.down) != 0));
 
     // Земля тримається, якщо вертикальний ланцюжок вокселів під нею доходить до нижнього шару
     bool GroundColumnSupported(Vector3Int g)
@@ -694,8 +771,47 @@ public class VoxelWorld : MonoBehaviour
             paletteDirty = false;
         }
 
-        if (dirty.Count == 0) return;
-        foreach (var chunk in dirty) chunk.Rebuild();
-        dirty.Clear();
+        if (dirty.Count > 0)
+        {
+            foreach (var chunk in dirty)
+            {
+                chunk.Rebuild();
+                dirtySpread.Remove(chunk);   // уже перебудований
+            }
+            dirty.Clear();
+        }
+
+        if (dirtySpread.Count == 0) return;
+
+        if (maxRebuildMs <= 0f)
+        {
+            foreach (var chunk in dirtySpread) chunk.Rebuild();
+            dirtySpread.Clear();
+            return;
+        }
+
+        // перебудова з бюджетом часу: хоча б один чанк за кадр, далі поки не вичерпано maxRebuildMs
+        rebuildBuf.Clear();
+        foreach (var chunk in dirtySpread) rebuildBuf.Add(chunk);
+
+        // найближчі до місця удару чанки першими: камінь не має відскакувати від старого колайдера вже зламаної стіни
+        if (rebuildBuf.Count > 1)
+        {
+            float half = ChunkSize * voxelSize * 0.5f;
+            Vector3 hit = lastDestroyCenter;
+            rebuildBuf.Sort((a, b) =>
+            {
+                float da = (a.transform.position + new Vector3(half, half, half) - hit).sqrMagnitude;
+                float db = (b.transform.position + new Vector3(half, half, half) - hit).sqrMagnitude;
+                return da.CompareTo(db);
+            });
+        }
+        double t0 = Time.realtimeSinceStartupAsDouble;
+        for (int i = 0; i < rebuildBuf.Count; i++)
+        {
+            if (i > 0 && (Time.realtimeSinceStartupAsDouble - t0) * 1000.0 >= maxRebuildMs) break;
+            rebuildBuf[i].Rebuild();
+            dirtySpread.Remove(rebuildBuf[i]);
+        }
     }
 }
