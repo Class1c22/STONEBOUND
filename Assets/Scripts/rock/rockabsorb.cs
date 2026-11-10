@@ -228,9 +228,7 @@ public class RockAbsorber : MonoBehaviour
         var kbd = Keyboard.current;
 
         // N: миттєвий перехід на наступну стадію
-        // Якщо в грі є TierTransition, N (перехід на наступний рівень) обробляє він і сам росте камінь на одну стадію під час відльоту.
-        // Тут N працює лише коли TierTransition немає (сцена запущена окремо), інакше стадії перестрибувались би через одну.
-        if (allowStageSkipKey && kbd != null && kbd[stageSkipKey].wasPressedThisFrame && TierTransition.Instance == null)
+        if (allowStageSkipKey && kbd != null && kbd[stageSkipKey].wasPressedThisFrame)
             NextStageNow();
 
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
