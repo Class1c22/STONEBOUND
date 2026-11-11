@@ -488,7 +488,11 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::PlanetGenerator
   world: {fileID: 843798773}
   seed: 4004
+  planetSizeMultiplier: 0.98
+  sizeFromRock: 0
+  planetRadiusInRocks: 12
   bedrockRadius: 200
+  maxBedrockRadius: 300
   crustMax: 10
   treeMargin: 9
   seaHeight: 2.2
@@ -503,7 +507,7 @@ MonoBehaviour:
   waterDrag: 1.5
   friction: 0.6
   pieceGravity: 1
-  pieceGravityMul: 1
+  pieceGravityMul: 1.55
   pieceWaterDrag: 3
   pieceScanInterval: 0.1
   pieceMaxDistanceRadii: 0

@@ -20,8 +20,11 @@ using UnityEngine.Rendering;
 //  * ГРАВІТАЦІЯ радіальна: до центру планети. Діє і на камінь, і на уламки (VoxelPiece).
 //    Для уламків окремі налаштування: множник сили, опір води, частота пошуку нових уламків.
 //
+// РОЗМІР ПЛАНЕТИ:
+//   1) Size From Rock вимкнено: радіус = Bedrock Radius (у вокселях) * Planet Size Multiplier.
+//   2) Size From Rock увімкнено: радіус = Planet Radius In Rocks * радіус каменя цього рівня * Planet Size Multiplier.
+//   Результат обмежується Max Bedrock Radius (кількість вокселів росте як куб радіуса).
 // Усі розміри у ВОКСЕЛЯХ. Висота світу потрібна приблизно 2 * (Bedrock + Crust + TreeMargin).
-// Розмір планети задає Bedrock Radius: кількість вокселів росте як куб радіуса.
 // ВАЖЛИВО: значення в Inspector перекриває значення за замовчуванням у коді.
 public class PlanetGenerator : MonoBehaviour
 {
@@ -29,9 +32,19 @@ public class PlanetGenerator : MonoBehaviour
     public VoxelWorld world;
     public int seed = 4004;
 
-    [Header("Планета (у вокселях)")]
-    [Tooltip("Радіус незламної основи. Менше = менша планета (мінімум 40). Було 200")]
+    [Header("Розмір планети")]
+    [Tooltip("Загальний множник розміру планети (працює в обох режимах). 1 = без змін, 0.5 = удвічі менша, 2 = удвічі більша")]
+    [Range(0.2f, 5f)] public float planetSizeMultiplier = 1f;
+    [Tooltip("Увімкнено: радіус планети рахується від розміру каменя (Planet Radius In Rocks). Вимкнено: береться Bedrock Radius")]
+    public bool sizeFromRock = false;
+    [Tooltip("Радіус планети в радіусах каменя (лише коли Size From Rock увімкнено). Менше = менша планета, камінь відносно неї більший")]
+    public float planetRadiusInRocks = 12f;
+    [Tooltip("Радіус незламної основи у вокселях (коли Size From Rock вимкнено). Мінімум 40")]
     public int bedrockRadius = 100;
+    [Tooltip("Запобіжник: більше цього радіуса (у вокселях) планета не буде. Кількість вокселів росте як куб радіуса")]
+    public int maxBedrockRadius = 300;
+
+    [Header("Планета (у вокселях)")]
     [Tooltip("Максимальна товщина вокселної кори над основою")]
     public int crustMax = 10;
     [Tooltip("Запас висоти над корою для дерев")]
@@ -145,6 +158,45 @@ public class PlanetGenerator : MonoBehaviour
         }
     }
 
+    // ---------- розмір ----------
+
+    // Камінь для розрахунку розміру: заглушка цієї сцени (вона має правильний розмір рівня).
+    // Перенесений з попереднього рівня камінь живе в DontDestroyOnLoad і ще може мати старий розмір.
+    RockAbsorber PickRockForSize()
+    {
+        RockAbsorber best = null;
+        foreach (var r in FindObjectsByType<RockAbsorber>(FindObjectsSortMode.None))
+        {
+            if (r == null) continue;
+            bool carried = r.gameObject.scene.name == "DontDestroyOnLoad";
+            if (!carried) return r;
+            if (best == null) best = r;
+        }
+        return best;
+    }
+
+    int ComputeBedrockRadius()
+    {
+        float r = bedrockRadius;
+
+        if (sizeFromRock)
+        {
+            RockAbsorber ra = PickRockForSize();
+            if (ra != null && vs > 0f)
+                r = Mathf.Max(0.1f, planetRadiusInRocks) * ra.StartRadius / vs;
+            else
+                Debug.LogWarning("[PlanetGenerator] Size From Rock: камінь не знайдено, беру Bedrock Radius", this);
+        }
+
+        r *= Mathf.Max(0.05f, planetSizeMultiplier);
+        int result = Mathf.Clamp(Mathf.RoundToInt(r), 40, Mathf.Max(40, maxBedrockRadius));
+
+        if (Mathf.RoundToInt(r) > maxBedrockRadius)
+            Debug.LogWarning("[PlanetGenerator] Радіус " + Mathf.RoundToInt(r) + " більший за Max Bedrock Radius, обмежено до " + result, this);
+        Debug.Log("[PlanetGenerator] Радіус основи: " + result + " вокселів (" + (result * vs).ToString("0.0") + " м)", this);
+        return result;
+    }
+
     // ---------- старт ----------
 
     void Start()
@@ -159,7 +211,7 @@ public class PlanetGenerator : MonoBehaviour
         world.voxelGround = false;
 
         vs = world.voxelSize;
-        Rb = Mathf.Max(40, bedrockRadius);
+        Rb = ComputeBedrockRadius();
         B = Mathf.Max(8, blockSize);
         C = new Vector3(0.5f, Rb + crustMax + Mathf.Max(0, treeMargin) + 2.5f, 0.5f);
 
