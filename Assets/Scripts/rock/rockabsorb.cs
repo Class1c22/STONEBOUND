@@ -3,9 +3,11 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 
 // Повісь на камінь. Тримай E: камінь притягує до себе уламки й шматки, що менші за нього.
-// Всмоктані фігури прилипають до поверхні як новий шар, а камінь (і його колайдер) росте.
-// Кнопка R (скрипт RockBlast) віддає частину набраного: камінь меншає, а шматки розлітаються.
-// Нижче початку поточної стадії камінь не меншає: на межі стадії R просто нічого не робить.
+// Всмоктані фігури прилипають до поверхні як новий шар. Під час рівня камінь НЕ росте:
+// об'єм лише накопичується. Розмір змінюється тільки на переході (TierTransition -> SetSizeRatio)
+// і при вході в нову сцену (SetBaseScale).
+// Кнопка R (скрипт RockBlast) віддає частину набраного: шматки розлітаються.
+// Нижче початку поточної стадії об'єм не падає: на межі стадії R просто нічого не робить.
 // Кнопка N: камінь миттєво переходить на наступну стадію.
 [RequireComponent(typeof(Rigidbody), typeof(SphereCollider))]
 public class RockAbsorber : MonoBehaviour
@@ -17,43 +19,24 @@ public class RockAbsorber : MonoBehaviour
     public float pullAcceleration = 60f;
     [Tooltip("Найбільша фігура відносно об'єму каменя (0.35 = до 35%)")]
     public float maxSizeRatio = 0.35f;
+    [Tooltip("Скільки найближчих колайдерів обробляється за один крок фізики")]
+    public int suckBufferSize = 2048;
 
     [Header("Розмір каменя на цьому рівні")]
     [Tooltip("Множник розміру каменя на цьому рівні відносно каменя 1-го рівня (1 = як на 1 рівні, 2 = удвічі більший радіус). " +
              "Ставиться на камені-заглушці КОЖНОЇ сцени: при переході камінь отримує розмір із заглушки нової сцени. " +
              "Стадії (Камінь, Валун, Скеля…) рахуються вже відносно цього розміру")]
     public float levelScale = 1f;
-    [Tooltip("Приріст об'єму від уламків множиться на Level Scale³, щоб на великому рівні камінь ріс у тому ж ВІДНОСНОМУ темпі, що й на 1 рівні " +
-             "(інакше більший камінь росте повільніше, бо уламки завжди однакового розміру)")]
+    [Tooltip("Приріст об'єму від уламків множиться на Level Scale³, щоб на великому рівні прогрес ішов у тому ж ВІДНОСНОМУ темпі, що й на 1 рівні")]
     public bool scaleGainWithLevel = true;
 
-    [Header("Ріст")]
-    [Tooltip("Візуальна модель каменя (дочірній об'єкт). Росте разом із колайдером")]
+    [Header("Прогрес")]
+    [Tooltip("Візуальна модель каменя (дочірній об'єкт). Росте разом із колайдером на переході")]
     public Transform coreVisual;
-    [Tooltip("Множник приросту об'єму від поглинутих фігур (більше = камінь росте швидше)")]
-    public float volumeGain = 1.5f;
-    [Tooltip("Швидкість плавного росту, метрів за секунду")]
-    public float growSpeed = 0.6f;
-    [Tooltip("Швидкість зменшення після викиду (кнопка R), метрів за секунду")]
-    public float shrinkSpeed = 6f;
+    [Tooltip("Множник приросту об'єму від поглинутих фігур (більше = перехід швидший, менше = треба більше уламків)")]
+    public float volumeGain = 0.4f;
     [Tooltip("Скільки фігур одночасно лишається видимими на поверхні (старі зникають, об'єм лишається)")]
     public int maxAttached = 300;
-
-    [Header("Ріст за ярусами")]
-    [Tooltip("Увімкнено: під час рівня камінь НЕ росте (розмір фіксований), об'єм лише накопичується. Камінь виростає одразу, коли досягнуто порогу наступної стадії (це робить TierTransition під час відльоту камери)")]
-    public bool growOnlyOnTierUp = true;
-
-    [Tooltip("На ОСТАННІЙ стадії далі переходу немає, тому камінь росте плавно від з'їденого (як при вимкненому Grow Only On Tier Up). " +
-             "Інакше на останньому рівні він ніколи не росте")]
-    public bool growOnLastStage = true;
-    [Tooltip("З якої стадії (нумерація з 0: 3 = Скеля = 4 рівень) приріст від уламків росте разом з розміром каменя. " +
-             "Без цього великий камінь майже не росте: об'єм росте як куб радіуса, а уламок дає фіксований приріст")]
-    public int lateGrowthFromStage = 3;
-    [Tooltip("Приріст множиться на (об'єм / стартовий об'єм) у цьому степені. 0 = вимкнено, 1 = темп росте разом з об'ємом " +
-             "(темп стадій приблизно вирівнюється), 0.5 = м'якше")]
-    [Range(0f, 1.5f)] public float lateGrowthExponent = 1f;
-    [Tooltip("Стеля множника пізнього росту (захист від надто швидкого росту)")]
-    public float maxLateGrowthFactor = 200f;
 
     [Header("Перехід на наступну стадію (кнопка N)")]
     [Tooltip("Кнопка N миттєво піднімає камінь на наступну стадію")]
@@ -63,8 +46,8 @@ public class RockAbsorber : MonoBehaviour
     [Header("Стадії розміру (за зростанням radiusRatio)")]
     public List<RockStage> stages = DefaultStages();
 
-    // Стандартні стадії. Радіус росте як корінь з об'єму: об'єм у стартових = radiusRatio^3.
-    // Щоб підняти стадію, треба з'їсти (radiusRatio^3 - 1) / volumeGain стартових об'ємів.
+    // Стандартні стадії. Об'єм у стартових = radiusRatio^3.
+    // Щоб підняти стадію, треба набрати (radiusRatio^3 - 1) / volumeGain стартових об'ємів (з поправкою на absorbCostMultiplier).
     public static List<RockStage> DefaultStages()
     {
         return new List<RockStage>
@@ -87,9 +70,9 @@ public class RockAbsorber : MonoBehaviour
 #endif
     }
 
-    [Tooltip("Якщо вимкнути, стадія не падає після R (тримається по найбільшому досягнутому розміру)")]
+    [Tooltip("Якщо вимкнути, стадія не падає (тримається по найбільшому досягнутому розміру)")]
     public bool stageCanDrop = true;
-    [Tooltip("Увімкнено: R віддає лише те, що набрано понад початок поточної стадії. Камінь не падає на попередню стадію, а на межі стадії R не діє")]
+    [Tooltip("Увімкнено: R віддає лише те, що набрано понад початок поточної стадії. На межі стадії R не діє")]
     public bool stageFloorOnBlast = true;
     [Tooltip("Показати стадію у куті екрана (Game view) і писати зміну стадії в Console")]
     public bool showDebug = true;
@@ -114,13 +97,12 @@ public class RockAbsorber : MonoBehaviour
     public float DestroyRadiusMultiplier => Cur.destroyRadiusMultiplier;
     // Скільки шматків треба на поточній стадії (більша стадія = більше шматків для того ж приросту об'єму)
     public float AbsorbCostMultiplier => Mathf.Max(0.1f, Cur.absorbCostMultiplier);
-    public float SizeRatio => currentRadius / startRadius;          // відносно розміру на ЦЬОМУ рівні
+    public float SizeRatio => currentRadius / startRadius;               // відносно розміру на ЦЬОМУ рівні
     public float ScaleFromOriginal => currentRadius / origStartRadius;   // відносно каменя 1-го рівня (з урахуванням Level Scale)
     public float StartRadius => startRadius;
 
     // Скільки об'єму набрано, виражено як «радіус відносно стартового» (те саме, що radiusRatio стадій)
     public float VolumeRatio => Mathf.Pow(volume / startVolume, 1f / 3f);
-    float ProgressRatio => growOnlyOnTierUp ? VolumeRatio : SizeRatio;
 
     // Найвища стадія, поріг якої вже набрано за об'ємом (може бути вища за поточну Stage, поки камінь ще не виріс)
     public int ReachedStage
@@ -137,7 +119,7 @@ public class RockAbsorber : MonoBehaviour
     }
 
     // true: об'єму вже досить для наступної стадії, але камінь ще не виріс (час переходу на новий рівень)
-    public bool CanTierUp => growOnlyOnTierUp && stages != null && Stage < stages.Count - 1 && ReachedStage > Stage;
+    public bool CanTierUp => stages != null && Stage < stages.Count - 1 && ReachedStage > Stage;
 
     // Розмір (radiusRatio) наступної стадії; на останній повертає поточний
     public float NextStageRatio => stages != null && Stage < stages.Count - 1 ? stages[Stage + 1].radiusRatio : SizeRatio;
@@ -149,7 +131,7 @@ public class RockAbsorber : MonoBehaviour
         {
             if (stages == null || Stage >= stages.Count - 1) return 1f;
             float a = stages[Stage].radiusRatio, b = stages[Stage + 1].radiusRatio;
-            return Mathf.InverseLerp(a, b, ProgressRatio);
+            return Mathf.InverseLerp(a, b, VolumeRatio);
         }
     }
 
@@ -158,15 +140,16 @@ public class RockAbsorber : MonoBehaviour
 
     Rigidbody rb;
     SphereCollider col;
-    float startRadius, currentRadius, targetRadius;
+    float startRadius, currentRadius;
     float origStartRadius;       // радіус каменя 1-го рівня (не змінюється)
     float baseScale = 1f;        // поточний Level Scale, що вже застосовано
     float startMass, volume, startVolume;
     Vector3 coreBaseScale, coreBaseLocalPos;
     float baseCameraDistance;
 
-    readonly Collider[] buffer = new Collider[256];
+    Collider[] buffer;
     readonly List<Transform> attached = new List<Transform>();
+    readonly HashSet<Absorbable> seen = new HashSet<Absorbable>();
 
     Vector3 Center => col.transform.TransformPoint(col.center);
 
@@ -180,10 +163,11 @@ public class RockAbsorber : MonoBehaviour
     {
         rb = GetComponent<Rigidbody>();
         col = GetComponent<SphereCollider>();
+        buffer = new Collider[Mathf.Max(256, suckBufferSize)];
 
         startRadius = col.radius * MaxScale();
         origStartRadius = startRadius;
-        currentRadius = targetRadius = startRadius;
+        currentRadius = startRadius;
         startMass = rb.mass;
         volume = startVolume = 4f / 3f * Mathf.PI * startRadius * startRadius * startRadius;
 
@@ -213,7 +197,6 @@ public class RockAbsorber : MonoBehaviour
         baseScale = scale;
         startRadius *= k;
         currentRadius *= k;
-        targetRadius *= k;
         float k3 = k * k * k;
         startVolume *= k3;
         volume *= k3;
@@ -232,20 +215,9 @@ public class RockAbsorber : MonoBehaviour
             NextStageNow();
 
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
-        // тест росту: G додає 30% поточного об'єму (у релізній збірці цього коду немає)
+        // тест прогресу: G додає 30% поточного об'єму (у релізній збірці цього коду немає)
         if (kbd != null && kbd.gKey.wasPressedThisFrame) DebugGrow(0.3f);
 #endif
-        // плавна зміна розміру колайдера (росте повільно, меншає швидко)
-        if (!Mathf.Approximately(currentRadius, targetRadius))
-        {
-            float prev = currentRadius;
-            float speed = currentRadius < targetRadius ? growSpeed : shrinkSpeed;
-            currentRadius = Mathf.MoveTowards(currentRadius, targetRadius, speed * Time.deltaTime);
-            ApplySize();
-
-            // камінь меншає: шматки на поверхні стискаються разом із ним, а не висять у повітрі
-            if (currentRadius < prev) PullAttachedIn(currentRadius / prev);
-        }
     }
 
     // Миттєво піднімає камінь на наступну стадію (розмір і об'єм ставляться одразу).
@@ -261,21 +233,14 @@ public class RockAbsorber : MonoBehaviour
         return true;
     }
 
-    // Радіус слідує за об'ємом лише коли ріст за ярусами вимкнено.
-    // Інакше розмір фіксований, доки TierTransition не викличе SetSizeRatio.
-    void RefreshTarget()
-    {
-        bool lastStage = stages != null && stages.Count > 0 && Stage >= stages.Count - 1;
-        if (growOnlyOnTierUp && !(growOnLastStage && lastStage)) return;
-        targetRadius = Mathf.Pow(volume * 3f / (4f * Mathf.PI), 1f / 3f);
-    }
-
-    // Миттєво ставить розмір (радіус відносно стартового). Об'єм підтягується до розміру, якщо камінь виріс.
+    // Миттєво ставить розмір (радіус відносно стартового). Об'єм синхронізується з розміром:
+    // надлишок над порогом згоряє, щоб після переходу камінь не запускав наступний перехід сам.
+    // Це ЄДИНЕ місце, де камінь росте під час гри.
     public void SetSizeRatio(float ratio)
     {
         ratio = Mathf.Max(ratio, 0.01f);
-        currentRadius = targetRadius = startRadius * ratio;
-        volume = Mathf.Max(volume, startVolume * ratio * ratio * ratio);
+        currentRadius = startRadius * ratio;
+        volume = startVolume * ratio * ratio * ratio;
         ApplySize();
     }
 
@@ -292,7 +257,6 @@ public class RockAbsorber : MonoBehaviour
     public void DebugGrow(float fraction)
     {
         volume += volume * fraction;
-        RefreshTarget();
     }
 
     void PullAttachedIn(float ratio)
@@ -365,7 +329,7 @@ public class RockAbsorber : MonoBehaviour
         }
 
         string text = $"Стадія {Stage + 1}/{StageCount}: {StageName}\n" +
-                      $"Розмір x{SizeRatio:0.00} | об'єм {volume:0.0}\n" +
+                      $"Прогрес {StageProgress * 100f:0}% | об'єм {volume:0.0}\n" +
                       $"Швидкість x{SpeedMultiplier:0.00} | сила x{ForceMultiplier:0.00} | радіус удару x{DestroyRadiusMultiplier:0.00}";
 
         // темна підкладка, щоб було видно на будь-якому фоні
@@ -383,14 +347,20 @@ public class RockAbsorber : MonoBehaviour
         float range = suckRadius * (currentRadius / origStartRadius);
         int n = Physics.OverlapSphereNonAlloc(center, range, buffer, ~0, QueryTriggerInteraction.Ignore);
 
+        // обробляємо кожен Absorbable один раз (в уламка може бути кілька колайдерів)
+        seen.Clear();
+
         for (int i = 0; i < n; i++)
         {
             Collider c = buffer[i];
+            if (c == null) continue;
             var a = c.GetComponentInParent<Absorbable>();
             if (a == null || a.attached) continue;
+            if (!seen.Add(a)) continue;
             if (a.volume > volume * maxSizeRatio) continue;   // надто велика фігура поки що
 
             Rigidbody b = a.GetComponent<Rigidbody>();
+            if (b == null) b = a.GetComponentInParent<Rigidbody>();
             if (b == null) continue;
 
             Vector3 to = center - b.worldCenterOfMass;
@@ -403,7 +373,11 @@ public class RockAbsorber : MonoBehaviour
                 continue;
             }
 
-            Vector3 wanted = to / dist * pullSpeed;
+            // уламок міг заснути або бути кінематичним: будимо, інакше він не полетить
+            if (b.isKinematic) b.isKinematic = false;
+            if (b.IsSleeping()) b.WakeUp();
+
+            Vector3 wanted = to / Mathf.Max(dist, 1e-4f) * pullSpeed;
             b.linearVelocity = Vector3.MoveTowards(b.linearVelocity, wanted, pullAcceleration * Time.fixedDeltaTime);
         }
     }
@@ -422,7 +396,7 @@ public class RockAbsorber : MonoBehaviour
         var piece = a.GetComponent<VoxelPiece>();
         if (piece != null) piece.OnAbsorbed();
 
-        foreach (var c in a.GetComponents<Collider>()) Destroy(c);
+        foreach (var c in a.GetComponentsInChildren<Collider>()) Destroy(c);
         Destroy(b);
 
         attached.Add(t);
@@ -432,16 +406,12 @@ public class RockAbsorber : MonoBehaviour
             attached.RemoveAt(0);
         }
 
-        // камінь росте
+        // прогрес рівня: камінь НЕ росте, лише накопичується об'єм
         float gainScale = scaleGainWithLevel ? baseScale * baseScale * baseScale : 1f;
-        float lateFactor = 1f;
-        if (lateGrowthExponent > 0f && Stage >= lateGrowthFromStage && startVolume > 0f)
-            lateFactor = Mathf.Min(Mathf.Max(1f, maxLateGrowthFactor), Mathf.Pow(Mathf.Max(1f, volume / startVolume), lateGrowthExponent));
-        volume += a.volume * volumeGain / AbsorbCostMultiplier * gainScale * lateFactor;
-        RefreshTarget();
+        volume += a.volume * volumeGain / AbsorbCostMultiplier * gainScale;
     }
 
-    // Об'єм, нижче якого R не зменшує камінь: початок найвищої досягнутої стадії (за об'ємом).
+    // Об'єм, нижче якого R не зменшує прогрес: початок найвищої досягнутої стадії (за об'ємом).
     // Для першої стадії це стартовий об'єм.
     float BlastFloorVolume()
     {
@@ -457,8 +427,7 @@ public class RockAbsorber : MonoBehaviour
     }
 
     // Віддає частку набраного понад початок поточної стадії (fraction = 0.5 -> половину цього надлишку).
-    // Камінь меншає, але не нижче початку своєї стадії, а відповідна частка прикріплених шматків
-    // відв'язується від каменя і потрапляє в released.
+    // Відповідна частка прикріплених шматків відв'язується від каменя і потрапляє в released.
     // Повертає false, якщо камінь уже на межі стадії і віддавати нічого.
     public bool ShedFraction(float fraction, List<Transform> released)
     {
@@ -472,7 +441,6 @@ public class RockAbsorber : MonoBehaviour
         float shed = excess * fraction;
 
         volume -= shed;
-        RefreshTarget();
 
         // шматків відв'язуємо стільки ж, яку частку всього набраного об'єму віддали
         float pieceFraction = totalGained > 1e-6f ? Mathf.Clamp01(shed / totalGained) : fraction;

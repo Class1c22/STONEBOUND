@@ -12585,47 +12585,41 @@ MonoBehaviour:
   pullSpeed: 14
   pullAcceleration: 60
   maxSizeRatio: 0.35
+  suckBufferSize: 2048
   levelScale: 1
-  scaleGainWithLevel: 1
+  scaleGainWithLevel: 0
   coreVisual: {fileID: 1961571802}
-  volumeGain: 0.3
-  growSpeed: 5
-  shrinkSpeed: 6
+  volumeGain: 0.31
   maxAttached: 300
-  growOnlyOnTierUp: 1
-  growOnLastStage: 1
-  lateGrowthFromStage: 3
-  lateGrowthExponent: 1
-  maxLateGrowthFactor: 200
   allowStageSkipKey: 1
   stageSkipKey: 28
   stages:
   - name: "\u041A\u0430\u043C\u0456\u043D\u044C"
-    radiusRatio: 1
-    speedMultiplier: 1.2
-    forceMultiplier: 2
-    destroyRadiusMultiplier: 1
-    absorbCostMultiplier: 1
-  - name: "\u0412\u0430\u043B\u0443\u043D"
-    radiusRatio: 2
-    speedMultiplier: 1.25
-    forceMultiplier: 1.15
-    destroyRadiusMultiplier: 1
-    absorbCostMultiplier: 1
-  - name: "\u0411\u0440\u0438\u043B\u0430"
-    radiusRatio: 2.5
-    speedMultiplier: 1.2
-    forceMultiplier: 1.3
-    destroyRadiusMultiplier: 1
-    absorbCostMultiplier: 1
-  - name: "\u0421\u043A\u0435\u043B\u044F"
-    radiusRatio: 3
-    speedMultiplier: 1.3
+    radiusRatio: 0.5
+    speedMultiplier: 1
     forceMultiplier: 1
     destroyRadiusMultiplier: 1
-    absorbCostMultiplier: 1
+    absorbCostMultiplier: 50
+  - name: "\u0412\u0430\u043B\u0443\u043D"
+    radiusRatio: 1.4
+    speedMultiplier: 1.1
+    forceMultiplier: 1.15
+    destroyRadiusMultiplier: 1.2
+    absorbCostMultiplier: 1.5
+  - name: "\u0411\u0440\u0438\u043B\u0430"
+    radiusRatio: 1.9
+    speedMultiplier: 1.2
+    forceMultiplier: 1.3
+    destroyRadiusMultiplier: 1.45
+    absorbCostMultiplier: 2
+  - name: "\u0421\u043A\u0435\u043B\u044F"
+    radiusRatio: 2.6
+    speedMultiplier: 1.3
+    forceMultiplier: 1.5
+    destroyRadiusMultiplier: 1.75
+    absorbCostMultiplier: 2.75
   - name: "\u0413\u043E\u0440\u0430"
-    radiusRatio: 5
+    radiusRatio: 3.5
     speedMultiplier: 1.4
     forceMultiplier: 1.7
     destroyRadiusMultiplier: 2.1

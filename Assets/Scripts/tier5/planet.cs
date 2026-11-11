@@ -21,7 +21,8 @@ using UnityEngine.Rendering;
 //    Для уламків окремі налаштування: множник сили, опір води, частота пошуку нових уламків.
 //
 // Усі розміри у ВОКСЕЛЯХ. Висота світу потрібна приблизно 2 * (Bedrock + Crust + TreeMargin).
-// Планета з Bedrock 200 це кілька мільйонів вокселів: якщо важко, зменш bedrockRadius.
+// Розмір планети задає Bedrock Radius: кількість вокселів росте як куб радіуса.
+// ВАЖЛИВО: значення в Inspector перекриває значення за замовчуванням у коді.
 public class PlanetGenerator : MonoBehaviour
 {
     [Header("Зв'язки")]
@@ -29,8 +30,8 @@ public class PlanetGenerator : MonoBehaviour
     public int seed = 4004;
 
     [Header("Планета (у вокселях)")]
-    [Tooltip("Радіус незламної основи")]
-    public int bedrockRadius = 200;
+    [Tooltip("Радіус незламної основи. Менше = менша планета (мінімум 40). Було 200")]
+    public int bedrockRadius = 100;
     [Tooltip("Максимальна товщина вокселної кори над основою")]
     public int crustMax = 10;
     [Tooltip("Запас висоти над корою для дерев")]
@@ -315,8 +316,12 @@ public class PlanetGenerator : MonoBehaviour
         tex.SetPixels(px);
         tex.Apply(true);
 
-        if (m.HasProperty("_BaseMap")) { m.SetTexture("_BaseMap", tex); m.SetTextureScale("_BaseMap", new Vector2(140f, 70f)); }
-        if (m.HasProperty("_MainTex")) { m.SetTexture("_MainTex", tex); m.SetTextureScale("_MainTex", new Vector2(140f, 70f)); }
+        // тайлінг росте разом із радіусом, щоб розмір «зерна» не залежав від розміру планети (було 140x70 при радіусі 200)
+        float tileU = Rb * 0.7f;
+        Vector2 tiling = new Vector2(tileU, tileU * 0.5f);
+
+        if (m.HasProperty("_BaseMap")) { m.SetTexture("_BaseMap", tex); m.SetTextureScale("_BaseMap", tiling); }
+        if (m.HasProperty("_MainTex")) { m.SetTexture("_MainTex", tex); m.SetTextureScale("_MainTex", tiling); }
         if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", 0f);
         if (m.HasProperty("_Metallic")) m.SetFloat("_Metallic", 0f);
         return m;
