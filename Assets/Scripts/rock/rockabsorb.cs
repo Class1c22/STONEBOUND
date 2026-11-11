@@ -386,36 +386,6 @@ public class RockAbsorber : MonoBehaviour
         }
     }
 
-    // Колір фігури: спершу кольори вершин меша (середній), потім колір матеріалу
-    static Color? GetPieceColor(Transform t)
-    {
-        var mf = t.GetComponentInChildren<MeshFilter>();
-        if (mf != null && mf.sharedMesh != null && mf.sharedMesh.isReadable)
-        {
-            Color[] cols = mf.sharedMesh.colors;
-            if (cols != null && cols.Length > 0)
-            {
-                Vector4 sum = Vector4.zero;
-                for (int i = 0; i < cols.Length; i++) sum += (Vector4)cols[i];
-                sum /= cols.Length;
-                return new Color(sum.x, sum.y, sum.z, 1f);
-            }
-        }
-
-        var r = t.GetComponentInChildren<Renderer>();
-        if (r != null && r.sharedMaterial != null)
-        {
-            Material m = r.sharedMaterial;
-            Color c;
-            if (m.HasProperty("_BaseColor")) c = m.GetColor("_BaseColor");
-            else if (m.HasProperty("_Color")) c = m.GetColor("_Color");
-            else return null;
-            c.a = 1f;
-            return c;
-        }
-        return null;
-    }
-
     void Attach(Absorbable a, Rigidbody b, Vector3 center)
     {
         a.attached = true;
@@ -427,11 +397,16 @@ public class RockAbsorber : MonoBehaviour
         t.position = center + dir * currentRadius;
         t.SetParent(transform, true);
 
+        // колір для бару беремо ДО OnAbsorbed (воно обнуляє вокселі шматка)
+        Color? pieceColor = null;
         var piece = a.GetComponent<VoxelPiece>();
-        if (piece != null) piece.OnAbsorbed();
+        if (piece != null)
+        {
+            if (piece.TryGetColor(out Color pc)) pieceColor = pc;
+            piece.OnAbsorbed();
+        }
+        else if (a.hasColor) pieceColor = a.color;
 
-        // колір шматка для бару (до того, як щось знищується)
-        Color? pieceColor = GetPieceColor(a.transform);
         if (pieceColor.HasValue) PieceAbsorbed?.Invoke(pieceColor.Value);
 
         foreach (var c in a.GetComponentsInChildren<Collider>()) Destroy(c);

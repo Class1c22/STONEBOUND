@@ -92,6 +92,26 @@ public class VoxelPiece : MonoBehaviour
         absorbable.volume = voxels.Count * vs * vs * vs;
     }
 
+    // Колір випадкового вокселя шматка: багато шматків разом дають ті самі пропорції кольорів, що й у світі.
+    // Викликати ДО OnAbsorbed (воно обнуляє вокселі).
+    public bool TryGetColor(out Color color)
+    {
+        color = Color.white;
+        if (voxels == null || voxels.Count == 0) return false;
+
+        int target = Random.Range(0, voxels.Count);
+        int i = 0;
+        foreach (var kv in voxels)
+        {
+            if (i++ == target)
+            {
+                color = world.GetColor(kv.Value);
+                return true;
+            }
+        }
+        return false;
+    }
+
     // викликається, коли камінь всмоктав шматок: він більше не ламається сам
     public void OnAbsorbed()
     {

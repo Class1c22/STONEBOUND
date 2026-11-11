@@ -719,8 +719,14 @@ public class VoxelWorld : MonoBehaviour
                                + inheritVelocity * 0.3f + Random.insideUnitSphere;
             d.angularVelocity = Random.insideUnitSphere * 5f;
 
-            debrisBlock.SetColor(BaseColorId, GetColor(v.id));
+            Color32 col = GetColor(v.id);
+            debrisBlock.SetColor(BaseColorId, col);
             d.GetComponent<Renderer>().SetPropertyBlock(debrisBlock);
+
+            // запам'ятовуємо колір уламка, щоб камінь міг передати його в бар
+            var ab = d.GetComponent<Absorbable>();
+            ab.color = col;
+            ab.hasColor = true;
         }
     }
 

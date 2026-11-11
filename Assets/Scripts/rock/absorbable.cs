@@ -7,4 +7,8 @@ public class Absorbable : MonoBehaviour
     public float volume = 0.01f;
 
     [HideInInspector] public bool attached;
+
+    // Колір уламка (для бару). Ставиться при створенні уламка
+    [HideInInspector] public bool hasColor;
+    [HideInInspector] public Color color;
 }
