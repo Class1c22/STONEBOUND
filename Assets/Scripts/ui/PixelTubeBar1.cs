@@ -1,9 +1,11 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
 // Повісь на Image з картинкою трубки (твій спрайт). Усередині трубки з'являються піксельні квадратики:
 // з прогресом стадії (RockAbsorber.StageProgress) нові пікселі падають зверху й складаються рядами.
+// Колір кожного пікселя = колір фігури, яку камінь всмоктав (RockAbsorber.PieceAbsorbed).
 // Після R верхні пікселі зникають. На переході на нову стадію трубка висипається і наповнюється заново.
 //
 // Налаштування:
@@ -28,7 +30,12 @@ public class PixelTubeBar : MonoBehaviour
     public int padTop = 10;
     public int padBottom = 10;
 
-    [Tooltip("Кольори пікселів (вибираються випадково). Порожньо = стандартні кольори уламків")]
+    [Header("Кольори")]
+    [Tooltip("Пікселі беруть колір всмоктаних фігур. Вимкнено: випадкові кольори з палітри")]
+    public bool useAbsorbedColors = true;
+    [Tooltip("Скільки кольорів максимум чекає в черзі")]
+    public int maxQueuedColors = 64;
+    [Tooltip("Кольори пікселів (вибираються випадково, коли немає кольору всмоктаної фігури). Порожньо = стандартні кольори уламків")]
     public Color[] palette;
     [Tooltip("Випадкова зміна яскравості пікселя")]
     [Range(0f, 0.3f)] public float brightnessJitter = 0.08f;
@@ -64,12 +71,16 @@ public class PixelTubeBar : MonoBehaviour
     Px[][] grid;
     readonly List<Px> pixels = new List<Px>();
     readonly List<int> candidates = new List<int>();
+    readonly Queue<Color> colorQueue = new Queue<Color>();
+    RockAbsorber subscribedRock;
 
     Vector2 lastRect;
     int lastColumns;
     int lastPadL, lastPadR, lastPadT, lastPadB;
     float spawnTimer, findTimer;
     int lastStage = -1;
+    float baseline;   // прогрес каменя на початку рівня: від нього бар рахується з нуля
+    int lastScene = -1;
     bool synced;   // чи вже виставлено початковий стан без анімації
 
     void Awake()
@@ -87,6 +98,24 @@ public class PixelTubeBar : MonoBehaviour
     void OnEnable()
     {
         lastRect = Vector2.zero;   // примусово перебудувати при вмиканні
+    }
+
+    void OnDisable()
+    {
+        Unsubscribe();
+    }
+
+    void Unsubscribe()
+    {
+        if (subscribedRock != null) subscribedRock.PieceAbsorbed -= OnPieceAbsorbed;
+        subscribedRock = null;
+    }
+
+    void OnPieceAbsorbed(Color c)
+    {
+        if (!useAbsorbedColors) return;
+        colorQueue.Enqueue(new Color(c.r, c.g, c.b, 1f));
+        while (colorQueue.Count > maxQueuedColors) colorQueue.Dequeue();
     }
 
     [ContextMenu("Rebuild")]
@@ -142,17 +171,47 @@ public class PixelTubeBar : MonoBehaviour
             }
         }
 
+        // підписка на події каменя (камінь може змінитись після завантаження сцени)
+        if (rock != subscribedRock)
+        {
+            Unsubscribe();
+            colorQueue.Clear();
+            if (rock != null)
+            {
+                rock.PieceAbsorbed += OnPieceAbsorbed;
+                subscribedRock = rock;
+            }
+        }
+
         if (rock != null && cells > 0)
         {
+            // новий рівень (сцена): бар починається порожнім
+            int sceneId = SceneManager.GetActiveScene().handle;
+            if (sceneId != lastScene)
+            {
+                lastScene = sceneId;
+                lastStage = rock.Stage;
+                baseline = rock.StageProgress;
+                colorQueue.Clear();
+                if (drainOnStageChange) DrainAll(); else ClearAll();
+            }
+
             // нова стадія: трубку скидаємо
             if (lastStage < 0) lastStage = rock.Stage;
             if (rock.Stage != lastStage)
             {
                 lastStage = rock.Stage;
+                baseline = 0f;
+                colorQueue.Clear();
                 if (drainOnStageChange) DrainAll(); else ClearAll();
             }
 
-            int wanted = Mathf.Clamp(Mathf.FloorToInt(rock.StageProgress * cells + 0.0001f), 0, cells);
+            // прогрес упав (R): точка відліку не може бути вище за поточний прогрес
+            float prog = rock.StageProgress;
+            if (prog < baseline) baseline = prog;
+            float shown = baseline >= 1f ? 0f : (prog - baseline) / (1f - baseline);
+
+            int wanted = Mathf.Clamp(Mathf.FloorToInt(shown * cells + 0.0001f), 0, cells);
 
             // перший запуск (або після Rebuild): початковий стан ставимо одразу, без падіння
             if (!synced)
@@ -219,7 +278,8 @@ public class PixelTubeBar : MonoBehaviour
         rt.sizeDelta = new Vector2(size, size);
 
         var img = go.GetComponent<Image>();
-        img.color = PickColor();
+        // колір всмоктаної фігури з черги; якщо черга порожня (або стартовий стан) - випадковий з палітри
+        img.color = (!instant && colorQueue.Count > 0) ? colorQueue.Dequeue() : PickColor();
         img.raycastTarget = false;
         img.enabled = false;   // покажемо, коли піксель буде всередині трубки
 
