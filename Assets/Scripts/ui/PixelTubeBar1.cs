@@ -10,15 +10,16 @@ using UnityEngine.UI;
 // тож пропорції кольорів у барі збігаються з тим, що їв камінь.
 // Після R верхні пікселі зникають. На переході на нову стадію або новий рівень трубка висипається і наповнюється заново.
 //
-// Перехід між сценами: бар сам робить свій кореневий Canvas безсмертним (DontDestroyOnLoad),
-// а дублікат бару з нової сцени видаляє. Камінь, вимкнений на час переходу (TierTransition.Freeze), не губиться.
+// Перехід між сценами: бар робить безсмертним свій КОРЕНЕВИЙ об'єкт ієрархії (transform.root),
+// навіть якщо Canvas лежить глибоко (наприклад ui -> interface -> bar). Дублікат бару з нової сцени
+// видаляється разом зі своїм Canvas. Камінь, вимкнений на час переходу (TierTransition.Freeze), не губиться.
 // Новий рівень розпізнається за: завантаженням/зміною активної сцени, іншим екземпляром каменя,
 // зміною Level Scale каменя, подією TierTransition.Revealing.
 //
 // Налаштування:
 //  1) Canvas (Screen Space - Overlay). На ньому Image зі спрайтом трубки (Filter Mode: Point, Compression: None).
 //  2) Повісь цей скрипт на цей Image. Підбери Pad Left/Right/Top/Bottom, щоб пікселі лягали рівно всередину контуру.
-//  3) Canvas має бути в корені сцени або дитиною ROOT з TierTransition. Не став його під transitionUI (він вимикається після переходу).
+//  3) Canvas може лежати де завгодно: бар сам перенесе свій кореневий об'єкт у наступну сцену.
 // Зміни Columns/Pad у грі застосовуються самі (або ПКМ по компоненту -> Rebuild).
 [RequireComponent(typeof(RectTransform))]
 public class PixelTubeBar : MonoBehaviour
@@ -30,7 +31,7 @@ public class PixelTubeBar : MonoBehaviour
     public RockAbsorber rock;
 
     [Header("Перехід між сценами")]
-    [Tooltip("Робити кореневий Canvas бару безсмертним і видаляти дублікат бару з нової сцени")]
+    [Tooltip("Робити кореневий об'єкт бару безсмертним (переживає завантаження сцен) і видаляти дублікат бару з нової сцени")]
     public bool persistAcrossScenes = true;
 
     [Header("Пікселі")]
@@ -120,10 +121,10 @@ public class PixelTubeBar : MonoBehaviour
             }
             instance = this;
 
-            Canvas canvas = GetComponentInParent<Canvas>();
-            GameObject rootGo = canvas != null ? canvas.rootCanvas.gameObject : gameObject;
-            if (rootGo.transform.parent == null) DontDestroyOnLoad(rootGo);
-            // якщо Canvas лежить в ієрархії TierTransition ROOT, він і так переживає сцени
+            // Робимо безсмертним найвищого предка: інакше, якщо Canvas лежить усередині іншого об'єкта
+            // (ui -> interface -> bar), цей батько знищується зі старою сценою разом із баром.
+            GameObject top = transform.root.gameObject;
+            if (top.scene.name != "DontDestroyOnLoad") DontDestroyOnLoad(top);
         }
 
         root = (RectTransform)transform;
