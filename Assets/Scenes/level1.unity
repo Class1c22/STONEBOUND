@@ -12508,8 +12508,8 @@ MonoBehaviour:
   rock: {fileID: 0}
   persistAcrossScenes: 1
   columns: 4
-  padLeft: 30
-  padRight: 33
+  padLeft: 35
+  padRight: 40
   padTop: 20
   padBottom: 20
   useAbsorbedColors: 1
