@@ -12519,9 +12519,12 @@ MonoBehaviour:
   brightnessJitter: 0.08
   gravity: 3
   spawnInterval: 0.04
+  maxCatchUpBoost: 6
   spawnHeightPixels: 3
   drainOnStageChange: 1
   drainRowDelay: 0.012
+  fillBeforeDrain: 1
+  levelCompleteThreshold: 0.9
 --- !u!114 &1847677153
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -12887,7 +12890,7 @@ MonoBehaviour:
     speedMultiplier: 1.1
     forceMultiplier: 1.15
     destroyRadiusMultiplier: 1.2
-    absorbCostMultiplier: 1.5
+    absorbCostMultiplier: 10
   - name: "\u0411\u0440\u0438\u043B\u0430"
     radiusRatio: 1.9
     speedMultiplier: 1.2
