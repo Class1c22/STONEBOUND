@@ -5,20 +5,33 @@ using UnityEngine.UI;
 
 // Повісь на Image з картинкою трубки (твій спрайт). Усередині трубки з'являються піксельні квадратики:
 // з прогресом стадії (RockAbsorber.StageProgress) нові пікселі падають зверху й складаються рядами.
-// Колір кожного пікселя = колір фігури, яку камінь всмоктав (RockAbsorber.PieceAbsorbed).
-// Після R верхні пікселі зникають. На переході на нову стадію трубка висипається і наповнюється заново.
+// Колір кожного пікселя = колір фігур, які камінь всмоктав (RockAbsorber.PieceAbsorbed):
+// піксель бере випадковий колір з уламків, всмоктаних після попереднього пікселя,
+// тож пропорції кольорів у барі збігаються з тим, що їв камінь.
+// Після R верхні пікселі зникають. На переході на нову стадію або новий рівень трубка висипається і наповнюється заново.
+//
+// Перехід між сценами: бар сам робить свій кореневий Canvas безсмертним (DontDestroyOnLoad),
+// а дублікат бару з нової сцени видаляє. Камінь, вимкнений на час переходу (TierTransition.Freeze), не губиться.
+// Новий рівень розпізнається за: завантаженням/зміною активної сцени, іншим екземпляром каменя,
+// зміною Level Scale каменя, подією TierTransition.Revealing.
 //
 // Налаштування:
 //  1) Canvas (Screen Space - Overlay). На ньому Image зі спрайтом трубки (Filter Mode: Point, Compression: None).
 //  2) Повісь цей скрипт на цей Image. Підбери Pad Left/Right/Top/Bottom, щоб пікселі лягали рівно всередину контуру.
-//  3) Щоб бар пережив завантаження сцен, постав Canvas у TierTransition -> Persistent UI.
+//  3) Canvas має бути в корені сцени або дитиною ROOT з TierTransition. Не став його під transitionUI (він вимикається після переходу).
 // Зміни Columns/Pad у грі застосовуються самі (або ПКМ по компоненту -> Rebuild).
 [RequireComponent(typeof(RectTransform))]
 public class PixelTubeBar : MonoBehaviour
 {
+    static PixelTubeBar instance;
+
     [Header("Джерело")]
-    [Tooltip("Камінь. Порожньо = знайти самому (шукає, поки не знайде)")]
+    [Tooltip("Камінь. Порожньо = знайти самому (шукає, поки не знайде; після переходу рівня шукає знову)")]
     public RockAbsorber rock;
+
+    [Header("Перехід між сценами")]
+    [Tooltip("Робити кореневий Canvas бару безсмертним і видаляти дублікат бару з нової сцени")]
+    public bool persistAcrossScenes = true;
 
     [Header("Пікселі")]
     [Tooltip("Скільки пікселів у ширину. Розмір піксельного квадратика = внутрішня ширина / це число")]
@@ -33,11 +46,13 @@ public class PixelTubeBar : MonoBehaviour
     [Header("Кольори")]
     [Tooltip("Пікселі беруть колір всмоктаних фігур. Вимкнено: випадкові кольори з палітри")]
     public bool useAbsorbedColors = true;
-    [Tooltip("Скільки кольорів максимум чекає в черзі")]
+    [Tooltip("Скільки кольорів всмоктаних уламків пам'ятається між пікселями")]
     public int maxQueuedColors = 64;
+    [Tooltip("Скільки останніх використаних кольорів лишається в історії (для швидкого падіння багатьох пікселів підряд)")]
+    public int maxHistoryColors = 32;
     [Tooltip("Кольори пікселів (вибираються випадково, коли немає кольору всмоктаної фігури). Порожньо = стандартні кольори уламків")]
     public Color[] palette;
-    [Tooltip("Випадкова зміна яскравості пікселя")]
+    [Tooltip("Випадкова зміна яскравості пікселя (для кольору з палітри; всмоктані кольори беруться точно)")]
     [Range(0f, 0.3f)] public float brightnessJitter = 0.08f;
 
     [Header("Падіння")]
@@ -47,7 +62,7 @@ public class PixelTubeBar : MonoBehaviour
     public float spawnInterval = 0.04f;
     [Tooltip("Звідки падають: над верхом трубки на стільки пікселів (випадково від 0.5 до цього)")]
     public float spawnHeightPixels = 3f;
-    [Tooltip("Коли стадія змінилась, пікселі висипаються вниз. Вимкнено: зникають одразу")]
+    [Tooltip("Коли стадія/рівень змінились, пікселі висипаються вниз. Вимкнено: зникають одразу")]
     public bool drainOnStageChange = true;
     [Tooltip("Затримка висипання між рядами, секунд")]
     public float drainRowDelay = 0.012f;
@@ -71,20 +86,46 @@ public class PixelTubeBar : MonoBehaviour
     Px[][] grid;
     readonly List<Px> pixels = new List<Px>();
     readonly List<int> candidates = new List<int>();
-    readonly Queue<Color> colorQueue = new Queue<Color>();
+    // кольори уламків, всмоктаних після останнього пікселя
+    readonly List<Color> pendingColors = new List<Color>();
+    // останні використані кольори (запасний варіант, якщо нових уламків немає)
+    readonly List<Color> historyColors = new List<Color>();
     RockAbsorber subscribedRock;
+    RockAbsorber trackedRock;   // камінь, для якого вже зроблено скидання рівня
+    TierTransition subscribedTransition;
 
     Vector2 lastRect;
     int lastColumns;
     int lastPadL, lastPadR, lastPadT, lastPadB;
     float spawnTimer, findTimer;
     int lastStage = -1;
+    float lastLevelScale = -1f;
     float baseline;   // прогрес каменя на початку рівня: від нього бар рахується з нуля
     int lastScene = -1;
+    bool levelChangedFlag;   // піднімається подіями завантаження сцени / переходу
     bool synced;   // чи вже виставлено початковий стан без анімації
 
     void Awake()
     {
+        if (persistAcrossScenes)
+        {
+            if (instance != null && instance != this)
+            {
+                // бар уже переїхав із попередньої сцени: цей дублікат (з Canvas нової сцени) не потрібен
+                Canvas dupCanvas = GetComponentInParent<Canvas>();
+                GameObject dup = dupCanvas != null ? dupCanvas.rootCanvas.gameObject : gameObject;
+                Destroy(dup);
+                enabled = false;
+                return;
+            }
+            instance = this;
+
+            Canvas canvas = GetComponentInParent<Canvas>();
+            GameObject rootGo = canvas != null ? canvas.rootCanvas.gameObject : gameObject;
+            if (rootGo.transform.parent == null) DontDestroyOnLoad(rootGo);
+            // якщо Canvas лежить в ієрархії TierTransition ROOT, він і так переживає сцени
+        }
+
         root = (RectTransform)transform;
 
         var go = new GameObject("Pixels", typeof(RectTransform));
@@ -95,14 +136,39 @@ public class PixelTubeBar : MonoBehaviour
         container.pivot = new Vector2(0.5f, 0.5f);
     }
 
+    void OnDestroy()
+    {
+        if (instance == this) instance = null;
+    }
+
     void OnEnable()
     {
         lastRect = Vector2.zero;   // примусово перебудувати при вмиканні
+        SceneManager.sceneLoaded += OnSceneLoaded;
+        SceneManager.activeSceneChanged += OnActiveSceneChanged;
     }
 
     void OnDisable()
     {
+        SceneManager.sceneLoaded -= OnSceneLoaded;
+        SceneManager.activeSceneChanged -= OnActiveSceneChanged;
         Unsubscribe();
+        UnsubscribeTransition();
+    }
+
+    void OnSceneLoaded(Scene s, LoadSceneMode mode)
+    {
+        levelChangedFlag = true;
+    }
+
+    void OnActiveSceneChanged(Scene a, Scene b)
+    {
+        levelChangedFlag = true;
+    }
+
+    void OnTransitionRevealing()
+    {
+        levelChangedFlag = true;
     }
 
     void Unsubscribe()
@@ -111,11 +177,52 @@ public class PixelTubeBar : MonoBehaviour
         subscribedRock = null;
     }
 
+    void UnsubscribeTransition()
+    {
+        if (subscribedTransition != null) subscribedTransition.Revealing -= OnTransitionRevealing;
+        subscribedTransition = null;
+    }
+
     void OnPieceAbsorbed(Color c)
     {
         if (!useAbsorbedColors) return;
-        colorQueue.Enqueue(new Color(c.r, c.g, c.b, 1f));
-        while (colorQueue.Count > maxQueuedColors) colorQueue.Dequeue();
+        pendingColors.Add(new Color(c.r, c.g, c.b, 1f));
+        while (pendingColors.Count > Mathf.Max(1, maxQueuedColors)) pendingColors.RemoveAt(0);
+    }
+
+    void ClearColors()
+    {
+        pendingColors.Clear();
+        historyColors.Clear();
+    }
+
+    // Шукає камінь; перевагу має той, що в активній сцені. Вимкнений компонент теж підходить
+    // (на час переходу TierTransition вимикає RockAbsorber)
+    void FindRock()
+    {
+        var all = FindObjectsByType<RockAbsorber>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+        Scene active = SceneManager.GetActiveScene();
+        RockAbsorber best = null;
+        foreach (var r in all)
+        {
+            if (r == null || !r.gameObject.activeInHierarchy) continue;
+            if (best == null || r.gameObject.scene == active) best = r;
+        }
+        rock = best;
+    }
+
+    // Новий рівень (або новий камінь): бар починається порожнім
+    void ResetForNewLevel()
+    {
+        lastScene = SceneManager.GetActiveScene().handle;
+        lastStage = rock.Stage;
+        lastLevelScale = rock.levelScale;
+        baseline = rock.StageProgress;
+        levelChangedFlag = false;
+        trackedRock = rock;
+        spawnTimer = 0f;
+        ClearColors();
+        if (drainOnStageChange) DrainAll(); else ClearAll();
     }
 
     [ContextMenu("Rebuild")]
@@ -161,21 +268,34 @@ public class PixelTubeBar : MonoBehaviour
 
         if (LayoutChanged()) Rebuild();
 
+        // підписка на перехід між рівнями (Revealing = нова сцена готова)
+        var tt = TierTransition.Instance;
+        if (tt != subscribedTransition)
+        {
+            UnsubscribeTransition();
+            if (tt != null)
+            {
+                tt.Revealing += OnTransitionRevealing;
+                subscribedTransition = tt;
+            }
+        }
+
+        // камінь знищено (Unity-null): шукаємо новий. Вимкнений на час переходу камінь НЕ вважається втраченим
         if (rock == null)
         {
             findTimer -= dt;
             if (findTimer <= 0f)
             {
-                findTimer = 0.5f;
-                rock = FindFirstObjectByType<RockAbsorber>();
+                findTimer = 0.2f;
+                FindRock();
             }
         }
 
-        // підписка на події каменя (камінь може змінитись після завантаження сцени)
+        // підписка на події каменя
         if (rock != subscribedRock)
         {
             Unsubscribe();
-            colorQueue.Clear();
+            ClearColors();
             if (rock != null)
             {
                 rock.PieceAbsorbed += OnPieceAbsorbed;
@@ -185,24 +305,20 @@ public class PixelTubeBar : MonoBehaviour
 
         if (rock != null && cells > 0)
         {
-            // новий рівень (сцена): бар починається порожнім
+            // новий рівень: інша сцена, інший камінь, інший Level Scale або подія переходу
             int sceneId = SceneManager.GetActiveScene().handle;
-            if (sceneId != lastScene)
+            if (levelChangedFlag || sceneId != lastScene || rock != trackedRock
+                || !Mathf.Approximately(rock.levelScale, lastLevelScale))
             {
-                lastScene = sceneId;
-                lastStage = rock.Stage;
-                baseline = rock.StageProgress;
-                colorQueue.Clear();
-                if (drainOnStageChange) DrainAll(); else ClearAll();
+                ResetForNewLevel();
             }
 
             // нова стадія: трубку скидаємо
-            if (lastStage < 0) lastStage = rock.Stage;
             if (rock.Stage != lastStage)
             {
                 lastStage = rock.Stage;
                 baseline = 0f;
-                colorQueue.Clear();
+                ClearColors();
                 if (drainOnStageChange) DrainAll(); else ClearAll();
             }
 
@@ -237,7 +353,7 @@ public class PixelTubeBar : MonoBehaviour
 
     // ---------- пікселі ----------
 
-    Color PickColor()
+    Color PickPaletteColor()
     {
         Color c;
         if (palette != null && palette.Length > 0)
@@ -254,6 +370,28 @@ public class PixelTubeBar : MonoBehaviour
         }
         float k = 1f + Random.Range(-brightnessJitter, brightnessJitter);
         return new Color(Mathf.Clamp01(c.r * k), Mathf.Clamp01(c.g * k), Mathf.Clamp01(c.b * k), 1f);
+    }
+
+    // Колір нового пікселя: випадковий серед уламків, всмоктаних після попереднього пікселя
+    // (пропорції кольорів = пропорції того, що їв камінь). Нових немає: з історії. Історії немає: з палітри.
+    Color PickPixelColor(bool instant)
+    {
+        if (!instant && useAbsorbedColors)
+        {
+            if (pendingColors.Count > 0)
+            {
+                Color picked = pendingColors[Random.Range(0, pendingColors.Count)];
+
+                // використані кольори переходять в історію
+                historyColors.AddRange(pendingColors);
+                while (historyColors.Count > Mathf.Max(1, maxHistoryColors)) historyColors.RemoveAt(0);
+                pendingColors.Clear();
+                return picked;
+            }
+            if (historyColors.Count > 0)
+                return historyColors[Random.Range(0, historyColors.Count)];
+        }
+        return PickPaletteColor();
     }
 
     void Spawn(bool instant = false)
@@ -278,8 +416,7 @@ public class PixelTubeBar : MonoBehaviour
         rt.sizeDelta = new Vector2(size, size);
 
         var img = go.GetComponent<Image>();
-        // колір всмоктаної фігури з черги; якщо черга порожня (або стартовий стан) - випадковий з палітри
-        img.color = (!instant && colorQueue.Count > 0) ? colorQueue.Dequeue() : PickColor();
+        img.color = PickPixelColor(instant);
         img.raycastTarget = false;
         img.enabled = false;   // покажемо, коли піксель буде всередині трубки
 
@@ -332,6 +469,7 @@ public class PixelTubeBar : MonoBehaviour
     // Пікселі висипаються вниз з трубки, нижні ряди першими; трубка одразу вільна для нових
     void DrainAll()
     {
+        if (grid == null) return;
         for (int c = 0; c < columns; c++)
         {
             for (int r = 0; r < grid[c].Length; r++)
@@ -348,6 +486,7 @@ public class PixelTubeBar : MonoBehaviour
 
     void ResetGrid()
     {
+        if (grid == null) return;
         placed = 0;
         for (int c = 0; c < columns; c++)
         {
