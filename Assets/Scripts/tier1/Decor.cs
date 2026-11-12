@@ -14,6 +14,7 @@ using UnityEngine.Rendering;
 // Низ світу вокселів = y = 0 (там, де підлога FloorGenerator).
 // Розміри дрібного декору задаються в радіусах стартового каменя, тому генерація працює на будь-якому масштабі.
 // Клітинка дрібного декору генерується один раз і більше ніколи, тож зламане не відростає, коли повертаєшся.
+// Сид: з увімкненим Random Seed на старті сцени ставиться новий випадковий (його видно в Console).
 public class WorldDecorator : MonoBehaviour
 {
     [Header("Зв'язки")]
@@ -30,6 +31,9 @@ public class WorldDecorator : MonoBehaviour
     [Range(0f, 1f)] public float maxMeadow = 0.1f;
 
     [Header("Нескінченна генерація (дрібний декор)")]
+    [Tooltip("Увімкнено: на старті сцени сид ставиться випадковий (кожен запуск і кожен рівень різний). Вимкнено: береться число з поля Seed")]
+    public bool randomSeed = true;
+    [Tooltip("Сид генерації. З увімкненим Random Seed перезаписується на старті сцени; побачене в Console число можна вписати сюди, вимкнувши Random Seed")]
     public int seed = 11;
     [Tooltip("Сторона клітинки в радіусах стартового каменя")]
     public float cellSizeInRockRadii = 10f;
@@ -164,6 +168,16 @@ public class WorldDecorator : MonoBehaviour
     float findTimer, startTime;
     Vector3 spawn;
     bool spawnSet, colorsReady;
+
+    void Awake()
+    {
+        // новий сид на кожен старт сцени (Awake іде до будь-якої генерації, тож усе береться з одного сиду)
+        if (randomSeed)
+        {
+            seed = Random.Range(1, 10000);
+            Debug.Log("[WorldDecorator] Сид: " + seed, this);
+        }
+    }
 
     void Start()
     {
