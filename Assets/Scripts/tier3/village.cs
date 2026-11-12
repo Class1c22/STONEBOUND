@@ -4,7 +4,7 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 
 // Генератор міста для 3 рівня. Те саме місто, що й на 2 рівні (дороги, будинки з меблями, дерева, паркани,
-// особливі ділянки), але камінь виріс, і місто тепер набагато менше за нього (houseToRockHeight = 0.25),
+// особливі ділянки), але камінь виріс, і місто тепер набагато менше за нього (houseToRockHeight = 0.12),
 // до того ж воно поділене на РАЙОНИ: житловий, центр, парк, ферма, промзона.
 //
 // Як працює масштаб:
@@ -16,6 +16,10 @@ using UnityEngine.SceneManagement;
 //    генератор попередить у консолі.
 //  * Усі розміри в метрах (blockSize, houseWidth тощо) задані як на 2 рівні, тобто в проєктних метрах.
 //    Реальний розмір дорівнює їм, помноженим на scaleF.
+//
+// Seed:
+//  * randomSeed = true: при кожному запуску рівня seed випадковий (виводиться в консоль).
+//    Сподобалось місто: скопіюй seed з консолі, впиши в Seed і вимкни Random Seed.
 //
 // Райони:
 //  * Світ ділиться на райони по districtBlocks x districtBlocks кварталів, межі трохи "гуляють" (districtWarp).
@@ -39,23 +43,25 @@ public class Tier3CityGenerator : MonoBehaviour
     [Header("Зв'язки")]
     [Tooltip("Якщо порожньо, береться VoxelWorld зі сцени")]
     public VoxelWorld world;
+    [Tooltip("Увімкнено: при кожному запуску рівня seed випадковий, тож щоразу інше місто й інші райони. Вимкнено: береться значення Seed нижче")]
+    public bool randomSeed = true;
     public int seed = 12345;
 
     [Header("Масштаб рівня 3")]
-    [Tooltip("Висота будинку відносно висоти каменя. 0.25 = будинок вчетверо нижчий за камінь")]
+    [Tooltip("Висота будинку відносно висоти каменя. 0.12 = будинок у ~8 разів нижчий за камінь")]
     [Range(0.05f, 1.5f)] public float houseToRockHeight = 0.12f;
     [Tooltip("0 = рахувати з розміру каменя. Більше 0 = задати множник вручну")]
     public int manualScale = 0;
     [Tooltip("Верхня межа множника (великі множники дуже важкі: вокселів у scale^3 разів більше)")]
     public int maxScale = 4;
-    [Tooltip("Стиснення міста: 1 = як було, 2 = усе місто вдвічі менше (кожні 2x2x2 проєктних вокселі стають одним справжнім), 3 = утричі. " +
+    [Tooltip("Стиснення міста: 1 = як було, 2 = усе місто вдвічі менше (кожні 2x2x2 проєктних вокселі стають одним справжнім), 4 = учетверо. " +
              "Деталі (двері, вікна) стають грубішими, меблі всередині вимикаються. Це єдиний спосіб зробити місто меншим, ніж scaleF = 1")]
     [Range(1, 4)] public int downscale = 4;
 
     [Header("Стрімінг")]
     [Tooltip("Як далеко від каменя з'являються квартали (проєктні метри, множиться на scaleF)")]
     public float spawnRadius = 160f;
-    [Tooltip("Те саме, але в радіусах каменя: коли камінь росте, місто з'являється далі. Береться більше з двох. Місто дрібне, тож кварталів у радіусі багато: тримай 30-50; якщо важко, зменш або збільш Voxels Per Frame")]
+    [Tooltip("Те саме, але в радіусах каменя: коли камінь росте, місто з'являється далі. Береться більше з двох. Місто дрібне, тож кварталів у радіусі багато: якщо важко, зменш або збільш Voxels Per Frame")]
     public float spawnRadiusInRockRadii = 30f;
     [Tooltip("Скільки справжніх вокселів ставити за кадр. Менше = плавніше, але будівлі з'являються довше")]
     public int voxelsPerFrame = 12000;
@@ -117,7 +123,7 @@ public class Tier3CityGenerator : MonoBehaviour
     public bool hollowHouses = true;
     [Tooltip("Крок колон усередині будинку у проєктних вокселях. Якщо дах усе ж падає, зменш")]
     public int pillarSpacing = 10;
-    [Tooltip("Ставити меблі (працює лише з hollowHouses). Камінь усе одно не заходить усередину, тож для великих масштабів можна вимкнути")]
+    [Tooltip("Ставити меблі (працює лише з hollowHouses і downscale = 1). Камінь усе одно не заходить усередину")]
     public bool furnishHouses = true;
 
     [Header("Дерева (проєктні метри)")]
@@ -249,6 +255,12 @@ public class Tier3CityGenerator : MonoBehaviour
             enabled = false;
             return;
         }
+
+        // випадковий seed: від нього залежать і розташування районів, і вигляд кожної ділянки.
+        // Обмежений мільйоном: GetDistrict множить seed на малі коефіцієнти, а великі числа псують точність float
+        if (randomSeed)
+            seed = Random.Range(1, 1000000);
+        Debug.Log($"[Tier3CityGenerator] Seed = {seed}", this);
 
         // розміри в проєктних вокселях: рахуються з метрів і розміру вокселя світу, як на 2 рівні
         blockV = Mathf.Max(24, V(blockSize));
@@ -441,7 +453,7 @@ public class Tier3CityGenerator : MonoBehaviour
         int cz = Mathf.FloorToInt((bz + wz) / D);
 
         float total = Mathf.Max(0.0001f, wResidential + wDowntown + wPark + wFarm + wIndustrial);
-        float r = Hash01(cx, 777, cz) * total;
+        float r = Hash01(cx, 777 + seed, cz) * total;
         if ((r -= wResidential) < 0f) return District.Residential;
         if ((r -= wDowntown) < 0f) return District.Downtown;
         if ((r -= wPark) < 0f) return District.Park;
