@@ -567,7 +567,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VillageGenerator
   world: {fileID: 843798773}
-  seed: 3003
+  seed: 3299
   houseToRockHeight: 0.25
   manualScale: 0
   maxScale: 4
