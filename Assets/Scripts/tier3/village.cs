@@ -43,20 +43,20 @@ public class Tier3CityGenerator : MonoBehaviour
 
     [Header("Масштаб рівня 3")]
     [Tooltip("Висота будинку відносно висоти каменя. 0.25 = будинок вчетверо нижчий за камінь")]
-    [Range(0.05f, 1.5f)] public float houseToRockHeight = 0.25f;
+    [Range(0.05f, 1.5f)] public float houseToRockHeight = 0.12f;
     [Tooltip("0 = рахувати з розміру каменя. Більше 0 = задати множник вручну")]
     public int manualScale = 0;
     [Tooltip("Верхня межа множника (великі множники дуже важкі: вокселів у scale^3 разів більше)")]
     public int maxScale = 4;
     [Tooltip("Стиснення міста: 1 = як було, 2 = усе місто вдвічі менше (кожні 2x2x2 проєктних вокселі стають одним справжнім), 3 = утричі. " +
              "Деталі (двері, вікна) стають грубішими, меблі всередині вимикаються. Це єдиний спосіб зробити місто меншим, ніж scaleF = 1")]
-    [Range(1, 4)] public int downscale = 2;
+    [Range(1, 4)] public int downscale = 4;
 
     [Header("Стрімінг")]
     [Tooltip("Як далеко від каменя з'являються квартали (проєктні метри, множиться на scaleF)")]
     public float spawnRadius = 160f;
     [Tooltip("Те саме, але в радіусах каменя: коли камінь росте, місто з'являється далі. Береться більше з двох. Місто дрібне, тож кварталів у радіусі багато: тримай 30-50; якщо важко, зменш або збільш Voxels Per Frame")]
-    public float spawnRadiusInRockRadii = 45f;
+    public float spawnRadiusInRockRadii = 30f;
     [Tooltip("Скільки справжніх вокселів ставити за кадр. Менше = плавніше, але будівлі з'являються довше")]
     public int voxelsPerFrame = 12000;
     public float scanInterval = 0.3f;
