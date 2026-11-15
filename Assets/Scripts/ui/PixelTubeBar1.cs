@@ -11,6 +11,10 @@ using UnityEngine.UI;
 // Після R верхні пікселі зникають. На переході на нову стадію або новий рівень трубка спершу
 // добивається до повної (якщо стадія/рівень були завершені), а потім висипається й наповнюється заново.
 //
+// РІВЕНЬ-ПЛАНЕТА: якщо в активній сцені є PlanetGenerator, бар одразу повний і показує цілісність кори планети
+// (PlanetGenerator.Integrity01). Коли камінь ламає кору, бар зменшується (верхні пікселі зникають).
+// Підсилення реакції: Planet Loss Scale.
+//
 // Перехід між сценами: бар робить безсмертним свій КОРЕНЕВИЙ об'єкт ієрархії (transform.root),
 // навіть якщо Canvas лежить глибоко (наприклад ui -> interface -> bar). Дублікат бару з нової сцени
 // видаляється разом зі своїм Canvas. Камінь, вимкнений на час переходу (TierTransition.Freeze), не губиться.
@@ -77,6 +81,12 @@ public class PixelTubeBar : MonoBehaviour
     [Tooltip("З якого заповнення бару (0..1) зміна рівня вважається завершенням і бар добивається до повного")]
     [Range(0.5f, 1f)] public float levelCompleteThreshold = 0.9f;
 
+    [Header("Планета (рівень із PlanetGenerator)")]
+    [Tooltip("На рівні-планеті бар одразу повний і зменшується, коли камінь ламає кору")]
+    public bool planetMode = true;
+    [Tooltip("Наскільки сильніше бар реагує на руйнування. 1 = чесна частка зламаного, 10 = бар падає вдесятеро швидше")]
+    [Min(1f)] public float planetLossScale = 10f;
+
     // ---------- внутрішнє ----------
 
     enum State { Falling, Landed, Draining }
@@ -103,6 +113,7 @@ public class PixelTubeBar : MonoBehaviour
     RockAbsorber subscribedRock;
     RockAbsorber trackedRock;   // камінь, для якого вже зроблено скидання рівня
     TierTransition subscribedTransition;
+    PlanetGenerator planet;     // не null = поточний рівень це планета: бар показує цілісність кори
 
     Vector2 lastRect;
     int lastColumns;
@@ -240,12 +251,25 @@ public class PixelTubeBar : MonoBehaviour
     }
 
     // Новий рівень (або новий камінь): бар починається порожнім.
-    // Якщо перед цим бар був майже повний, спершу добиваємо його до повного
+    // Якщо перед цим бар був майже повний, спершу добиваємо його до повного.
+    // На рівні-планеті бар навпаки одразу повний (його потім зменшує руйнування кори).
     void ResetForNewLevel()
     {
-        bool completed = lastShown >= levelCompleteThreshold;
+        PlanetGenerator pg = planetMode ? FindFirstObjectByType<PlanetGenerator>() : null;
+        int sceneNow = SceneManager.GetActiveScene().handle;
 
-        lastScene = SceneManager.GetActiveScene().handle;
+        // повторний сигнал того ж рівня-планети (sceneLoaded, потім Revealing): бар уже повний, не чіпаємо
+        if (pg != null && planet == pg && rock == trackedRock && sceneNow == lastScene)
+        {
+            levelChangedFlag = false;
+            lastLevelScale = rock.levelScale;
+            return;
+        }
+
+        bool completed = lastShown >= levelCompleteThreshold;
+        planet = pg;
+
+        lastScene = sceneNow;
         lastStage = rock.Stage;
         lastLevelScale = rock.levelScale;
         baseline = rock.StageProgress;
@@ -254,6 +278,9 @@ public class PixelTubeBar : MonoBehaviour
         spawnTimer = 0f;
         lastShown = 0f;
         FinishAndClear(completed);
+
+        // на планеті бар одразу повний (без падіння пікселів): початковий стан виставиться миттєво
+        if (planet != null) synced = false;
     }
 
     [ContextMenu("Rebuild")]
@@ -347,21 +374,35 @@ public class PixelTubeBar : MonoBehaviour
                 ResetForNewLevel();
             }
 
-            // нова стадія: попередня завершена, тож добиваємо бар до повного й скидаємо трубку
+            // нова стадія: попередня завершена, тож добиваємо бар до повного й скидаємо трубку.
+            // На планеті бар керується цілісністю кори, тому зміну стадії там не чіпаємо
             if (rock.Stage != lastStage)
             {
                 bool advanced = rock.Stage > lastStage;
                 lastStage = rock.Stage;
-                baseline = 0f;
-                lastShown = 0f;
-                FinishAndClear(advanced);
+                if (planet == null)
+                {
+                    baseline = 0f;
+                    lastShown = 0f;
+                    FinishAndClear(advanced);
+                }
             }
 
-            // прогрес упав (R): точка відліку не може бути вище за поточний прогрес
-            float prog = rock.StageProgress;
-            if (prog < baseline) baseline = prog;
-            float shown = baseline >= 1f ? 0f : (prog - baseline) / (1f - baseline);
-            shown = Mathf.Clamp01(shown);
+            float shown;
+            if (planet != null)
+            {
+                // до кінця генерації бар повний, потім падає разом із цілісністю кори
+                float integrity = planet.Ready ? planet.Integrity01 : 1f;
+                shown = Mathf.Clamp01(1f - (1f - integrity) * Mathf.Max(1f, planetLossScale));
+            }
+            else
+            {
+                // прогрес упав (R): точка відліку не може бути вище за поточний прогрес
+                float prog = rock.StageProgress;
+                if (prog < baseline) baseline = prog;
+                shown = baseline >= 1f ? 0f : (prog - baseline) / (1f - baseline);
+                shown = Mathf.Clamp01(shown);
+            }
 
             int wanted = Mathf.Clamp(Mathf.FloorToInt(shown * cells + 0.0001f), 0, cells);
             // округлення не повинно лишати повний прогрес без останнього пікселя
@@ -374,7 +415,7 @@ public class PixelTubeBar : MonoBehaviour
                 while (placed < wanted) Spawn(true);
             }
 
-            // прогрес впав (R): знімаємо верхні пікселі
+            // прогрес впав (R або руйнування кори): знімаємо верхні пікселі
             while (placed > wanted) RemoveTop();
 
             // прогрес виріс: по одному пікселю з паузою; чим більше відставання, тим швидше

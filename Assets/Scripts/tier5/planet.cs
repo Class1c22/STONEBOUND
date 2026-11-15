@@ -19,6 +19,9 @@ using UnityEngine.Rendering;
 //  * ДЕРЕВА: вокселні, ростуть радіально від центру планети.
 //  * ГРАВІТАЦІЯ радіальна: до центру планети. Діє і на камінь, і на уламки (VoxelPiece).
 //    Для уламків окремі налаштування: множник сили, опір води, частота пошуку нових уламків.
+//  * ЦІЛІСНІСТЬ КОРИ (Integrity01): під час генерації вибирається кілька тисяч вокселів верхніх шарів кори,
+//    потім повільно перевіряється, скільки з них ще стоять. PixelTubeBar на рівні-планеті показує це значення:
+//    бар повний, поки кора ціла, і зменшується, коли камінь її ламає.
 //
 // РОЗМІР ПЛАНЕТИ:
 //   1) Size From Rock вимкнено: радіус = Bedrock Radius (у вокселях) * Planet Size Multiplier.
@@ -84,6 +87,14 @@ public class PlanetGenerator : MonoBehaviour
     [Tooltip("Уламки далі за цю відстань від центру планети (у радіусах основи) не чіпаємо. 0 = без обмеження")]
     public float pieceMaxDistanceRadii = 0f;
 
+    [Header("Цілісність кори (для бару)")]
+    [Tooltip("Скільки верхніх шарів кори враховується (0 = лише поверхня). Глибокі шари камінь майже не ламає")]
+    public int integritySampleDepth = 2;
+    [Tooltip("Скільки вокселів вибираємо для підрахунку цілісності")]
+    public int integritySamples = 4000;
+    [Tooltip("Скільки вибраних вокселів перевіряємо за кадр")]
+    public int integrityScanPerFrame = 400;
+
     [Header("Генерація")]
     public int blockSize = 24;
     [Tooltip("Скільки мс на кадр можна витрачати на генерацію")]
@@ -129,6 +140,12 @@ public class PlanetGenerator : MonoBehaviour
     readonly HashSet<Rigidbody> pieceSet = new HashSet<Rigidbody>();
     float nextPieceScan;
 
+    // цілісність кори: вибірка вокселів верхніх шарів (резервуарна вибірка)
+    Vector3Int[] sampleList;
+    bool[] sampleAlive;
+    int sampleCount, sampleSeen, sampleAliveCount, sampleTotal, sampleCursor;
+    System.Random sampleRng;
+
     byte[][] topSets, soilSets, leafSets;
     byte[] stoneSet, sandSet, borderSet, trunkSet;
 
@@ -136,6 +153,12 @@ public class PlanetGenerator : MonoBehaviour
 
     public bool Ready { get; private set; }
     public float Progress { get; private set; }
+
+    // 1 = кора ціла, менше = камінь її ламає. До кінця генерації завжди 1
+    public float Integrity01
+    {
+        get { return Ready && sampleTotal > 0 ? Mathf.Clamp01(sampleAliveCount / (float)sampleTotal) : 1f; }
+    }
 
     public Vector3 CenterWorld
     {
@@ -209,6 +232,7 @@ public class PlanetGenerator : MonoBehaviour
             return;
         }
         world.voxelGround = false;
+        sampleRng = new System.Random(seed + 77);
 
         vs = world.voxelSize;
         Rb = ComputeBedrockRadius();
@@ -571,6 +595,7 @@ public class PlanetGenerator : MonoBehaviour
         }
 
         Progress = 1f;
+        FinalizeIntegrity();   // рахуємо, скільки вибраних вокселів кори реально стоїть (до першого удару каменя)
         Ready = true;
         FindRock();
         Freeze(false);
@@ -669,8 +694,58 @@ public class PlanetGenerator : MonoBehaviour
         lockT.rotation = lockRot;
     }
 
-    void Update() { HoldFrozen(); }
+    void Update()
+    {
+        HoldFrozen();
+        UpdateIntegrity();
+    }
+
     void LateUpdate() { HoldFrozen(); }
+
+    // ---------- цілісність кори ----------
+
+    // Резервуарна вибірка: з усіх вокселів верхніх шарів лишається рівномірна випадкова вибірка розміром integritySamples
+    void Reserve(Vector3Int p)
+    {
+        if (sampleList == null) sampleList = new Vector3Int[Mathf.Max(100, integritySamples)];
+        sampleSeen++;
+        if (sampleCount < sampleList.Length) sampleList[sampleCount++] = p;
+        else
+        {
+            int j = sampleRng.Next(sampleSeen);
+            if (j < sampleList.Length) sampleList[j] = p;
+        }
+    }
+
+    // Після генерації: запам'ятовуємо, які з вибраних вокселів стоять (це і є 100%)
+    void FinalizeIntegrity()
+    {
+        sampleAlive = new bool[sampleCount];
+        sampleAliveCount = 0;
+        for (int i = 0; i < sampleCount; i++)
+        {
+            bool a = world.GetVoxel(sampleList[i]) != 0;
+            sampleAlive[i] = a;
+            if (a) sampleAliveCount++;
+        }
+        sampleTotal = sampleAliveCount;
+    }
+
+    // Повільно перевіряє вибрані вокселі по колу (integrityScanPerFrame за кадр)
+    void UpdateIntegrity()
+    {
+        if (!Ready || sampleAlive == null || sampleCount == 0) return;
+        int n = Mathf.Min(sampleCount, Mathf.Max(1, integrityScanPerFrame));
+        for (int k = 0; k < n; k++)
+        {
+            int i = sampleCursor;
+            sampleCursor = (sampleCursor + 1) % sampleCount;
+            bool a = world.GetVoxel(sampleList[i]) != 0;
+            if (a == sampleAlive[i]) continue;
+            sampleAlive[i] = a;
+            sampleAliveCount += a ? 1 : -1;
+        }
+    }
 
     void BuildBlock(Vector3Int b)
     {
@@ -715,6 +790,9 @@ public class PlanetGenerator : MonoBehaviour
                 id = Hash01(x, y, z) < 0.35f ? Pick(stoneSet, Hash(x, 1, z)) : Pick(soilSets[c.biome], Hash(x, 2, z));
             }
             ops.Add(new VoxelOp { pos = new Vector3Int(x, y, z), id = id });
+
+            // верхні шари кори (над основою) беремо у вибірку цілісності
+            if (h >= 0f && depth <= integritySampleDepth) Reserve(new Vector3Int(x, y, z));
         }
     }
 
