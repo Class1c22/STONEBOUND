@@ -86,16 +86,42 @@ public class PixelTubeBar : MonoBehaviour
     public bool planetMode = true;
     [Tooltip("Наскільки сильніше бар реагує на руйнування. 1 = чесна частка зламаного, 10 = бар падає вдесятеро швидше")]
     [Min(1f)] public float planetLossScale = 10f;
+    [Tooltip("На рівні-планеті пікселі мають кольори самої планети (трава, пісок, сніг, земля), а не кольори всмоктаних уламків")]
+    public bool planetColors = true;
+
+    [Header("Розліт пікселів (коли бар зменшується)")]
+    [Tooltip("Пікселі, що зникають, не пропадають одразу, а розлітаються й поступово розчиняються")]
+    public bool burstOnRemove = true;
+    [Tooltip("Початкова швидкість розльоту, у висотах трубки за секунду")]
+    public float burstSpeed = 2.4f;
+    [Tooltip("Наскільки сильно піксель підкидає вгору (0 = лише вбік)")]
+    [Range(0f, 3f)] public float burstUp = 1.3f;
+    [Tooltip("Гравітація розлетілих пікселів, у висотах трубки за секунду²")]
+    public float burstGravity = 2.5f;
+    [Tooltip("Скільки секунд живе піксель під час розльоту (потім зникає повністю)")]
+    public float burstLifetime = 1.4f;
+    [Tooltip("Максимальна швидкість обертання, градусів за секунду")]
+    public float burstSpin = 720f;
+    [Tooltip("Скільки дрібних уламків додатково відлітає від кожного пікселя (0 = лише сам піксель)")]
+    [Range(0, 8)] public int burstShards = 3;
+    [Tooltip("Розмір піксельного вибуху на старті (1 = як піксель, 1.6 = спершу роздувається) і блиск на початку")]
+    [Range(1f, 3f)] public float burstPop = 1.7f;
+    [Tooltip("Яскравий спалах у момент удару: 0 = немає, 1 = біле на початку")]
+    [Range(0f, 1f)] public float burstFlash = 0.85f;
+    [Tooltip("Запобіжник: більше стільки розлетілих пікселів одночасно не буде (решта зникає одразу)")]
+    public int maxBurstPixels = 400;
 
     // ---------- внутрішнє ----------
 
-    enum State { Falling, Landed, Draining }
+    enum State { Falling, Landed, Draining, Burst }
 
     class Px
     {
         public RectTransform rt;
         public Image img;
         public float x, y, vy, targetY, delay;
+        public float vx, life, maxLife, spin, sz;   // розліт (State.Burst); sz = розмір
+        public Color col;                            // справжній колір (для спалаху)
         public State state;
     }
 
@@ -114,6 +140,8 @@ public class PixelTubeBar : MonoBehaviour
     RockAbsorber trackedRock;   // камінь, для якого вже зроблено скидання рівня
     TierTransition subscribedTransition;
     PlanetGenerator planet;     // не null = поточний рівень це планета: бар показує цілісність кори
+    bool planetColored;         // чи вже перефарбовано пікселі в кольори планети (після її генерації)
+    int bursting;               // скільки пікселів зараз розлітається
 
     Vector2 lastRect;
     int lastColumns;
@@ -267,6 +295,7 @@ public class PixelTubeBar : MonoBehaviour
         }
 
         bool completed = lastShown >= levelCompleteThreshold;
+        if (pg != planet) planetColored = false;
         planet = pg;
 
         lastScene = sceneNow;
@@ -290,6 +319,7 @@ public class PixelTubeBar : MonoBehaviour
         foreach (var p in pixels)
             if (p != null && p.rt != null) Destroy(p.rt.gameObject);
         pixels.Clear();
+        bursting = 0;
         placed = 0;
         synced = false;
 
@@ -442,7 +472,23 @@ public class PixelTubeBar : MonoBehaviour
             lastShown = shown;
         }
 
+        // планета згенерована: початкові пікселі (вони з'явились до генерації) фарбуємо в її кольори
+        if (planet != null && planetColors && planet.Ready && !planetColored)
+        {
+            planetColored = true;
+            RecolorPixels();
+        }
+
         Step(dt);
+    }
+
+    void RecolorPixels()
+    {
+        foreach (var p in pixels)
+        {
+            if (p == null || p.img == null || p.state == State.Burst) continue;
+            p.img.color = planet.RandomCrustColor();
+        }
     }
 
     // ---------- пікселі ----------
@@ -470,6 +516,9 @@ public class PixelTubeBar : MonoBehaviour
     // (пропорції кольорів = пропорції того, що їв камінь). Нових немає: з історії. Історії немає: з палітри.
     Color PickPixelColor(bool useQueue)
     {
+        // рівень-планета: колір із самої планети
+        if (planet != null && planetColors) return planet.RandomCrustColor();
+
         if (useQueue && useAbsorbedColors)
         {
             if (pendingColors.Count > 0)
@@ -549,9 +598,65 @@ public class PixelTubeBar : MonoBehaviour
 
         if (p != null)
         {
-            pixels.Remove(p);
-            if (p.rt != null) Destroy(p.rt.gameObject);
+            if (burstOnRemove && p.rt != null) StartBurst(p);
+            else
+            {
+                pixels.Remove(p);
+                if (p.rt != null) Destroy(p.rt.gameObject);
+            }
         }
+    }
+
+    // Піксель вибухає: спалахує, роздувається, розлітається з уламками, крутиться й поступово розчиняється
+    void StartBurst(Px p)
+    {
+        if (bursting >= Mathf.Max(0, maxBurstPixels))
+        {
+            pixels.Remove(p);
+            Destroy(p.rt.gameObject);
+            return;
+        }
+
+        ArmBurst(p, size, 1f);
+
+        // дрібні уламки: вилітають із того самого місця в різні боки
+        for (int k = 0; k < burstShards && bursting < Mathf.Max(0, maxBurstPixels); k++)
+        {
+            var go = new GameObject("shard", typeof(RectTransform), typeof(Image));
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(container, false);
+            rt.anchorMin = rt.anchorMax = Vector2.zero;
+            float sz = size * Random.Range(0.3f, 0.6f);
+            rt.sizeDelta = new Vector2(sz, sz);
+            var img = go.GetComponent<Image>();
+            img.raycastTarget = false;
+            img.color = p.col;
+            var sh = new Px { rt = rt, img = img, x = p.x + (size - sz) * 0.5f, y = p.y + (size - sz) * 0.5f, state = State.Burst };
+            ArmBurst(sh, sz, 1.5f);   // уламки летять швидше
+            pixels.Add(sh);
+        }
+    }
+
+    void ArmBurst(Px p, float sz, float speedMul)
+    {
+        bursting++;
+        p.col = p.img.color;
+        p.sz = sz;
+        p.state = State.Burst;
+        p.rt.pivot = new Vector2(0.5f, 0.5f);   // крутиться навколо центру
+        p.rt.SetAsLastSibling();                // поверх решти пікселів
+        p.img.enabled = true;
+
+        float speed = burstSpeed * innerH * speedMul;
+        float side = p.x + sz * 0.5f - innerW * 0.5f;
+        float dirX = side != 0f ? Mathf.Sign(side) : (Random.value < 0.5f ? -1f : 1f);
+
+        // розліт у різні боки: переважно назовні, але з розкидом (і трохи в протилежний бік)
+        p.vx = (dirX * Random.Range(0.1f, 1f) + Random.Range(-0.9f, 0.9f)) * speed;
+        p.vy = Random.Range(-0.2f, 1f) * speed * burstUp;
+        p.maxLife = Mathf.Max(0.05f, burstLifetime) * Random.Range(0.6f, 1.3f);
+        p.life = 0f;
+        p.spin = Random.Range(-1f, 1f) * burstSpin;
     }
 
     // Пікселі зникають одразу
@@ -560,6 +665,7 @@ public class PixelTubeBar : MonoBehaviour
         foreach (var p in pixels)
             if (p != null && p.rt != null) Destroy(p.rt.gameObject);
         pixels.Clear();
+        bursting = 0;
         ResetGrid();
     }
 
@@ -599,7 +705,44 @@ public class PixelTubeBar : MonoBehaviour
         for (int i = pixels.Count - 1; i >= 0; i--)
         {
             Px p = pixels[i];
-            if (p == null || p.rt == null) { pixels.RemoveAt(i); continue; }
+            if (p == null || p.rt == null)
+            {
+                if (p != null && p.state == State.Burst) bursting = Mathf.Max(0, bursting - 1);
+                pixels.RemoveAt(i);
+                continue;
+            }
+
+            // розліт: спалах, роздування, політ, обертання, поступове зникання
+            if (p.state == State.Burst)
+            {
+                p.life += dt;
+                if (p.life >= p.maxLife)
+                {
+                    Destroy(p.rt.gameObject);
+                    pixels.RemoveAt(i);
+                    bursting = Mathf.Max(0, bursting - 1);
+                    continue;
+                }
+                float t = p.life / p.maxLife;
+                float hs = p.sz * 0.5f;
+                p.vy -= burstGravity * innerH * dt;
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+                p.rt.anchoredPosition = new Vector2(p.x + hs, p.y + hs);
+                p.rt.localEulerAngles = new Vector3(0f, 0f, p.spin * p.life);
+
+                // спершу піксель роздувається (удар), потім зменшується
+                float pop = t < 0.12f ? Mathf.Lerp(1f, burstPop, t / 0.12f) : Mathf.Lerp(burstPop, 0.15f, (t - 0.12f) / 0.88f);
+                p.rt.localScale = Vector3.one * pop;
+
+                // білий спалах на початку, потім справжній колір, під кінець прозорість
+                Color c = Color.Lerp(Color.white, p.col, Mathf.Clamp01(t / 0.25f));
+                c = Color.Lerp(p.col, c, burstFlash);
+                c.a = 1f - t * t * t;
+                p.img.color = c;
+                continue;
+            }
+
             if (p.state == State.Landed) { p.img.enabled = true; continue; }
 
             if (p.delay > 0f) { p.delay -= dt; continue; }

@@ -145,6 +145,10 @@ public class PlanetGenerator : MonoBehaviour
     bool[] sampleAlive;
     int sampleCount, sampleSeen, sampleAliveCount, sampleTotal, sampleCursor;
     System.Random sampleRng;
+    byte[] sampleIds;                                   // колір (id) кожного вибраного вокселя
+    byte[] surfIds = new byte[512];                     // кольори саме ПОВЕРХНІ планети (для бару)
+    int surfCount, surfSeen;
+    readonly Dictionary<byte, Color32> idColor = new Dictionary<byte, Color32>();
 
     byte[][] topSets, soilSets, leafSets;
     byte[] stoneSet, sandSet, borderSet, trunkSet;
@@ -158,6 +162,33 @@ public class PlanetGenerator : MonoBehaviour
     public float Integrity01
     {
         get { return Ready && sampleTotal > 0 ? Mathf.Clamp01(sampleAliveCount / (float)sampleTotal) : 1f; }
+    }
+
+    // Випадковий колір із самої планети: переважно поверхня (трава, пісок, сніг, гори), трохи землі під нею.
+    // Бар використовує його, щоб мати ту саму розцветку, що й планета
+    public Color RandomCrustColor()
+    {
+        bool have = false;
+        byte id = 0;
+        if (surfCount > 0 && (sampleCount == 0 || Random.value < 0.8f))
+        {
+            id = surfIds[Random.Range(0, surfCount)];
+            have = true;
+        }
+        else if (sampleCount > 0 && sampleIds != null)
+        {
+            id = sampleIds[Random.Range(0, sampleCount)];
+            have = true;
+        }
+        else if (topSets != null && topSets[GRASS] != null)
+        {
+            byte[] a = Random.value < 0.6f ? topSets[GRASS] : soilSets[GRASS];
+            id = a[Random.Range(0, a.Length)];
+            have = true;
+        }
+        if (have && idColor.TryGetValue(id, out Color32 c))
+            return new Color(c.r / 255f, c.g / 255f, c.b / 255f, 1f);
+        return new Color(0.42f, 0.62f, 0.28f, 1f);
     }
 
     public Vector3 CenterWorld
@@ -264,7 +295,10 @@ public class PlanetGenerator : MonoBehaviour
 
     byte Cl(int r, int g, int b)
     {
-        return world.GetOrAddColor(new Color32((byte)r, (byte)g, (byte)b, 255));
+        var col = new Color32((byte)r, (byte)g, (byte)b, 255);
+        byte id = world.GetOrAddColor(col);
+        idColor[id] = col;   // запам'ятовуємо справжній колір id (для бару)
+        return id;
     }
 
     void InitColors()
@@ -705,15 +739,37 @@ public class PlanetGenerator : MonoBehaviour
     // ---------- цілісність кори ----------
 
     // Резервуарна вибірка: з усіх вокселів верхніх шарів лишається рівномірна випадкова вибірка розміром integritySamples
-    void Reserve(Vector3Int p)
+    void Reserve(Vector3Int p, byte id)
     {
-        if (sampleList == null) sampleList = new Vector3Int[Mathf.Max(100, integritySamples)];
+        if (sampleList == null)
+        {
+            int cap = Mathf.Max(100, integritySamples);
+            sampleList = new Vector3Int[cap];
+            sampleIds = new byte[cap];
+        }
         sampleSeen++;
-        if (sampleCount < sampleList.Length) sampleList[sampleCount++] = p;
+        if (sampleCount < sampleList.Length)
+        {
+            sampleList[sampleCount] = p;
+            sampleIds[sampleCount] = id;
+            sampleCount++;
+        }
         else
         {
             int j = sampleRng.Next(sampleSeen);
-            if (j < sampleList.Length) sampleList[j] = p;
+            if (j < sampleList.Length) { sampleList[j] = p; sampleIds[j] = id; }
+        }
+    }
+
+    // Вибірка кольорів лише верхнього шару (те, що видно на планеті зверху)
+    void ReserveSurface(byte id)
+    {
+        surfSeen++;
+        if (surfCount < surfIds.Length) surfIds[surfCount++] = id;
+        else
+        {
+            int j = sampleRng.Next(surfSeen);
+            if (j < surfIds.Length) surfIds[j] = id;
         }
     }
 
@@ -792,7 +848,8 @@ public class PlanetGenerator : MonoBehaviour
             ops.Add(new VoxelOp { pos = new Vector3Int(x, y, z), id = id });
 
             // верхні шари кори (над основою) беремо у вибірку цілісності
-            if (h >= 0f && depth <= integritySampleDepth) Reserve(new Vector3Int(x, y, z));
+            if (h >= 0f && depth <= integritySampleDepth) Reserve(new Vector3Int(x, y, z), id);
+            if (h >= 0f && depth == 0) ReserveSurface(id);
         }
     }
 
