@@ -18,6 +18,7 @@ using UnityEngine.Rendering;
 // - при ударі травинка стає дрібною воксельною сіткою, як стіна у VoxelWorld: камінь вибиває кулю вокселів
 //   (видно дірку), решта травинки стоїть далі, а шматки, що відірвались від землі, падають з фізикою;
 // - вибиті вокселі розлітаються кубиками (Rigidbody + Absorbable): камінь всмоктує їх по E (RockAbsorber.Suck) і росте;
+//   кожен кубик і шматок несе свій колір (Absorbable.hasColor/color), який камінь віддає в бар (PieceAbsorbed);
 // - BreakInSphere: траву в сфері ламають і падаючі шматки декору (WorldDecorator).
 public class GrassField : MonoBehaviour
 {
@@ -583,6 +584,16 @@ public class GrassField : MonoBehaviour
             }
             materials[i].enableInstancing = true;
         }
+    }
+
+    // Колір смуги трави (з матеріалу): його несуть уламки, щоб камінь віддав його в бар
+    Color BandColor(int band)
+    {
+        if (materials == null || materials.Length == 0) return Color.green;
+        var m = materials[Mathf.Clamp(band, 0, materials.Length - 1)];
+        if (m == null) return Color.green;
+        Color c = m.HasProperty("_BaseColor") ? m.GetColor("_BaseColor") : m.color;
+        return new Color(c.r, c.g, c.b, 1f);
     }
 
     // ---------- вітер ----------
@@ -1346,6 +1357,19 @@ public class GrassField : MonoBehaviour
         var a = go.AddComponent<Absorbable>();
         a.volume = comp.Count * sv * sv * svy * absorbVolumeFactor;
 
+        // колір шматка = середній колір смуг його вокселів (його візьме камінь і віддасть у бар)
+        int layer = gridW * gridW;
+        float cr = 0f, cg = 0f, cb = 0f;
+        for (int i = 0; i < comp.Count; i++)
+        {
+            int level = (comp[i] / layer) / sub;
+            Color bc = BandColor(Mathf.Min(colorBands - 1, level * colorBands / b.H));
+            cr += bc.r; cg += bc.g; cb += bc.b;
+        }
+        float invN = 1f / Mathf.Max(1, comp.Count);
+        a.hasColor = true;
+        a.color = new Color(cr * invN, cg * invN, cb * invN, 1f);
+
         pieces.Enqueue(go);
         Destroy(go, Mathf.Max(1f, pieceLifetime));
     }
@@ -1404,11 +1428,17 @@ public class GrassField : MonoBehaviour
             d.angularVelocity = Random.insideUnitSphere * 5f;
             d.GetComponent<Renderer>().sharedMaterial = materials[cell.band];
 
-            // розмір і об'єм кубика (камінь росте від об'єму, тому він має відповідати розміру)
+            // розмір, об'єм і колір кубика (камінь росте від об'єму, тому він має відповідати розміру;
+            // колір камінь віддає в бар, коли всмокче кубик)
             float edge = DebrisEdge() * grow;
             d.transform.localScale = Vector3.one * edge;
             var ab = d.GetComponent<Absorbable>();
-            if (ab != null) ab.volume = edge * edge * edge * absorbVolumeFactor;
+            if (ab != null)
+            {
+                ab.volume = edge * edge * edge * absorbVolumeFactor;
+                ab.hasColor = true;
+                ab.color = BandColor(cell.band);
+            }
         }
     }
 
