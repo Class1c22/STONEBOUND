@@ -333,6 +333,7 @@ GameObject:
   - component: {fileID: 689670330}
   - component: {fileID: 689670329}
   - component: {fileID: 689670331}
+  - component: {fileID: 689670332}
   m_Layer: 0
   m_Name: EndCinematic
   m_TagString: Untagged
@@ -405,6 +406,25 @@ MonoBehaviour:
   rockNamePart: rock
   rockTag: 
   playOnStart: 0
+--- !u!114 &689670332
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 689670328}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0a8e2f69da93bb2478cf15f6c28730b2, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PlanetEndTrigger
+  planet: {fileID: 1902608297}
+  starter: {fileID: 689670331}
+  eatenThreshold: 0.9
+  holdSeconds: 1
+  checkInterval: 0.25
+  debugLog: 1
+  logInterval: 2
 --- !u!1 &832575517
 GameObject:
   m_ObjectHideFlags: 0
@@ -1045,6 +1065,7 @@ MonoBehaviour:
   pieceWaterDrag: 3
   pieceScanInterval: 0.1
   pieceMaxDistanceRadii: 0
+  pieceSleepThreshold: 0.05
   integritySampleDepth: 2
   integritySamples: 4000
   integrityScanPerFrame: 400
