@@ -23,6 +23,7 @@ using UnityEngine.Rendering;
 //  * ЦІЛІСНІСТЬ КОРИ (Integrity01): під час генерації вибирається кілька тисяч вокселів верхніх шарів кори,
 //    потім повільно перевіряється, скільки з них ще стоять. PixelTubeBar на рівні-планеті показує це значення:
 //    бар повний, поки кора ціла, і зменшується, коли камінь її ламає.
+//  * ВИБУХ: SampleForExplosion віддає PlanetExplosion рельєф і кольори планети для шматків, що розлітаються.
 //
 // РОЗМІР ПЛАНЕТИ:
 //   1) Size From Rock вимкнено: радіус = Bedrock Radius (у вокселях) * Planet Size Multiplier.
@@ -216,6 +217,46 @@ public class PlanetGenerator : MonoBehaviour
             if (world == null || vs <= 0f) return transform.position;
             return world.transform.TransformPoint((C + Vector3.up * (Rb + crustMax + 1)) * vs);
         }
+    }
+
+    // ---------- для вибуху планети ----------
+
+    Color IdToColor(byte id)
+    {
+        Color32 c;
+        if (idColor.TryGetValue(id, out c)) return new Color(c.r / 255f, c.g / 255f, c.b / 255f, 1f);
+        return new Color(0.42f, 0.62f, 0.28f, 1f);
+    }
+
+    // Для PlanetExplosion: що лежить у напрямку dir від центру планети.
+    // thickVoxels = висота поверхні над основою у вокселях; top/soil/stone = кольори верхнього шару, ґрунту й каменю
+    public void SampleForExplosion(Vector3 dir, int hash, out float thickVoxels, out Color top, out Color soil, out Color stone)
+    {
+        if (topSets == null)
+        {
+            thickVoxels = 3f;
+            top = soil = stone = new Color(0.42f, 0.62f, 0.28f, 1f);
+            return;
+        }
+
+        Col c = Sample(dir.normalized);
+        stone = IdToColor(Pick(stoneSet, hash));
+
+        if (c.sea && !c.shallow)
+        {
+            thickVoxels = seaHeight;
+            soil = IdToColor(Pick(soilSets[GRASS], hash));
+            // у грі вода напівпрозора над землею: змішуємо так само, щоб океан не був яскраво-синім
+            top = Color.Lerp(soil, new Color(waterColor.r, waterColor.g, waterColor.b, 1f), waterColor.a);
+            top.a = 1f;
+            return;
+        }
+
+        thickVoxels = c.thick;
+        if (c.border) top = IdToColor(Pick(borderSet, hash));
+        else if (c.beach) top = IdToColor(Pick(sandSet, hash));
+        else top = IdToColor(Pick(topSets[c.biome], hash));
+        soil = IdToColor(Pick(soilSets[c.biome], hash));
     }
 
     // ---------- розмір ----------
@@ -909,6 +950,7 @@ public class PlanetGenerator : MonoBehaviour
             }
             if (rock == null || rb == null) return;
         }
+        if (!rb.gameObject.activeInHierarchy) return;   // камінь вимкнено (фінальна синематика)
         if (rb.useGravity) rb.useGravity = false;
         if (rb.isKinematic) return;
 

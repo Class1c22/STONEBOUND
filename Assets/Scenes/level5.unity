@@ -423,9 +423,14 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::PlanetEndTrigger
   planet: {fileID: 1902608297}
   starter: {fileID: 689670331}
-  remainingThreshold: 0.03
+  bar: {fileID: 0}
+  explosion: {fileID: 0}
+  barEmptyThreshold: 0.02
+  fallbackLossScale: 10
   holdSeconds: 1
   checkInterval: 0.25
+  explodePlanet: 1
+  cinematicDelay: 0.5
   debugLog: 1
   logInterval: 2
 --- !u!1 &832575517
@@ -994,6 +999,7 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
+  - {fileID: 2047344908}
   - {fileID: 1902608296}
   - {fileID: 843798774}
   - {fileID: 416857264}
@@ -1080,6 +1086,70 @@ MonoBehaviour:
   autoSetup: 1
   waterColor: {r: 0.2, g: 0.5, b: 0.85, a: 0.7}
   textureResolution: 32
+--- !u!1 &2047344907
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 2047344908}
+  - component: {fileID: 2047344909}
+  m_Layer: 0
+  m_Name: PlanetExplosion
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &2047344908
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2047344907}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 263.512, y: 0, z: -4.6050196}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1838282995}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &2047344909
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2047344907}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6100d84fec36c5443bbd00195ea04c00, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PlanetExplosion
+  planet: {fileID: 1902608297}
+  debrisCount: 700
+  chunkVoxels: {x: 3, y: 9}
+  coreFraction: 0.3
+  speedRadii: 0.7
+  lifetime: 7
+  spin: 240
+  drag: 0.15
+  fireball: 1
+  fireballMaxRadii: 1.6
+  fireballTime: 1.4
+  shockwave: 1
+  shockwaveMaxRadii: 3.5
+  shockwaveTime: 1.8
+  flashIntensity: 40
+  flashTime: 1.5
+  flashColor: {r: 1, g: 0.65, b: 0.25, a: 1}
+  hideWorld: 1
+  hideBedrock: 1
+  hideSea: 1
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

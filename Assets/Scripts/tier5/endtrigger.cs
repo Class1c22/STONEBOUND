@@ -26,7 +26,9 @@ public class PlanetEndTrigger : MonoBehaviour
     [Header("Вибух")]
     [Tooltip("Підірвати планету, коли бар порожній")]
     public bool explodePlanet = true;
-    [Tooltip("Скільки секунд вибух іде до запуску синематики (щоб камера синематики вже бачила вибух)")]
+    [Tooltip("Через скільки секунд після спрацювання тригера планета вибухає")]
+    public float explosionDelay = 2f;
+    [Tooltip("Через скільки секунд після спрацювання тригера стартує синематика (0 = одразу). Рахується окремо від вибуху")]
     public float cinematicDelay = 0.5f;
 
     [Header("Діагностика")]
@@ -96,10 +98,22 @@ public class PlanetEndTrigger : MonoBehaviour
         StartCoroutine(FireRoutine());
     }
 
+    // Обидва відліки йдуть від моменту спрацювання тригера
     IEnumerator FireRoutine()
     {
-        if (explodePlanet && explosion != null) explosion.Explode();
-        if (cinematicDelay > 0f) yield return new WaitForSeconds(cinematicDelay);
-        if (starter != null) starter.Begin();
+        bool explode = explodePlanet && explosion != null;
+        bool cinema = starter != null;
+        float tExplode = Mathf.Max(0f, explosionDelay);
+        float tCinema = Mathf.Max(0f, cinematicDelay);
+
+        float t = 0f;
+        while (explode || cinema)
+        {
+            if (cinema && t >= tCinema) { starter.Begin(); cinema = false; }
+            if (explode && t >= tExplode) { explosion.Explode(); explode = false; }
+            if (!explode && !cinema) break;
+            yield return null;
+            t += Time.deltaTime;
+        }
     }
 }
