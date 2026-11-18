@@ -18,6 +18,9 @@ using UnityEngine.SceneManagement;
 // Downscale x Downscale x Downscale проєктних вокселів зливаються в одну клітинку світу.
 // Став Downscale БІЛЬШЕ, ніж у Tier3CityGenerator, щоб 4 рівень здавався дрібнішим за 3.
 //
+// ПРОДУКТИВНІСТЬ: радіус стрімінгу обмежений Max Spawn Radius Meters, розстановка вокселів іде
+// за бюджетом часу на кадр (Frame Budget Ms), земля генерується по одній колонці на клітинку світу.
+//
 // Як це працює:
 //  * Світ поділений на великі клітини (Island Spacing). У кожній клітині з імовірністю Island Chance
 //    є один острів, який повністю вміщується в клітину, тож острови не перетинаються.
@@ -27,7 +30,7 @@ using UnityEngine.SceneManagement;
 //  * Суша це рельєфні колонки від моря (y = 0) до висоти землі: пагорби, схили, скелі.
 //    Озера це діри в суші, крізь які видно море.
 //  * Міста стоять на рівних майданчиках, рельєф плавно наростає навколо них.
-//  * Плитки будуються лише поблизу фокуса, найближчі першими, по кадрах (Voxels Per Frame).
+//  * Плитки будуються лише поблизу фокуса, найближчі першими, по кадрах.
 //  * Камінь на старті переноситься на суцільну сушу острова біля початку координат.
 //  * ЯКЩО КАМЕНЯ НА СЦЕНІ НЕМАЄ, через Rock Wait Seconds острови будуються навколо камери.
 //
@@ -59,14 +62,20 @@ public partial class CountryGenerator : MonoBehaviour
     [Header("Стрімінг")]
     [Tooltip("Як далеко від каменя будується карта (метри)")]
     public float spawnRadius = 150f;
-    [Tooltip("Те саме, але в радіусах каменя. Береться більше з двох")]
+    [Tooltip("Те саме, але в радіусах каменя. Береться більше з двох, але не більше Max Spawn Radius Meters")]
     public float spawnRadiusInRockRadii = 80f;
     [Tooltip("Навколо стартової позиції каменя нічого не ставиться (в радіусах каменя). Дороги лишаються")]
     public float startClearInRockRadii = 3f;
-    [Tooltip("Скільки проєктних вокселів обробляти за кадр")]
-    public int voxelsPerFrame = 12000;
+    [Tooltip("Максимум вокселів за кадр (разом із бюджетом часу нижче діє те, що спрацює раніше)")]
+    public int voxelsPerFrame = 6000;
     [Tooltip("Сторона плитки, яка будується за раз")]
     public int tileSize = 48;
+
+    [Header("Продуктивність")]
+    [Tooltip("Скільки мілісекунд за кадр можна витрачати на розстановку вокселів у світ. Менше = плавніше, але карта будується довше")]
+    public float frameBudgetMs = 3f;
+    [Tooltip("Стеля радіуса стрімінгу в метрах. Без неї великий камінь змушує будувати пів архіпелагу")]
+    public float maxSpawnRadiusMeters = 220f;
 
     [Header("Острови (у проєктних вокселях)")]
     [Tooltip("Відстань між центрами острівних клітин. Більше = більше моря між островами")]
@@ -82,7 +91,7 @@ public partial class CountryGenerator : MonoBehaviour
     [Tooltip("Скільки вокселів від берега нічого не ставиться")]
     public int coastMargin = 5;
     public int beachWidth = 3;
-    [Tooltip("Скільки островів тримається в пам'яті. Далекі вивантажуються")]
+    [Tooltip("Скільки островів тримається в пам'яті. Острови поблизу каменя не вивантажуються, навіть якщо їх більше")]
     public int maxLoadedIslands = 10;
 
     [Header("Озера й ставки")]
@@ -178,6 +187,12 @@ public partial class CountryGenerator : MonoBehaviour
         public byte id;
     }
 
+    struct TileDist
+    {
+        public Vector2Int t;
+        public float d;
+    }
+
     class City
     {
         public int cx, cz, r;
@@ -211,6 +226,15 @@ public partial class CountryGenerator : MonoBehaviour
     readonly List<Island> tmpNear = new List<Island>();
     readonly Dictionary<Vector2Int, List<System.Action>> jobs = new Dictionary<Vector2Int, List<System.Action>>();
     readonly HashSet<Vector2Int> built = new HashSet<Vector2Int>();
+
+    // черга плиток (відсортована так, що найближча в кінці списку)
+    readonly List<Vector2Int> tileQueue = new List<Vector2Int>();
+    readonly List<TileDist> tileScan = new List<TileDist>();
+    Vector2 queueFocus;
+
+    // спільні буфери для обходів (щоб не створювати великі масиви на кожен острів)
+    int[] bufQueue;
+    bool[] bufVisited;
 
     Island cur;        // острів, який планується просто зараз
     Island lastIsl;    // кеш останнього знайденого острова
@@ -319,8 +343,10 @@ public partial class CountryGenerator : MonoBehaviour
         islandRadiusMax = Mathf.Max(islandRadiusMax, islandRadiusMin);
         tileSize = Mathf.Max(tileSize, 16);
         voxelsPerFrame = Mathf.Max(voxelsPerFrame, 1000);
+        frameBudgetMs = Mathf.Clamp(frameBudgetMs, 0.5f, 12f);
         spawnRadius = Mathf.Max(spawnRadius, 60f);
         spawnRadiusInRockRadii = Mathf.Max(spawnRadiusInRockRadii, 20f);
+        maxSpawnRadiusMeters = Mathf.Max(maxSpawnRadiusMeters, 60f);
         maxLoadedIslands = Mathf.Max(maxLoadedIslands, 4);
         roadWidth = Mathf.Max(roadWidth, 1);
         rockWaitSeconds = Mathf.Max(rockWaitSeconds, 0.5f);
@@ -411,6 +437,33 @@ public partial class CountryGenerator : MonoBehaviour
         int q = a / b;
         if ((a % b != 0) && ((a < 0) != (b < 0))) q--;
         return q;
+    }
+
+    static int Mod(int a, int b)
+    {
+        int m = a % b;
+        return m < 0 ? m + b : m;
+    }
+
+    // Радіус стрімінгу в проєктних вокселях (зі стелею в метрах)
+    float StreamRadiusV()
+    {
+        float m = Mathf.Max(spawnRadius, focusRadius * spawnRadiusInRockRadii);
+        m = Mathf.Min(m, Mathf.Max(spawnRadius, maxSpawnRadiusMeters));
+        return m / vs;
+    }
+
+    int[] GetQueueBuf(int n)
+    {
+        if (bufQueue == null || bufQueue.Length < n) bufQueue = new int[n];
+        return bufQueue;
+    }
+
+    bool[] GetVisitedBuf(int n)
+    {
+        if (bufVisited == null || bufVisited.Length < n) bufVisited = new bool[n];
+        else System.Array.Clear(bufVisited, 0, n);
+        return bufVisited;
     }
 
     // Острівна клітина (rx, rz): існує чи ні, радіус, центр, шумові зсуви. Усе з Seed
@@ -749,6 +802,22 @@ public partial class CountryGenerator : MonoBehaviour
         s.hgt = new byte[S * S];
         int maxH = Mathf.Clamp(baseHeight + hillHeight, 1, 250);
 
+        // дані міст у масивах і квадрат межі впливу, щоб не рахувати sqrt для далеких
+        int nc = s.cities.Count;
+        var cxs = new float[nc];
+        var czs = new float[nc];
+        var crs = new float[nc];
+        var lim2 = new float[nc];
+        for (int k = 0; k < nc; k++)
+        {
+            City cy = s.cities[k];
+            cxs[k] = cy.cx;
+            czs[k] = cy.cz;
+            crs[k] = cy.r + cityFlatMargin;
+            float lim = cy.r + cityFlatMargin + cityBlend;
+            lim2[k] = lim * lim;
+        }
+
         for (int lz = 0; lz < S; lz++)
         for (int lx = 0; lx < S; lx++)
         {
@@ -765,12 +834,13 @@ public partial class CountryGenerator : MonoBehaviour
 
             // маска міст: 0 біля міста, 1 далеко
             float m = 1f;
-            for (int k = 0; k < s.cities.Count; k++)
+            for (int k = 0; k < nc; k++)
             {
-                City cy = s.cities[k];
-                float ddx = wx - cy.cx, ddz = wz - cy.cz;
-                float dd = Mathf.Sqrt(ddx * ddx + ddz * ddz);
-                float t = Mathf.Clamp01((dd - (cy.r + cityFlatMargin)) / cityBlend);
+                float ddx = wx - cxs[k], ddz = wz - czs[k];
+                float dd2 = ddx * ddx + ddz * ddz;
+                if (dd2 >= lim2[k]) continue;
+                float dd = Mathf.Sqrt(dd2);
+                float t = Mathf.Clamp01((dd - crs[k]) / cityBlend);
                 t = t * t * (3f - 2f * t);
                 if (t < m) m = t;
                 if (m <= 0f) break;
@@ -780,20 +850,31 @@ public partial class CountryGenerator : MonoBehaviour
             float cf = Mathf.Clamp01((d - beachWidth - 1) / (float)reliefCoastBlend);
             cf = cf * cf * (3f - 2f * cf);
 
-            float n = Mathf.PerlinNoise(wx * hillFreq + s.pox, wz * hillFreq + s.poz) * 0.7f
-                    + Mathf.PerlinNoise(wx * hillFreq * 2.7f + s.lox, wz * hillFreq * 2.7f + s.loz) * 0.3f;
-            float hill = Mathf.Clamp01((n - hillThreshold) / 0.3f);
-            hill = hill * hill * (3f - 2f * hill);
-
-            int h = baseHeight + Mathf.RoundToInt(hill * hillHeight * m * cf);
+            int h;
+            if (m <= 0f || cf <= 0f)
+            {
+                h = baseHeight;   // шум не потрібен: пагорби тут усе одно множаться на нуль
+            }
+            else
+            {
+                float n = Mathf.PerlinNoise(wx * hillFreq + s.pox, wz * hillFreq + s.poz) * 0.7f
+                        + Mathf.PerlinNoise(wx * hillFreq * 2.7f + s.lox, wz * hillFreq * 2.7f + s.loz) * 0.3f;
+                float hill = Mathf.Clamp01((n - hillThreshold) / 0.3f);
+                hill = hill * hill * (3f - 2f * hill);
+                h = baseHeight + Mathf.RoundToInt(hill * hillHeight * m * cf);
+            }
             s.hgt[i] = (byte)Mathf.Clamp(h, 1, maxH);
         }
     }
 
-    // Вивантажує з пам'яті найдальші острови (їхні роботи вже в черзі й не дублюються при поверненні)
+    // Вивантажує з пам'яті найдальші острови (їхні роботи вже в черзі й не дублюються при поверненні).
+    // Острови в радіусі стрімінгу не чіпаються, щоб вони не планувалися знову по колу
     void EvictFar(Island keep)
     {
         int max = Mathf.Max(3, maxLoadedIslands);
+        float reachV = StreamRadiusV() + T + 50f;
+        float reach2 = reachV * reachV;
+
         while (loaded.Count > max)
         {
             Island far = null;
@@ -802,6 +883,11 @@ public partial class CountryGenerator : MonoBehaviour
             {
                 Island o = loaded[k];
                 if (o == keep || tmpNear.Contains(o)) continue;
+
+                float gx = Mathf.Max(0f, Mathf.Max(o.ox - rockV.x, rockV.x - (o.ox + o.S)));
+                float gz = Mathf.Max(0f, Mathf.Max(o.oz - rockV.y, rockV.y - (o.oz + o.S)));
+                if (gx * gx + gz * gz < reach2) continue;   // поряд із фокусом
+
                 float dx = o.cx - rockV.x, dz = o.cz - rockV.y;
                 float d = dx * dx + dz * dz;
                 if (d > fd) { fd = d; far = o; }
@@ -858,8 +944,8 @@ public partial class CountryGenerator : MonoBehaviour
         int si = (s.cx - s.ox) + S * (s.cz - s.oz);
         s.land[si] = true;
 
-        bool[] visited = new bool[S * S];
-        int[] queue = new int[S * S];
+        bool[] visited = GetVisitedBuf(S * S);
+        int[] queue = GetQueueBuf(S * S);
         int qh = 0, qt = 0;
         queue[qt++] = si;
         visited[si] = true;
@@ -889,7 +975,7 @@ public partial class CountryGenerator : MonoBehaviour
     {
         int S = s.S;
         s.dist = new ushort[S * S];
-        int[] queue = new int[S * S];
+        int[] queue = GetQueueBuf(S * S);
         int qh = 0, qt = 0;
 
         for (int z = 0; z < S; z++)
@@ -1169,7 +1255,7 @@ public partial class CountryGenerator : MonoBehaviour
         int half = sp / 2;
         int rx = FloorDiv(Mathf.RoundToInt(rockV.x) + half, sp);
         int rz = FloorDiv(Mathf.RoundToInt(rockV.y) + half, sp);
-        float R = Mathf.Max(spawnRadius, focusRadius * spawnRadiusInRockRadii) / vs;
+        float R = StreamRadiusV();
         float lim = R + T + 250f;
         for (int dz = -1; dz <= 1; dz++)
         for (int dx = -1; dx <= 1; dx++)
@@ -1185,12 +1271,14 @@ public partial class CountryGenerator : MonoBehaviour
         return false;
     }
 
-    // Найближча до фокуса ще не збудована плитка, що перетинає острів
-    bool FindNearestTile(float reach, out Vector2Int best)
+    // Збирає непобудовані плитки з островами в радіусі reach і сортує так, що найближча в кінці списку.
+    // Викликається лише коли фокус помітно зрушив або черга порожня, а не після кожної плитки
+    void RebuildTileQueue(float reach)
     {
-        best = default;
-        float bestD = float.MaxValue;
-        bool found = false;
+        tileQueue.Clear();
+        tileScan.Clear();
+        queueFocus = rockV;
+
         int rt = Mathf.CeilToInt(reach / T) + 1;
         int cx = FloorDiv(Mathf.RoundToInt(rockV.x), T), cz = FloorDiv(Mathf.RoundToInt(rockV.y), T);
         float reach2 = reach * reach;
@@ -1200,20 +1288,22 @@ public partial class CountryGenerator : MonoBehaviour
             var t = new Vector2Int(cx + dx, cz + dz);
             float px = (t.x + 0.5f) * T - rockV.x, pz = (t.y + 0.5f) * T - rockV.y;
             float d = px * px + pz * pz;
-            if (d > reach2 || d >= bestD) continue;
+            if (d > reach2) continue;
             if (built.Contains(t)) continue;
             if (!TileHasIsland(t)) continue;
-            bestD = d;
-            best = t;
-            found = true;
+            tileScan.Add(new TileDist { t = t, d = d });
         }
-        return found;
+
+        tileScan.Sort((a, b) => b.d.CompareTo(a.d));   // найдальші першими, найближчі в кінці
+        for (int k = 0; k < tileScan.Count; k++) tileQueue.Add(tileScan[k].t);
     }
 
     IEnumerator Worker()
     {
         // даємо VoxelWorld.SettleOnStart відпрацювати раніше за нас
         for (int i = 0; i < 4; i++) yield return null;
+
+        var sw = new System.Diagnostics.Stopwatch();
 
         while (true)
         {
@@ -1237,8 +1327,23 @@ public partial class CountryGenerator : MonoBehaviour
                 continue;
             }
 
-            float Rv = Mathf.Max(spawnRadius, focusRadius * spawnRadiusInRockRadii) / vs;   // у проєктних вокселях
-            if (!FindNearestTile(Rv + T, out Vector2Int tile))
+            float reach = StreamRadiusV() + T;
+            if (tileQueue.Count == 0 || (rockV - queueFocus).sqrMagnitude > (T * 0.75f) * (T * 0.75f))
+                RebuildTileQueue(reach);
+
+            bool got = false;
+            Vector2Int tile = default;
+            while (tileQueue.Count > 0)
+            {
+                Vector2Int t = tileQueue[tileQueue.Count - 1];
+                tileQueue.RemoveAt(tileQueue.Count - 1);
+                if (built.Contains(t)) continue;
+                tile = t;
+                got = true;
+                break;
+            }
+
+            if (!got)
             {
                 if (debugLog && !idle)
                     Debug.Log("[CountryGenerator] Поруч із фокусом " + rockV + " (вокселі) немає непобудованих плиток з островом. Збудовано плиток: " + dbgTiles);
@@ -1252,11 +1357,14 @@ public partial class CountryGenerator : MonoBehaviour
             built.Add(tile);
             BuildTile(tile);
 
+            // розстановка вокселів у світ за бюджетом часу на кадр
             int idx = 0;
+            int cap = Mathf.Max(100, voxelsPerFrame);
             while (idx < ops.Count)
             {
-                int end = Mathf.Min(ops.Count, idx + Mathf.Max(100, voxelsPerFrame));
-                for (; idx < end; idx++)
+                sw.Restart();
+                int n = 0;
+                while (idx < ops.Count && n < cap)
                 {
                     VoxelOp op = ops[idx];
                     // проєктний воксель потрапляє в клітинку світу, що його містить.
@@ -1269,6 +1377,9 @@ public partial class CountryGenerator : MonoBehaviour
                         world.SetVoxel(p, op.id);
                         dbgVoxels++;
                     }
+                    idx++;
+                    n++;
+                    if ((n & 63) == 0 && sw.Elapsed.TotalMilliseconds > frameBudgetMs) break;
                 }
                 yield return null;
             }
@@ -1405,9 +1516,8 @@ public partial class CountryGenerator : MonoBehaviour
     }
 
     // Колір верху колонки: дорога, пісок пляжу, скеля на крутому схилі або трава
-    byte GroundTopColor(Island s, int i, int x, int z, int h, bool beach)
+    byte GroundTopColor(Island s, byte kind, int x, int z, int h, bool beach)
     {
-        byte kind = s.road[i];
         if (kind != 0)
             return s.modern ? ModernRoadColor(kind, x, z) : RoadColor(kind, x, z);
         if (beach)
@@ -1445,7 +1555,27 @@ public partial class CountryGenerator : MonoBehaviour
         return null;
     }
 
-    // Вокселі землі: суцільна колонка від y = 0 до висоти землі.
+    // Чи є в клітинці світу (dn x dn проєктних колонок) дорога. Вулиця має перевагу над дорогою між містами.
+    // Дороги шириною 1-2 проєктні воксели інакше зникали б при вибірці однієї колонки
+    byte CellRoadKind(Island s, int cx0, int cz0, byte kind)
+    {
+        if (kind == 1) return kind;
+        for (int dz = 0; dz < dn; dz++)
+        for (int dx = 0; dx < dn; dx++)
+        {
+            int xx = cx0 + dx, zz = cz0 + dz;
+            if (xx < s.ox || xx >= s.ox + s.S || zz < s.oz || zz >= s.oz + s.S) continue;
+            int j = (xx - s.ox) + s.S * (zz - s.oz);
+            if (!s.land[j]) continue;
+            byte k = s.road[j];
+            if (k == 1) return 1;
+            if (k != 0) kind = k;
+        }
+        return kind;
+    }
+
+    // Вокселі землі: одна колонка на клітинку світу (береться центральна проєктна колонка клітинки),
+    // від y = 0 до висоти землі. Це в dn^3 разів менше операцій, ніж по кожному проєктному вокселю.
     // Деталі (будинки, дерева) вже стоять у черзі раніше, а Worker не затирає зайняті клітинки
     void BuildTileGround(Vector2Int tile)
     {
@@ -1453,21 +1583,30 @@ public partial class CountryGenerator : MonoBehaviour
 
         int x0 = tile.x * T, z0 = tile.y * T;
         int x1 = x0 + T, z1 = z0 + T;
+        int half = dn / 2;
 
         for (int z = z0; z < z1; z++)
-        for (int x = x0; x < x1; x++)
         {
-            Island s = FindTileIsland(x, z);
-            if (s == null || s.land == null || s.hgt == null) continue;
-            int i = (x - s.ox) + s.S * (z - s.oz);
-            if (!s.land[i]) continue;
+            if (Mod(z, dn) != half) continue;
+            for (int x = x0; x < x1; x++)
+            {
+                if (Mod(x, dn) != half) continue;
 
-            int h = s.hgt[i];
-            bool beach = s.dist[i] <= beachWidth;
+                Island s = FindTileIsland(x, z);
+                if (s == null || s.land == null || s.hgt == null) continue;
+                int i = (x - s.ox) + s.S * (z - s.oz);
+                if (!s.land[i]) continue;
 
-            AddAbs(x, h - 1, z, GroundTopColor(s, i, x, z, h, beach));
-            for (int y = h - 2; y >= 0; y--)
-                AddAbs(x, y, z, GroundLayerColor(x, y, z, h, beach));
+                int h = s.hgt[i];
+                bool beach = s.dist[i] <= beachWidth;
+                byte kind = s.road[i];
+                if (dn > 1) kind = CellRoadKind(s, x - half, z - half, kind);
+
+                int hw = FloorDiv(h - 1, dn);   // верхній рівень клітинок світу
+                AddAbs(x, hw * dn, z, GroundTopColor(s, kind, x, z, h, beach));
+                for (int wy = hw - 1; wy >= 0; wy--)
+                    AddAbs(x, wy * dn, z, GroundLayerColor(x, wy * dn, z, h, beach));
+            }
         }
     }
 
