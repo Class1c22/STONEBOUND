@@ -54,6 +54,22 @@ public class PlanetExplosion : MonoBehaviour
     public float shockwaveMaxRadii = 5f;
     public float shockwaveTime = 2.2f;
 
+    [Header("Згоряння від магми")]
+    [Tooltip("Шматки й уламки розжарюються магмою зсередини й згоряють")]
+    public bool burnUp = true;
+    [Tooltip("Через скільки секунд після вибуху починається горіння")]
+    public float burnDelay = 1f;
+    [Tooltip("Випадковий розкид початку горіння між шматками (щоб горіли не всі разом)")]
+    public float burnDelayRandom = 0.6f;
+    [Tooltip("Скільки секунд шматок горить, поки не зникне повністю")]
+    public float burnTime = 3f;
+    [Tooltip("Яскравість розжарення під час горіння")]
+    public float burnGlow = 3.5f;
+    [Tooltip("Іскри й дим навколо палаючих шматків")]
+    public bool burnParticles = true;
+    [Tooltip("Скільки частинок за секунду на один шматок")]
+    public float burnParticleRate = 40f;
+
     [Header("Ядро")]
     [Tooltip("Розжарена куля в центрі, що повільно остигає")]
     public bool lavaCore = true;
@@ -71,7 +87,19 @@ public class PlanetExplosion : MonoBehaviour
 
     public bool Exploded { get; private set; }
 
-    class Body { public Transform t; public Vector3 vel, axis; public float spin; }
+    class Body
+    {
+        public Transform t;
+        public Vector3 vel, axis;
+        public float spin;
+        // горіння
+        public Renderer rend;
+        public MaterialPropertyBlock mpb;
+        public float baseScale = 1f, burnStart = -1f, burnDur = 1f, seed;
+        public Color baseCol = Color.white;
+        public bool burning, particles;
+        public ParticleSystem ps;
+    }
     class Mb
     {
         public List<Vector3> v = new List<Vector3>();
@@ -94,8 +122,10 @@ public class PlanetExplosion : MonoBehaviour
     int palCount;
 
     Transform chunkRoot;
-    Material chunkMat;
+    Material chunkMat, burnMat, fxMat;
     Mesh rubbleMesh;
+    float explodeTime;
+    static readonly Color charcoal = new Color(0.16f, 0.11f, 0.09f);
     bool built, building;
     Coroutine buildCo;
     float R, vs, rin;
@@ -139,6 +169,7 @@ public class PlanetExplosion : MonoBehaviour
             return;
         }
         Exploded = true;
+        explodeTime = Time.time;
 
         // якщо шматки ще не добудувались, добудовуємо одразу (може бути коротка пауза)
         if (!built)
@@ -168,7 +199,15 @@ public class PlanetExplosion : MonoBehaviour
                     t = chunkObjs[i].transform,
                     vel = chunkDirs[i] * sp,
                     axis = Random.onUnitSphere,
-                    spin = Random.Range(-1f, 1f) * chunkSpin
+                    spin = Random.Range(-1f, 1f) * chunkSpin,
+                    rend = chunkObjs[i].GetComponent<MeshRenderer>(),
+                    mpb = new MaterialPropertyBlock(),
+                    baseScale = 1f,
+                    baseCol = Color.white,
+                    burnStart = burnUp ? burnDelay + Random.value * burnDelayRandom : -1f,
+                    burnDur = Mathf.Max(0.2f, burnTime),
+                    seed = Random.value * 100f,
+                    particles = burnParticles
                 });
             }
         }
@@ -187,6 +226,7 @@ public class PlanetExplosion : MonoBehaviour
     {
         if (bodies.Count == 0) return;
         float dt = Time.deltaTime;
+        float age = Time.time - explodeTime;
         Vector3 center = planet != null ? planet.CenterWorld : Vector3.zero;
         float cull = cullDistanceRadii > 0f ? cullDistanceRadii * R : 0f;
         float cull2 = cull * cull;
@@ -197,6 +237,13 @@ public class PlanetExplosion : MonoBehaviour
             if (b.t == null) { bodies.RemoveAt(i); continue; }
             b.t.position += b.vel * dt;
             b.t.rotation = Quaternion.AngleAxis(b.spin * dt, b.axis) * b.t.rotation;
+
+            // згоряння від магми: розжарюється, темніє, зменшується й зникає
+            if (b.burnStart >= 0f && age >= b.burnStart && Burn(b, age))
+            {
+                bodies.RemoveAt(i);
+                continue;
+            }
 
             if (cull > 0f && (b.t.position - center).sqrMagnitude > cull2)
             {
@@ -446,7 +493,142 @@ public class PlanetExplosion : MonoBehaviour
         m.SetTexture("_EmissionMap", em);
         m.SetColor("_EmissionColor", Color.white * Mathf.Max(0f, lavaGlow));
         m.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
+
+        // матеріал горіння: уся поверхня світиться розжареним помаранчевим (яскравість = _EmissionColor з MPB)
+        var arr = new Color32[PalW];
+        for (int i = 0; i < PalW; i++)
+        {
+            if (i >= palCount) { arr[i] = new Color32(0, 0, 0, 255); continue; }
+            Color32 e = palEm[i];
+            if (e.r + e.g + e.b > 0) { arr[i] = e; continue; }   // лава й так світиться
+            Color32 a = palAlb[i];
+            float lum = (0.3f * a.r + 0.59f * a.g + 0.11f * a.b) / 255f;
+            float k = 0.35f + 0.65f * lum;
+            arr[i] = new Color(1f * k, 0.45f * k, 0.1f * k, 1f);
+        }
+        var em2 = new Texture2D(PalW, 1, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+        em2.SetPixels32(arr);
+        em2.Apply(false);
+        burnMat = new Material(m) { name = "PlanetChunkBurnMat" };
+        burnMat.SetTexture("_EmissionMap", em2);
+        burnMat.SetColor("_EmissionColor", Color.black);
         return m;
+    }
+
+    // ---------- горіння ----------
+
+    // Повертає true, коли шматок догорів і знищений
+    bool Burn(Body b, float age)
+    {
+        if (b.t == null || b.rend == null) return true;
+        float p = Mathf.Clamp01((age - b.burnStart) / b.burnDur);
+
+        if (!b.burning)
+        {
+            b.burning = true;
+            if (burnMat != null) b.rend.sharedMaterial = burnMat;
+            if (b.particles)
+            {
+                if (fxMat == null) fxMat = MakeFxMaterial();
+                b.ps = MakeBurnPS(b.t, Mathf.Max(0.5f, b.rend.bounds.extents.magnitude));
+            }
+        }
+
+        float heat = Mathf.SmoothStep(0f, 1f, p / 0.3f);
+        float flick = 0.85f + 0.15f * Mathf.Sin(Time.time * 28f + b.seed);
+        Color baseC = Color.Lerp(b.baseCol, charcoal, Mathf.Clamp01(p / 0.5f));
+        b.mpb.SetColor("_BaseColor", baseC);
+        b.mpb.SetColor("_Color", baseC);
+        b.mpb.SetColor("_EmissionColor", Color.white * (burnGlow * heat * flick));
+        b.rend.SetPropertyBlock(b.mpb);
+
+        b.t.localScale = Vector3.one * b.baseScale * (1f - Mathf.SmoothStep(0f, 1f, p));
+
+        if (p < 1f) return false;
+
+        if (b.ps != null)
+        {
+            // частинки, що вже летять, лишаються й догоряють самі
+            b.ps.transform.SetParent(null, true);
+            var em = b.ps.emission;
+            em.enabled = false;
+            Destroy(b.ps.gameObject, 3f);
+        }
+        Destroy(b.t.gameObject);
+        return true;
+    }
+
+    Material MakeFxMaterial()
+    {
+        Shader sh = Shader.Find("Universal Render Pipeline/Particles/Unlit");
+        if (sh == null) sh = Shader.Find("Sprites/Default");
+        var m = new Material(sh) { name = "BurnFX" };
+        if (sh.name.Contains("Universal"))
+        {
+            m.SetFloat("_Surface", 1f);
+            m.SetFloat("_Blend", 0f);
+            m.SetOverrideTag("RenderType", "Transparent");
+            m.SetInt("_SrcBlend", (int)BlendMode.SrcAlpha);
+            m.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
+            m.SetInt("_ZWrite", 0);
+            m.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            m.renderQueue = (int)RenderQueue.Transparent;
+        }
+        SetColor(m, Color.white);
+        return m;
+    }
+
+    // Іскри й дим: піксельні квадрати, що відлітають від шматка (у світових координатах)
+    ParticleSystem MakeBurnPS(Transform parent, float size)
+    {
+        var go = new GameObject("BurnFX");
+        go.transform.SetParent(parent, false);
+        var ps = go.AddComponent<ParticleSystem>();
+        ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+
+        var main = ps.main;
+        main.loop = true;
+        main.duration = 5f;
+        main.playOnAwake = false;
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+        main.startLifetime = new ParticleSystem.MinMaxCurve(0.6f, 1.5f);
+        main.startSpeed = new ParticleSystem.MinMaxCurve(size * 0.05f, size * 0.35f);
+        main.startSize = new ParticleSystem.MinMaxCurve(size * 0.05f, size * 0.14f);
+        main.gravityModifier = 0f;
+        main.maxParticles = 150;
+
+        var em = ps.emission;
+        em.rateOverTime = Mathf.Max(0f, burnParticleRate);
+
+        var sh = ps.shape;
+        sh.shapeType = ParticleSystemShapeType.Sphere;
+        sh.radius = size * 0.45f;
+
+        var col = ps.colorOverLifetime;
+        col.enabled = true;
+        var g = new Gradient();
+        g.SetKeys(
+            new[] {
+                new GradientColorKey(new Color(1f, 0.85f, 0.4f), 0f),
+                new GradientColorKey(new Color(1f, 0.35f, 0.05f), 0.35f),
+                new GradientColorKey(new Color(0.2f, 0.15f, 0.12f), 1f) },
+            new[] {
+                new GradientAlphaKey(1f, 0f),
+                new GradientAlphaKey(0.8f, 0.5f),
+                new GradientAlphaKey(0f, 1f) });
+        col.color = g;
+
+        var sz = ps.sizeOverLifetime;
+        sz.enabled = true;
+        sz.size = new ParticleSystem.MinMaxCurve(1f, AnimationCurve.Linear(0f, 1f, 1f, 0.3f));
+
+        var r = go.GetComponent<ParticleSystemRenderer>();
+        r.sharedMaterial = fxMat;
+        r.renderMode = ParticleSystemRenderMode.Billboard;
+        r.shadowCastingMode = ShadowCastingMode.Off;
+
+        ps.Play();
+        return ps;
     }
 
     // ---------- дрібні уламки ----------
@@ -479,7 +661,8 @@ public class PlanetExplosion : MonoBehaviour
             go.transform.SetParent(root, false);
             go.transform.position = center + dir * (R + thick * vs * Random.value);
             go.transform.rotation = Random.rotation;
-            go.transform.localScale = Vector3.one * vs * Random.Range(rubbleVoxels.x, rubbleVoxels.y);
+            float rubbleScale = vs * Random.Range(rubbleVoxels.x, rubbleVoxels.y);
+            go.transform.localScale = Vector3.one * rubbleScale;
             go.AddComponent<MeshFilter>().sharedMesh = rubbleMesh;
             var mr = go.AddComponent<MeshRenderer>();
             mr.sharedMaterial = chunkMat;
@@ -496,7 +679,15 @@ public class PlanetExplosion : MonoBehaviour
                 t = go.transform,
                 vel = d2 * R * rubbleSpeedRadii * Random.Range(0.5f, 1.5f),
                 axis = Random.onUnitSphere,
-                spin = Random.Range(-1f, 1f) * rubbleSpin
+                spin = Random.Range(-1f, 1f) * rubbleSpin,
+                rend = mr,
+                mpb = mpb,
+                baseScale = rubbleScale,
+                baseCol = col,
+                burnStart = burnUp ? burnDelay * 0.6f + Random.value * 0.6f : -1f,
+                burnDur = Mathf.Max(0.2f, burnTime * 0.5f),
+                seed = Random.value * 100f,
+                particles = false
             });
         }
     }
