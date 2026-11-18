@@ -393,7 +393,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::EndingCinematicStarter
   director: {fileID: 689670329}
   cinemaCamera: {fileID: 1097544926}
-  enableObjects: []
+  enableObjects:
+  - {fileID: 1097544922}
   disableObjects: []
   disableScripts: []
   rockScriptNames:
@@ -406,6 +407,8 @@ MonoBehaviour:
   rockNamePart: rock
   rockTag: 
   playOnStart: 0
+  restartTimeline: 1
+  fixAudioListeners: 1
 --- !u!114 &689670332
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -420,7 +423,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::PlanetEndTrigger
   planet: {fileID: 1902608297}
   starter: {fileID: 689670331}
-  eatenThreshold: 0.9
+  remainingThreshold: 0.03
   holdSeconds: 1
   checkInterval: 0.25
   debugLog: 1
@@ -594,7 +597,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &1097544923
 Transform:
   m_ObjectHideFlags: 0
