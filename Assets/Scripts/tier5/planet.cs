@@ -19,6 +19,7 @@ using UnityEngine.Rendering;
 //  * ДЕРЕВА: вокселні, ростуть радіально від центру планети.
 //  * ГРАВІТАЦІЯ радіальна: до центру планети. Діє і на камінь, і на уламки (VoxelPiece).
 //    Для уламків окремі налаштування: множник сили, опір води, частота пошуку нових уламків.
+//    Уламки, що вже заснули (лежать на землі), не чіпаються, щоб фізика не рахувала їх щокадру.
 //  * ЦІЛІСНІСТЬ КОРИ (Integrity01): під час генерації вибирається кілька тисяч вокселів верхніх шарів кори,
 //    потім повільно перевіряється, скільки з них ще стоять. PixelTubeBar на рівні-планеті показує це значення:
 //    бар повний, поки кора ціла, і зменшується, коли камінь її ламає.
@@ -48,7 +49,7 @@ public class PlanetGenerator : MonoBehaviour
     public int maxBedrockRadius = 300;
 
     [Header("Планета (у вокселях)")]
-    [Tooltip("Максимальна товщина вокселної кори над основою")]
+    [Tooltip("Максимальна товщина вокселної кори над основою. Менше = менше вокселів і колайдерів, а отже менше лагів")]
     public int crustMax = 10;
     [Tooltip("Запас висоти над корою для дерев")]
     public int treeMargin = 9;
@@ -83,9 +84,11 @@ public class PlanetGenerator : MonoBehaviour
     [Tooltip("Опір води для уламків")]
     public float pieceWaterDrag = 3f;
     [Tooltip("Як часто (сек) шукати нові уламки. Менше = швидше підхоплює, але важче")]
-    [Range(0.02f, 1f)] public float pieceScanInterval = 0.1f;
+    [Range(0.02f, 1f)] public float pieceScanInterval = 0.25f;
     [Tooltip("Уламки далі за цю відстань від центру планети (у радіусах основи) не чіпаємо. 0 = без обмеження")]
     public float pieceMaxDistanceRadii = 0f;
+    [Tooltip("Поріг сну уламків (більше = засинають швидше, менше навантаження на фізику). 0 = не чіпати")]
+    public float pieceSleepThreshold = 0.05f;
 
     [Header("Цілісність кори (для бару)")]
     [Tooltip("Скільки верхніх шарів кори враховується (0 = лише поверхня). Глибокі шари камінь майже не ламає")]
@@ -93,7 +96,7 @@ public class PlanetGenerator : MonoBehaviour
     [Tooltip("Скільки вокселів вибираємо для підрахунку цілісності")]
     public int integritySamples = 4000;
     [Tooltip("Скільки вибраних вокселів перевіряємо за кадр")]
-    public int integrityScanPerFrame = 400;
+    public int integrityScanPerFrame = 150;
 
     [Header("Генерація")]
     public int blockSize = 24;
@@ -134,10 +137,13 @@ public class PlanetGenerator : MonoBehaviour
     Transform lockT;
     Vector3 lockPos;
     Quaternion lockRot;
+    float nextRockSearch;
 
     // уламки
     readonly List<Rigidbody> pieceBodies = new List<Rigidbody>();
     readonly HashSet<Rigidbody> pieceSet = new HashSet<Rigidbody>();
+    readonly Dictionary<VoxelPiece, Rigidbody> pieceRbCache = new Dictionary<VoxelPiece, Rigidbody>();
+    readonly HashSet<Rigidbody> sleepConfigured = new HashSet<Rigidbody>();
     float nextPieceScan;
 
     // цілісність кори: вибірка вокселів верхніх шарів (резервуарна вибірка)
@@ -893,8 +899,17 @@ public class PlanetGenerator : MonoBehaviour
         // уламки: притягуємо до центру планети (незалежно від каменя)
         if (pieceGravity) ApplyPieceGravity();
 
-        if (rock == null || rb == null) { FindRock(); if (rock == null || rb == null) return; }
-        rb.useGravity = false;
+        if (rock == null || rb == null)
+        {
+            // пошук каменя не частіше ніж раз на пів секунди (FindFirstObjectByType дорогий)
+            if (Time.time >= nextRockSearch)
+            {
+                nextRockSearch = Time.time + 0.5f;
+                FindRock();
+            }
+            if (rock == null || rb == null) return;
+        }
+        if (rb.useGravity) rb.useGravity = false;
         if (rb.isKinematic) return;
 
         Vector3 to = CenterWorld - rb.worldCenterOfMass;
@@ -908,20 +923,41 @@ public class PlanetGenerator : MonoBehaviour
             rb.AddForce(-rb.linearVelocity * waterDrag, ForceMode.Acceleration);
     }
 
-    // Знаходить усі VoxelPiece у сцені й запам'ятовує їхні Rigidbody (раз на pieceScanInterval)
+    // Знаходить усі VoxelPiece у сцені й запам'ятовує їхні Rigidbody (раз на pieceScanInterval).
+    // Rigidbody уламка береться з кешу, GetComponent викликається лише для нових
     void RefreshPieces()
     {
         pieceBodies.Clear();
         pieceSet.Clear();
 
         VoxelPiece[] all = FindObjectsByType<VoxelPiece>(FindObjectsSortMode.None);
+
+        // кеш не повинен рости без меж (знищені уламки лишаються ключами)
+        if (pieceRbCache.Count > all.Length * 2 + 512) pieceRbCache.Clear();
+        if (sleepConfigured.Count > all.Length * 2 + 2048) sleepConfigured.Clear();
+
         for (int i = 0; i < all.Length; i++)
         {
-            Rigidbody prb = all[i].GetComponent<Rigidbody>();
-            if (prb == null) prb = all[i].GetComponentInParent<Rigidbody>();
+            VoxelPiece vp = all[i];
+            if (!pieceRbCache.TryGetValue(vp, out Rigidbody prb))
+            {
+                prb = vp.GetComponent<Rigidbody>();
+                if (prb == null) prb = vp.GetComponentInParent<Rigidbody>();
+                pieceRbCache[vp] = prb;
+            }
             if (prb == null || prb == rb) continue;
-            if (pieceSet.Add(prb)) pieceBodies.Add(prb);
+            if (!pieceSet.Add(prb)) continue;
+
+            pieceBodies.Add(prb);
+            ConfigureSleep(prb);
         }
+    }
+
+    // Вищий поріг сну: уламки на землі швидше "засинають" і перестають навантажувати фізику
+    void ConfigureSleep(Rigidbody p)
+    {
+        if (pieceSleepThreshold <= 0f) return;
+        if (sleepConfigured.Add(p)) p.sleepThreshold = pieceSleepThreshold;
     }
 
     void ApplyPieceGravity()
@@ -950,13 +986,19 @@ public class PlanetGenerator : MonoBehaviour
         Rigidbody[] debris = world.DebrisBodies;
         if (debris != null)
             for (int i = 0; i < debris.Length; i++)
-                if (debris[i] != null) PullToCenter(debris[i], center, waterR, maxD, g);
+            {
+                Rigidbody d = debris[i];
+                if (d == null) continue;
+                ConfigureSleep(d);
+                PullToCenter(d, center, waterR, maxD, g);
+            }
     }
 
     void PullToCenter(Rigidbody p, Vector3 center, float waterR, float maxD, float g)
     {
-        p.useGravity = false;                                        // прибираємо глобальну гравітацію Unity
-        if (p.isKinematic) return;
+        // заснулі уламки не чіпаємо: AddForce будив би їх щокадру й вони ніколи не відпочивали б
+        if (p.isKinematic || p.IsSleeping()) return;
+        if (p.useGravity) p.useGravity = false;                      // прибираємо глобальну гравітацію Unity
 
         Vector3 to = center - p.worldCenterOfMass;
         float dist = to.magnitude;
