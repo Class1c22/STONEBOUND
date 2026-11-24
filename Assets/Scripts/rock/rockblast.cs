@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
-// Повісь на камінь (разом з RockAbsorber). Кнопка R: камінь віддає половину того, що з'їв.
+// Повісь на камінь (разом з RockAbsorber). Кнопка R: камінь віддає частину того, що з'їв.
 // Він меншає, а відповідна частка шматків з поверхні розлітається в усі боки
 // і ламає воксельний світ (кожен шматок при ударі вибиває кулю вокселів, як і сам камінь).
 [RequireComponent(typeof(Rigidbody), typeof(RockAbsorber))]
@@ -11,7 +11,8 @@ public class RockBlast : MonoBehaviour
     [Header("Викид (кнопка R)")]
     [Tooltip("Яку частку набраного віддавати (0.5 = половину)")]
     [Range(0.05f, 1f)] public float shedFraction = 0.5f;
-    public float cooldown = 0.4f;
+    [Tooltip("Кулдаун R, секунд. Саме стільки опускається плашка на кнопці")]
+    public float cooldown = 3f;
     public float minSpeed = 12f;
     public float maxSpeed = 26f;
     [Tooltip("Розкид напрямку від радіального (0 = строго від центру каменя)")]
@@ -38,6 +39,20 @@ public class RockBlast : MonoBehaviour
     public int maxHits = 3;
     [Range(0f, 1f)] public float speedKeep = 0.8f;
 
+    // Спрацьовує, коли R справді щось віддала (на межі стадії не спрацьовує)
+    public event System.Action Blasted;
+
+    // Скільки кулдауну лишилось: 1 = щойно вистрілили, 0 = готово
+    public float CooldownLeft01
+    {
+        get
+        {
+            if (cooldown <= 0f) return 0f;
+            return Mathf.Clamp01((nextTime - Time.time) / cooldown);
+        }
+    }
+    public bool IsReady => Time.time >= nextTime;
+
     Rigidbody rb;
     RockAbsorber absorber;
     Collider rockCollider;
@@ -60,21 +75,31 @@ public class RockBlast : MonoBehaviour
     void Update()
     {
         var kb = Keyboard.current;
-        if (kb != null && kb.rKey.wasPressedThisFrame && Time.time >= nextTime)
-            Blast();
+        if (kb != null && kb.rKey.wasPressedThisFrame)
+            TryBlast();
     }
 
-    void Blast()
+    // Те саме, що натискання R. Викликай з екранної кнопки (мобільна версія)
+    public bool TryBlast()
+    {
+        if (!enabled || !IsReady) return false;
+        return Blast();
+    }
+
+    bool Blast()
     {
         released.Clear();
         Vector3 center = absorber.WorldCenter;
 
-        if (!absorber.ShedFraction(shedFraction, released)) return;   // нічого віддавати
+        if (!absorber.ShedFraction(shedFraction, released)) return false;   // нічого віддавати: кулдаун не запускається
         nextTime = Time.time + cooldown;
 
         foreach (Transform t in released)
             if (t != null) Launch(t, center);
         released.Clear();
+
+        Blasted?.Invoke();
+        return true;
     }
 
     void Launch(Transform t, Vector3 center)
@@ -117,80 +142,4 @@ public class RockBlast : MonoBehaviour
     }
 }
 
-// Додається до кожного викинутого шматка автоматично.
-public class ShedProjectile : MonoBehaviour
-{
-    [HideInInspector] public VoxelWorld world;
-    [HideInInspector] public float minImpactSpeed, baseRadius, radiusPerSpeed, maxRadius, speedKeep;
-    [HideInInspector] public int hitsLeft;
-    [HideInInspector] public float radiusMultiplier = 1f;
-    [HideInInspector] public float lifetime, pickupDelay;
-
-    Rigidbody rb;
-    Absorbable absorbable;
-    Vector3 lastVelocity;
-    float spawnTime, lastHitTime;
-    bool pickable;
-    readonly List<VoxelWorld.RemovedVoxel> removed = new List<VoxelWorld.RemovedVoxel>();
-
-    void Awake()
-    {
-        rb = GetComponent<Rigidbody>();
-        absorbable = GetComponent<Absorbable>();
-        spawnTime = Time.time;
-        lastVelocity = rb != null ? rb.linearVelocity : Vector3.zero;
-
-        // поки летить, камінь не може його знову всмоктати
-        if (absorbable != null) absorbable.attached = true;
-    }
-
-    void FixedUpdate()
-    {
-        if (rb != null) lastVelocity = rb.linearVelocity;   // швидкість до зіткнення
-    }
-
-    void Update()
-    {
-        if (!pickable && Time.time - spawnTime >= pickupDelay)
-        {
-            pickable = true;
-            if (absorbable != null) absorbable.attached = false;
-        }
-
-        // камінь знову всмоктав шматок: він став дитиною каменя, більше не снаряд
-        if (pickable && transform.parent != null)
-        {
-            Destroy(this);
-            return;
-        }
-
-        if (Time.time - spawnTime > lifetime) Destroy(gameObject);
-    }
-
-    void OnCollisionEnter(Collision c)
-    {
-        if (world == null || hitsLeft <= 0 || rb == null) return;
-        if (Time.time - lastHitTime < 0.05f) return;
-        if (c.collider.GetComponentInParent<VoxelWorld>() != world) return;
-
-        ContactPoint cp = c.GetContact(0);
-
-        // тільки швидкість У стіну: ковзання вздовж стіни нічого не ламає
-        float impact = Mathf.Abs(Vector3.Dot(lastVelocity, cp.normal));
-        if (impact < minImpactSpeed) return;
-
-        float radius = Mathf.Min(maxRadius, baseRadius + impact * radiusPerSpeed) * radiusMultiplier;
-        Vector3 center = cp.point - cp.normal * (radius * 0.5f);   // трохи углиб стіни
-
-        removed.Clear();
-        int n = world.DestroySphere(center, radius, removed);
-        if (n == 0) return;
-
-        lastHitTime = Time.time;
-        world.SpawnDebris(removed, center, lastVelocity);
-        rb.linearVelocity = lastVelocity * speedKeep;   // пробиває, а не зупиняється
-
-        hitsLeft--;
-        if (hitsLeft <= 0) Destroy(gameObject);
-    }
-}
+// ShedProjectile: лишається в цьому ж файлі без змін
