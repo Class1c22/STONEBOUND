@@ -143,3 +143,81 @@ public class RockBlast : MonoBehaviour
 }
 
 // ShedProjectile: лишається в цьому ж файлі без змін
+
+// Додається до кожного викинутого шматка автоматично.
+public class ShedProjectile : MonoBehaviour
+{
+    [HideInInspector] public VoxelWorld world;
+    [HideInInspector] public float minImpactSpeed, baseRadius, radiusPerSpeed, maxRadius, speedKeep;
+    [HideInInspector] public int hitsLeft;
+    [HideInInspector] public float radiusMultiplier = 1f;
+    [HideInInspector] public float lifetime, pickupDelay;
+
+    Rigidbody rb;
+    Absorbable absorbable;
+    Vector3 lastVelocity;
+    float spawnTime, lastHitTime;
+    bool pickable;
+    readonly List<VoxelWorld.RemovedVoxel> removed = new List<VoxelWorld.RemovedVoxel>();
+
+    void Awake()
+    {
+        rb = GetComponent<Rigidbody>();
+        absorbable = GetComponent<Absorbable>();
+        spawnTime = Time.time;
+        lastVelocity = rb != null ? rb.linearVelocity : Vector3.zero;
+
+        // поки летить, камінь не може його знову всмоктати
+        if (absorbable != null) absorbable.attached = true;
+    }
+
+    void FixedUpdate()
+    {
+        if (rb != null) lastVelocity = rb.linearVelocity;   // швидкість до зіткнення
+    }
+
+    void Update()
+    {
+        if (!pickable && Time.time - spawnTime >= pickupDelay)
+        {
+            pickable = true;
+            if (absorbable != null) absorbable.attached = false;
+        }
+
+        // камінь знову всмоктав шматок: він став дитиною каменя, більше не снаряд
+        if (pickable && transform.parent != null)
+        {
+            Destroy(this);
+            return;
+        }
+
+        if (Time.time - spawnTime > lifetime) Destroy(gameObject);
+    }
+
+    void OnCollisionEnter(Collision c)
+    {
+        if (world == null || hitsLeft <= 0 || rb == null) return;
+        if (Time.time - lastHitTime < 0.05f) return;
+        if (c.collider.GetComponentInParent<VoxelWorld>() != world) return;
+
+        ContactPoint cp = c.GetContact(0);
+
+        // тільки швидкість У стіну: ковзання вздовж стіни нічого не ламає
+        float impact = Mathf.Abs(Vector3.Dot(lastVelocity, cp.normal));
+        if (impact < minImpactSpeed) return;
+
+        float radius = Mathf.Min(maxRadius, baseRadius + impact * radiusPerSpeed) * radiusMultiplier;
+        Vector3 center = cp.point - cp.normal * (radius * 0.5f);   // трохи углиб стіни
+
+        removed.Clear();
+        int n = world.DestroySphere(center, radius, removed);
+        if (n == 0) return;
+
+        lastHitTime = Time.time;
+        world.SpawnDebris(removed, center, lastVelocity);
+        rb.linearVelocity = lastVelocity * speedKeep;   // пробиває, а не зупиняється
+
+        hitsLeft--;
+        if (hitsLeft <= 0) Destroy(gameObject);
+    }
+}
