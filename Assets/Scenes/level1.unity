@@ -13166,6 +13166,7 @@ GameObject:
   - component: {fileID: 2062106607}
   - component: {fileID: 2062106609}
   - component: {fileID: 2062106608}
+  - component: {fileID: 2062106610}
   m_Layer: 5
   m_Name: R_button
   m_TagString: Untagged
@@ -13230,6 +13231,28 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 2062106606}
   m_CullTransparentMesh: 1
+--- !u!114 &2062106610
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2062106606}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7d4317cf42306c4408d293bebb308ef1, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::RButtonFx
+  punch: 1
+  punchScale: 0.8
+  punchTime: 0.3
+  shake: 1
+  shakeStrength: 8
+  shakeTime: 0.25
+  readyFlash: 1
+  flash: {fileID: 0}
+  flashTime: 0.35
+  flashScale: 1.15
 --- !u!1 &2140901507
 GameObject:
   m_ObjectHideFlags: 0
