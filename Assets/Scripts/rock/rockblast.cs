@@ -12,7 +12,7 @@ public class RockBlast : MonoBehaviour
     [Tooltip("Яку частку набраного віддавати (0.5 = половину)")]
     [Range(0.05f, 1f)] public float shedFraction = 0.5f;
     [Tooltip("Кулдаун R, секунд. Саме стільки опускається плашка на кнопці")]
-    public float cooldown = 3f;
+    public float cooldown = 5f;
     public float minSpeed = 12f;
     public float maxSpeed = 26f;
     [Tooltip("Розкид напрямку від радіального (0 = строго від центру каменя)")]
@@ -39,8 +39,10 @@ public class RockBlast : MonoBehaviour
     public int maxHits = 3;
     [Range(0f, 1f)] public float speedKeep = 0.8f;
 
-    // Спрацьовує, коли R справді щось віддала (на межі стадії не спрацьовує)
+    // R справді щось віддала
     public event System.Action Blasted;
+    // R натиснули, але вона не спрацювала (кулдаун або камінь на межі стадії)
+    public event System.Action Denied;
 
     // Скільки кулдауну лишилось: 1 = щойно вистрілили, 0 = готово
     public float CooldownLeft01
@@ -82,8 +84,13 @@ public class RockBlast : MonoBehaviour
     // Те саме, що натискання R. Викликай з екранної кнопки (мобільна версія)
     public bool TryBlast()
     {
-        if (!enabled || !IsReady) return false;
-        return Blast();
+        if (!enabled) return false;   // під час переходу між рівнями R вимкнена
+        if (!IsReady || !Blast())
+        {
+            Denied?.Invoke();
+            return false;
+        }
+        return true;
     }
 
     bool Blast()
@@ -141,8 +148,6 @@ public class RockBlast : MonoBehaviour
         p.pickupDelay = pickupDelay;
     }
 }
-
-// ShedProjectile: лишається в цьому ж файлі без змін
 
 // Додається до кожного викинутого шматка автоматично.
 public class ShedProjectile : MonoBehaviour
